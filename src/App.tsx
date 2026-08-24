@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { Language, useTranslation } from "./hooks/useTranslation";
 
@@ -8,10 +9,63 @@ const languageNames: Record<Language, string> = {
   he: "עברית",
 };
 
+type FileTreeNode = {
+  name: string;
+  kind: "directory" | "file";
+  children: FileTreeNode[];
+};
+
+type ProjectTree = {
+  name: string;
+  children: FileTreeNode[];
+};
+
+type ProjectStatus = "idle" | "loading" | "error" | "opened";
+
+type FileTreeProps = {
+  nodes: FileTreeNode[];
+  depth?: number;
+};
+
+function FileTree({ nodes, depth = 0 }: FileTreeProps) {
+  return (
+    <ul className="file-tree">
+      {nodes.map((node) => (
+        <li key={`${depth}-${node.kind}-${node.name}`}>
+          <span className={`tree-node ${node.kind}`} style={{ paddingInlineStart: `${depth * 16}px` }}>
+            {node.name}
+          </span>
+          {node.kind === "directory" && node.children.length > 0 && (
+            <FileTree nodes={node.children} depth={depth + 1} />
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function App() {
   const { t, lang, changeLanguage } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<string[]>([]);
+  const [project, setProject] = useState<ProjectTree | null>(null);
+  const [projectStatus, setProjectStatus] = useState<ProjectStatus>("idle");
+
+  const handleOpenProject = async () => {
+    setProjectStatus("loading");
+
+    try {
+      const selectedProject = await invoke<ProjectTree | null>("open_project");
+      if (selectedProject) {
+        setProject(selectedProject);
+        setProjectStatus("opened");
+      } else {
+        setProjectStatus(project ? "opened" : "idle");
+      }
+    } catch {
+      setProjectStatus("error");
+    }
+  };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -52,18 +106,25 @@ function App() {
         <aside className="file-panel" aria-label={t("sidebar.files")}>
           <div className="panel-heading">
             <h2>{t("sidebar.files")}</h2>
-            <button type="button" className="icon-button" aria-label={t("files.add")}>
-              +
+            <button
+              type="button"
+              className="open-project-button"
+              onClick={handleOpenProject}
+              disabled={projectStatus === "loading"}
+            >
+              {t("files.open_project")}
             </button>
           </div>
           <nav>
-            <ul className="file-tree">
-              <li className="folder">autocoder</li>
-              <li className="file nested active">README.md</li>
-              <li className="file nested">src</li>
-              <li className="file nested-double">App.tsx</li>
-              <li className="file nested-double">main.tsx</li>
-            </ul>
+            {projectStatus === "loading" && <p className="project-state">{t("files.loading")}</p>}
+            {projectStatus === "error" && <p className="project-state error">{t("files.open_error")}</p>}
+            {projectStatus === "idle" && <p className="project-state">{t("files.not_opened")}</p>}
+            {projectStatus === "opened" && project && (
+              <div className="project-tree">
+                <p className="project-name">{project.name}</p>
+                <FileTree nodes={project.children} />
+              </div>
+            )}
           </nav>
         </aside>
 

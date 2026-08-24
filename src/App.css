@@ -120,6 +120,7 @@ button:disabled {
 }
 
 .icon-button,
+.open-project-button,
 .save-button,
 .chat-form button {
   border: 0;
@@ -135,8 +136,13 @@ button:disabled {
   line-height: 1;
 }
 
+.open-project-button {
+  padding: 6px 10px;
+  font-size: 0.75rem;
+}
+
 .file-tree {
-  margin: 18px 0;
+  margin: 0;
   padding: 0;
   list-style: none;
   color: #bfcae0;
@@ -144,33 +150,54 @@ button:disabled {
 }
 
 .file-tree li {
-  padding: 7px 8px;
-  border-radius: 4px;
+  min-width: 0;
 }
 
-.file-tree .folder::before {
+.tree-node {
+  display: block;
+  padding-block: 7px;
+  padding-inline-end: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node.directory::before {
   margin-right: 8px;
   content: "⌄";
   color: #79a8ff;
 }
 
-.file-tree .file::before {
+.tree-node.file::before {
   margin-right: 8px;
   content: "•";
   color: #6f819e;
 }
 
-.nested {
-  margin-left: 12px;
+.project-tree {
+  margin-top: 18px;
 }
 
-.nested-double {
-  margin-left: 28px;
-}
-
-.file-tree .active {
-  color: #fff;
+.project-name {
+  margin: 0 0 4px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  color: #f4f7ff;
+  font-size: 0.875rem;
+  font-weight: 600;
   background: #273752;
+}
+
+.project-state {
+  margin: 18px 0;
+  color: #9eabc2;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.project-state.error {
+  color: #ff9b9b;
 }
 
 .editor-panel {
