@@ -1,0 +1,17 @@
+{
+  "app.title": "AutoCoder",
+  "app.welcome": "ברוכים הבאים לסביבת העבודה של AutoCoder!",
+  "app.tagline": "סביבת פיתוח מבוססת בינה מלאכותית",
+  "chat.placeholder": "הקלד הודעה...",
+  "chat.send": "שלח",
+  "editor.save": "שמור",
+  "editor.no_file": "בחר קובץ לעריכה",
+  "sidebar.files": "סייר קבצים",
+  "sidebar.chat": "צ'אט",
+  "sidebar.changes": "שינויים",
+  "sidebar.settings": "הגדרות",
+  "settings.llm": "מודל בינה מלאכותית",
+  "settings.language": "שפה",
+  "common.apply": "החל",
+  "common.cancel": "ביטול"
+}

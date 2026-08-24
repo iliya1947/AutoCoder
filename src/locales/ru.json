@@ -1,0 +1,17 @@
+{
+  "app.title": "AutoCoder",
+  "app.welcome": "Добро пожаловать в рабочую среду AutoCoder!",
+  "app.tagline": "AI-first среда разработки",
+  "chat.placeholder": "Введите запрос...",
+  "chat.send": "Отправить",
+  "editor.save": "Сохранить",
+  "editor.no_file": "Выберите файл для редактирования",
+  "sidebar.files": "Проводник",
+  "sidebar.chat": "Чат",
+  "sidebar.changes": "Изменения",
+  "sidebar.settings": "Настройки",
+  "settings.llm": "Модель ИИ",
+  "settings.language": "Язык",
+  "common.apply": "Применить",
+  "common.cancel": "Отмена"
+}

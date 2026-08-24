@@ -1,0 +1,17 @@
+{
+  "app.title": "AutoCoder",
+  "app.welcome": "Welcome to the AutoCoder workspace!",
+  "app.tagline": "AI-first development environment",
+  "chat.placeholder": "Type your message...",
+  "chat.send": "Send",
+  "editor.save": "Save",
+  "editor.no_file": "Select a file to edit",
+  "sidebar.files": "Explorer",
+  "sidebar.chat": "Chat",
+  "sidebar.changes": "Changes",
+  "sidebar.settings": "Settings",
+  "settings.llm": "AI Model",
+  "settings.language": "Language",
+  "common.apply": "Apply",
+  "common.cancel": "Cancel"
+}
