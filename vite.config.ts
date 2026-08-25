@@ -14,5 +14,10 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: true,
+    watch: {
+      // Cargo rewrites and locks binaries in this directory while `tauri dev`
+      // is running. Watching them is unnecessary and causes EBUSY on Windows.
+      ignored: ["**/src-tauri/target/**"],
+    },
   },
 }));
