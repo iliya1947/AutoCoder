@@ -70,6 +70,19 @@ struct ChatMessage {
 #[derive(Deserialize, Serialize)]
 struct ChatRequest {
     messages: Vec<ChatMessage>,
+    context: Option<ChatContext>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatContext {
+    open_file: OpenFileContext,
+}
+
+#[derive(Deserialize, Serialize)]
+struct OpenFileContext {
+    path: String,
+    content: String,
 }
 
 #[derive(Deserialize, Serialize)]

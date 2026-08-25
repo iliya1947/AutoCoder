@@ -1,11 +1,23 @@
 import { FormEvent, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
+import { OpenedFile } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 type ChatResponse = { message: ChatMessage };
+export type ChatRequest = {
+  messages: ChatMessage[];
+  context: { openFile: { path: string; content: string } } | null;
+};
 
-export function ChatPanel() {
+export function buildChatRequest(messages: ChatMessage[], openFile: OpenedFile | null): ChatRequest {
+  return {
+    messages,
+    context: openFile ? { openFile: { path: openFile.path, content: openFile.content } } : null,
+  };
+}
+
+export function ChatPanel({ openFile }: { openFile: OpenedFile | null }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -22,7 +34,9 @@ export function ChatPanel() {
     setSending(true);
     setError(false);
     try {
-      const response = await invoke<ChatResponse>("send_chat_message", { request: { messages: nextMessages } });
+      const response = await invoke<ChatResponse>("send_chat_message", {
+        request: buildChatRequest(nextMessages, openFile),
+      });
       setMessages((current) => [...current, response.message]);
     } catch {
       setError(true);
