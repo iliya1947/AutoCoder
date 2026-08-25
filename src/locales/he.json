@@ -22,5 +22,10 @@
   "settings.llm": "מודל בינה מלאכותית",
   "settings.language": "שפה",
   "common.apply": "החל",
-  "common.cancel": "ביטול"
+  "common.cancel": "ביטול",
+  "editor.unsaved": "יש שינויים שלא נשמרו",
+  "editor.saving": "שומר…",
+  "editor.read_error": "לא ניתן לקרוא את הקובץ כטקסט.",
+  "editor.save_error": "לא ניתן לשמור את הקובץ.",
+  "editor.discard_confirm": "לבטל שינויים שלא נשמרו?"
 }
