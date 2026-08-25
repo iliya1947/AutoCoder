@@ -30,5 +30,8 @@
   "editor.discard_confirm": "Отменить несохранённые изменения?",
   "files.no_supported_files": "В проекте нет файлов.",
   "editor.loading": "Загрузка файла…",
-  "editor.read_error_title": "Не удалось открыть файл"
+  "editor.read_error_title": "Не удалось открыть файл",
+  "chat.ollama": "Ollama",
+  "chat.sending": "Ollama отвечает…",
+  "chat.error": "Не удалось получить ответ. Убедитесь, что Python и Ollama запущены."
 }

@@ -1,11 +1,13 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -58,6 +60,23 @@ struct BackupMetadata {
     original_path: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ChatRequest {
+    messages: Vec<ChatMessage>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ChatResponse {
+    message: ChatMessage,
+}
+
 #[tauri::command]
 async fn open_project(
     app: tauri::AppHandle,
@@ -67,12 +86,7 @@ async fn open_project(
         return Ok(None);
     };
     let root = root.into_path().map_err(|error| error.to_string())?;
-    diagnostic(format_args!("open_project picker path: {:?}", root));
     let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
-    diagnostic(format_args!(
-        "open_project canonical physical path: {:?}",
-        root
-    ));
 
     let metadata = fs::metadata(&root).map_err(|error| error.to_string())?;
     if !metadata.is_dir() {
@@ -91,15 +105,68 @@ async fn open_project(
         .lock()
         .map_err(|_| "Unable to access the project state.".to_string())? = Some(root);
 
-    let tree = ProjectTree { name, children };
-    match serde_json::to_string(&tree) {
-        Ok(json) => diagnostic(format_args!("open_project ProjectTree JSON: {json}")),
-        Err(error) => diagnostic(format_args!(
-            "open_project could not serialize diagnostic ProjectTree: {error}"
-        )),
+    Ok(Some(ProjectTree { name, children }))
+}
+
+#[tauri::command]
+fn send_chat_message(app: tauri::AppHandle, request: ChatRequest) -> Result<ChatResponse, String> {
+    if request.messages.is_empty()
+        || request
+            .messages
+            .iter()
+            .any(|message| message.content.trim().is_empty())
+    {
+        return Err("Chat messages cannot be empty.".to_string());
     }
 
-    Ok(Some(tree))
+    let backend = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?
+        .join("backend")
+        .join("main.py");
+    run_chat_backend(&backend, &request)
+}
+
+fn run_chat_backend(backend: &Path, request: &ChatRequest) -> Result<ChatResponse, String> {
+    let python = std::env::var("AUTOCODER_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.to_string());
+    let mut child = Command::new(python)
+        .arg(backend)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to start the Python backend: {error}"))?;
+    serde_json::to_writer(
+        child
+            .stdin
+            .as_mut()
+            .ok_or("Unable to open backend input.")?,
+        request,
+    )
+    .map_err(|error| error.to_string())?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("Unable to open backend input.")?
+        .flush()
+        .map_err(|error| error.to_string())?;
+    drop(child.stdin.take());
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if error.is_empty() {
+            "The AI backend failed.".to_string()
+        } else {
+            error
+        });
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("The AI backend returned an invalid response: {error}"))
 }
 
 #[tauri::command]
@@ -215,39 +282,15 @@ fn is_binary(content: &[u8]) -> bool {
 
 fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
     let mut nodes = Vec::new();
-    diagnostic(format_args!("read_dir start: {:?}", path));
-    let entries = match fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(error) => {
-            diagnostic(format_args!("read_dir failed for {:?}: {error}", path));
-            return nodes;
-        }
+    let Ok(entries) = fs::read_dir(path) else {
+        return nodes;
     };
 
-    for entry_result in entries {
-        let entry = match entry_result {
-            Ok(entry) => entry,
-            Err(error) => {
-                diagnostic(format_args!("read_dir yielded an entry error: {error}"));
-                continue;
-            }
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
         };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                diagnostic(format_args!(
-                    "file_type failed for {:?}: {error}",
-                    entry.path()
-                ));
-                continue;
-            }
-        };
-        diagnostic_entry(&entry, file_type);
-        if let Some(reason) = should_skip_entry(&entry, file_type) {
-            diagnostic(format_args!(
-                "should_skip_entry=true path={:?} reason={reason}",
-                entry.path()
-            ));
+        if should_skip_entry(&entry, file_type) {
             continue;
         }
 
@@ -261,10 +304,6 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
 
         if file_type.is_dir() {
             if is_excluded_directory(&name) {
-                diagnostic(format_args!(
-                    "directory filter skipped path={:?} reason=excluded directory name",
-                    entry_path
-                ));
                 continue;
             }
             nodes.push(FileTreeNode {
@@ -280,11 +319,6 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
                 kind: FileTreeNodeKind::File,
                 children: Vec::new(),
             });
-        } else {
-            diagnostic(format_args!(
-                "tree skipped path={:?} reason=neither regular file nor directory",
-                entry_path
-            ));
         }
     }
 
@@ -296,9 +330,9 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
     nodes
 }
 
-fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> Option<&'static str> {
+fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
     if file_type.is_symlink() {
-        return Some("filesystem symlink");
+        return true;
     }
 
     #[cfg(windows)]
@@ -310,7 +344,7 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> Option<&'
             .metadata()
             .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
         {
-            return Some("Windows reparse-point attribute");
+            return true;
         }
 
         // Shell shortcuts are ordinary .lnk files to std::fs, not symlinks.
@@ -321,52 +355,14 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> Option<&'
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
         {
-            return Some("Windows Shell shortcut (.lnk)");
+            return true;
         }
     }
 
     #[cfg(not(windows))]
     let _ = entry;
 
-    None
-}
-
-fn diagnostic(arguments: std::fmt::Arguments<'_>) {
-    if cfg!(debug_assertions) {
-        eprintln!("[AutoCoder project diagnostic] {arguments}");
-    }
-}
-
-fn diagnostic_entry(entry: &fs::DirEntry, file_type: fs::FileType) {
-    diagnostic(format_args!(
-        "read_dir entry name={:?} path={:?} is_file={} is_dir={} is_symlink={}",
-        entry.file_name(),
-        entry.path(),
-        file_type.is_file(),
-        file_type.is_dir(),
-        file_type.is_symlink()
-    ));
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        match fs::symlink_metadata(entry.path()) {
-            Ok(metadata) => {
-                let attributes = metadata.file_attributes();
-                diagnostic(format_args!(
-                    "Windows metadata path={:?} attributes=0x{attributes:08X} reparse_point={}",
-                    entry.path(),
-                    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-                ));
-            }
-            Err(error) => diagnostic(format_args!(
-                "Windows metadata failed path={:?}: {error}",
-                entry.path()
-            )),
-        }
-    }
+    false
 }
 
 #[cfg(test)]
@@ -511,7 +507,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_project,
             read_project_file,
-            save_project_file
+            save_project_file,
+            send_chat_message
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

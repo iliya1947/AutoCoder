@@ -30,5 +30,8 @@
   "editor.discard_confirm": "Discard unsaved changes?",
   "files.no_supported_files": "This project contains no files.",
   "editor.loading": "Loading file…",
-  "editor.read_error_title": "Unable to open file"
+  "editor.read_error_title": "Unable to open file",
+  "chat.ollama": "Ollama",
+  "chat.sending": "Ollama is responding…",
+  "chat.error": "Unable to get a response. Make sure Python and Ollama are running."
 }
