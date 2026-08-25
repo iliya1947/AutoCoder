@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isExcludedDirectory, isSupportedTextFile, transformProjectTree } from "./projectTree";
+import { editorLanguage, isExcludedDirectory, transformProjectTree } from "./projectTree";
 import { ProjectNode } from "../types/project";
 
 const directory = (name: string, children: ProjectNode[] = []): ProjectNode => ({ name, path: name, kind: "directory", children });
@@ -11,13 +11,14 @@ describe("project tree logic", () => {
     expect(isExcludedDirectory("src")).toBe(false);
   });
 
-  it("selects supported text files", () => {
-    expect(["App.tsx", "README", "Dockerfile", "config.toml"].every(isSupportedTextFile)).toBe(true);
-    expect(["photo.png", "archive.zip", ".env"].some(isSupportedTextFile)).toBe(false);
+  it("uses plaintext for unknown and absent extensions", () => {
+    expect(editorLanguage("notes.txt")).toBe("plaintext");
+    expect(editorLanguage("data.unknown")).toBe("plaintext");
+    expect(editorLanguage("README")).toBe("plaintext");
   });
 
-  it("transforms recursively, filters files, and sorts directories first", () => {
+  it("keeps every file recursively and sorts directories first", () => {
     const result = transformProjectTree([file("z.ts"), directory("src", [file("logo.png"), file("App.tsx")]), directory(".git"), file("a.exe")]);
-    expect(result).toEqual([directory("src", [file("App.tsx")]), file("z.ts")]);
+    expect(result).toEqual([directory("src", [file("App.tsx"), file("logo.png")]), file("a.exe"), file("z.ts")]);
   });
 });

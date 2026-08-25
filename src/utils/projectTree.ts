@@ -2,27 +2,14 @@ import { ProjectNode } from "../types/project";
 
 export const EXCLUDED_DIRECTORIES = new Set([".git", ".idea", ".venv", ".vscode", "dist", "node_modules", "target"]);
 
-const TEXT_EXTENSIONS = new Set([
-  "c", "cc", "cpp", "cs", "css", "go", "h", "hpp", "html", "java", "js", "jsx", "json", "md",
-  "php", "py", "rb", "rs", "sh", "sql", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
-]);
-const TEXT_FILE_NAMES = new Set(["dockerfile", "license", "makefile", "readme"]);
-
 export function isExcludedDirectory(name: string): boolean {
   return name.startsWith(".") || EXCLUDED_DIRECTORIES.has(name.toLowerCase());
-}
-
-export function isSupportedTextFile(name: string): boolean {
-  const normalized = name.toLowerCase();
-  if (TEXT_FILE_NAMES.has(normalized)) return true;
-  const dot = normalized.lastIndexOf(".");
-  return dot > 0 && TEXT_EXTENSIONS.has(normalized.slice(dot + 1));
 }
 
 /** Converts an untrusted backend tree into the tree the explorer can safely display. */
 export function transformProjectTree(nodes: ProjectNode[]): ProjectNode[] {
   return nodes
-    .filter((node) => node.kind === "directory" ? !isExcludedDirectory(node.name) : isSupportedTextFile(node.name))
+    .filter((node) => node.kind === "file" || (node.kind === "directory" && !isExcludedDirectory(node.name)))
     .map((node) => ({
       ...node,
       children: node.kind === "directory" ? transformProjectTree(node.children ?? []) : [],
