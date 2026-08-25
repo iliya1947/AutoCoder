@@ -23,14 +23,14 @@ struct ProjectState {
     root: Mutex<Option<PathBuf>>,
 }
 
-#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum FileTreeNodeKind {
     Directory,
     File,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileTreeNode {
     name: String,
@@ -39,7 +39,7 @@ struct FileTreeNode {
     children: Vec<FileTreeNode>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectTree {
     name: String,
@@ -67,7 +67,12 @@ async fn open_project(
         return Ok(None);
     };
     let root = root.into_path().map_err(|error| error.to_string())?;
+    diagnostic(format_args!("open_project picker path: {:?}", root));
     let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    diagnostic(format_args!(
+        "open_project canonical physical path: {:?}",
+        root
+    ));
 
     let metadata = fs::metadata(&root).map_err(|error| error.to_string())?;
     if !metadata.is_dir() {
@@ -86,7 +91,15 @@ async fn open_project(
         .lock()
         .map_err(|_| "Unable to access the project state.".to_string())? = Some(root);
 
-    Ok(Some(ProjectTree { name, children }))
+    let tree = ProjectTree { name, children };
+    match serde_json::to_string(&tree) {
+        Ok(json) => diagnostic(format_args!("open_project ProjectTree JSON: {json}")),
+        Err(error) => diagnostic(format_args!(
+            "open_project could not serialize diagnostic ProjectTree: {error}"
+        )),
+    }
+
+    Ok(Some(tree))
 }
 
 #[tauri::command]
@@ -202,15 +215,39 @@ fn is_binary(content: &[u8]) -> bool {
 
 fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
     let mut nodes = Vec::new();
-    let Ok(entries) = fs::read_dir(path) else {
-        return nodes;
+    diagnostic(format_args!("read_dir start: {:?}", path));
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            diagnostic(format_args!("read_dir failed for {:?}: {error}", path));
+            return nodes;
+        }
     };
 
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
+    for entry_result in entries {
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(error) => {
+                diagnostic(format_args!("read_dir yielded an entry error: {error}"));
+                continue;
+            }
         };
-        if should_skip_entry(&entry, file_type) {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                diagnostic(format_args!(
+                    "file_type failed for {:?}: {error}",
+                    entry.path()
+                ));
+                continue;
+            }
+        };
+        diagnostic_entry(&entry, file_type);
+        if let Some(reason) = should_skip_entry(&entry, file_type) {
+            diagnostic(format_args!(
+                "should_skip_entry=true path={:?} reason={reason}",
+                entry.path()
+            ));
             continue;
         }
 
@@ -224,6 +261,10 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
 
         if file_type.is_dir() {
             if is_excluded_directory(&name) {
+                diagnostic(format_args!(
+                    "directory filter skipped path={:?} reason=excluded directory name",
+                    entry_path
+                ));
                 continue;
             }
             nodes.push(FileTreeNode {
@@ -239,6 +280,11 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
                 kind: FileTreeNodeKind::File,
                 children: Vec::new(),
             });
+        } else {
+            diagnostic(format_args!(
+                "tree skipped path={:?} reason=neither regular file nor directory",
+                entry_path
+            ));
         }
     }
 
@@ -250,9 +296,9 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
     nodes
 }
 
-fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
+fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> Option<&'static str> {
     if file_type.is_symlink() {
-        return true;
+        return Some("filesystem symlink");
     }
 
     #[cfg(windows)]
@@ -264,7 +310,7 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
             .metadata()
             .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
         {
-            return true;
+            return Some("Windows reparse-point attribute");
         }
 
         // Shell shortcuts are ordinary .lnk files to std::fs, not symlinks.
@@ -275,14 +321,52 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
         {
-            return true;
+            return Some("Windows Shell shortcut (.lnk)");
         }
     }
 
     #[cfg(not(windows))]
     let _ = entry;
 
-    false
+    None
+}
+
+fn diagnostic(arguments: std::fmt::Arguments<'_>) {
+    if cfg!(debug_assertions) {
+        eprintln!("[AutoCoder project diagnostic] {arguments}");
+    }
+}
+
+fn diagnostic_entry(entry: &fs::DirEntry, file_type: fs::FileType) {
+    diagnostic(format_args!(
+        "read_dir entry name={:?} path={:?} is_file={} is_dir={} is_symlink={}",
+        entry.file_name(),
+        entry.path(),
+        file_type.is_file(),
+        file_type.is_dir(),
+        file_type.is_symlink()
+    ));
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        match fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => {
+                let attributes = metadata.file_attributes();
+                diagnostic(format_args!(
+                    "Windows metadata path={:?} attributes=0x{attributes:08X} reparse_point={}",
+                    entry.path(),
+                    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                ));
+            }
+            Err(error) => diagnostic(format_args!(
+                "Windows metadata failed path={:?}: {error}",
+                entry.path()
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

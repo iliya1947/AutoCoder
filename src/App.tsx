@@ -24,8 +24,11 @@ function App() {
     setProjectStatus("loading");
     try {
       const selected = await invoke<ProjectTree | null>("open_project");
+      if (import.meta.env.DEV) console.debug("[AutoCoder project diagnostic] ProjectTree received from Tauri", selected);
       if (selected) {
-        setProject({ ...selected, children: transformProjectTree(selected.children) });
+        const transformed = { ...selected, children: transformProjectTree(selected.children) };
+        if (import.meta.env.DEV) console.debug("[AutoCoder project diagnostic] ProjectTree rendered by frontend", transformed);
+        setProject(transformed);
         setOpenFile(null);
         setEditorStatus("idle");
         setProjectStatus("opened");
