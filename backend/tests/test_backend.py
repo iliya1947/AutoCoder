@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main import parse_messages
+from main import parse_messages, parse_request
 from provider import Message, OllamaProvider, ProviderError
 
 
@@ -28,6 +28,23 @@ class BackendTests(unittest.TestCase):
     def test_rejects_empty_content(self):
         with self.assertRaises(ValueError):
             parse_messages({"messages": [{"role": "user", "content": " "}]})
+
+    def test_adds_open_file_as_system_context(self):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "Explain this"}],
+                "context": {"openFile": {"path": "src/main.py", "content": "print('hi')"}},
+            }
+        )
+
+        self.assertEqual(messages[0].role, "system")
+        self.assertIn("Path: src/main.py", messages[0].content)
+        self.assertIn("print('hi')", messages[0].content)
+        self.assertEqual(messages[1], Message("user", "Explain this"))
+
+    def test_rejects_invalid_open_file_context(self):
+        with self.assertRaises(ValueError):
+            parse_request({"messages": [{"role": "user", "content": "Hi"}], "context": {"openFile": {}}})
 
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_ollama_provider_returns_assistant_message(self, urlopen):

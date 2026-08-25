@@ -1,6 +1,6 @@
 # AutoCoder Python backend
 
-The Tauri application starts `main.py` for each chat request and exchanges one JSON document over standard input/output. The first provider is local Ollama.
+The Tauri application starts `main.py` for each chat request and exchanges one JSON document over standard input/output. The request contains the conversation and, when a text file is open, its relative path and current editor content. The backend adds that file as untrusted system context before calling the first provider, local Ollama.
 
 Defaults:
 - endpoint: `http://127.0.0.1:11434/api/chat`
