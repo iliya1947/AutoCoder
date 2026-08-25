@@ -244,6 +244,11 @@ button.tree-node.active {
   font-size: 0.8125rem;
 }
 
+.error-state h2,
+.error-state p {
+  color: #ff9b9b;
+}
+
 .monaco-container {
   flex: 1;
   min-height: 360px;

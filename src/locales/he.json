@@ -27,5 +27,8 @@
   "editor.saving": "שומר…",
   "editor.read_error": "לא ניתן לקרוא את הקובץ כטקסט.",
   "editor.save_error": "לא ניתן לשמור את הקובץ.",
-  "editor.discard_confirm": "לבטל שינויים שלא נשמרו?"
+  "editor.discard_confirm": "לבטל שינויים שלא נשמרו?",
+  "files.no_supported_files": "לא נמצאו קובצי טקסט נתמכים.",
+  "editor.loading": "טוען קובץ…",
+  "editor.read_error_title": "לא ניתן לפתוח את הקובץ"
 }

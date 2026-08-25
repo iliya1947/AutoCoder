@@ -27,5 +27,8 @@
   "editor.saving": "Сохранение…",
   "editor.read_error": "Не удалось прочитать файл как текст.",
   "editor.save_error": "Не удалось сохранить файл.",
-  "editor.discard_confirm": "Отменить несохранённые изменения?"
+  "editor.discard_confirm": "Отменить несохранённые изменения?",
+  "files.no_supported_files": "Поддерживаемые текстовые файлы не найдены.",
+  "editor.loading": "Загрузка файла…",
+  "editor.read_error_title": "Не удалось открыть файл"
 }

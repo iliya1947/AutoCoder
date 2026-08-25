@@ -40,6 +40,11 @@ struct ProjectTree {
 }
 
 #[derive(Serialize)]
+struct FileReadResult {
+    content: String,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupMetadata {
     created_at_unix_ms: u128,
@@ -81,9 +86,11 @@ async fn open_project(
 fn read_project_file(
     relative_path: String,
     project_state: State<'_, ProjectState>,
-) -> Result<String, String> {
+) -> Result<FileReadResult, String> {
     let path = resolve_project_file(&relative_path, &project_state)?;
-    fs::read_to_string(path).map_err(|error| format!("Unable to read this file as text: {error}"))
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Unable to read this file as text: {error}"))?;
+    Ok(FileReadResult { content })
 }
 
 #[tauri::command]
