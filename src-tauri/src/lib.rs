@@ -303,7 +303,10 @@ mod tests {
         );
         let metadata: serde_json::Value =
             serde_json::from_slice(&fs::read(backup_dir.join("metadata.json")).unwrap()).unwrap();
-        assert_eq!(metadata["createdAtUnixMs"], timestamp / 1_000_000);
+        assert_eq!(
+            metadata["createdAtUnixMs"].as_u64(),
+            Some(u64::try_from(timestamp / 1_000_000).unwrap())
+        );
         assert!(metadata["originalPath"]
             .as_str()
             .unwrap()
