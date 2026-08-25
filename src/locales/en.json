@@ -28,7 +28,7 @@
   "editor.read_error": "Unable to read this file as text.",
   "editor.save_error": "Unable to save the file.",
   "editor.discard_confirm": "Discard unsaved changes?",
-  "files.no_supported_files": "No supported text files found.",
+  "files.no_supported_files": "This project contains no files.",
   "editor.loading": "Loading file…",
   "editor.read_error_title": "Unable to open file"
 }

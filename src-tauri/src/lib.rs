@@ -18,12 +18,6 @@ const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
     "node_modules",
     "target",
 ];
-const TEXT_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "cs", "css", "go", "h", "hpp", "html", "java", "js", "jsx", "json", "md",
-    "php", "py", "rb", "rs", "sh", "sql", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
-];
-const TEXT_FILE_NAMES: &[&str] = &["dockerfile", "license", "makefile", "readme"];
-
 #[derive(Default)]
 struct ProjectState {
     root: Mutex<Option<PathBuf>>,
@@ -153,7 +147,11 @@ fn resolve_project_file(root: &Path, relative_path: &str) -> Result<PathBuf, Str
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
     let path = resolve_project_file(root, relative_path)?;
-    fs::read_to_string(path).map_err(|error| format!("Unable to read this file as text: {error}"))
+    let content = fs::read(path).map_err(|error| format!("Unable to read this file: {error}"))?;
+    if is_binary(&content) {
+        return Err("This binary file cannot be opened as text.".to_string());
+    }
+    String::from_utf8(content).map_err(|error| format!("Unable to read this file as text: {error}"))
 }
 
 fn save_file(
@@ -190,15 +188,16 @@ fn is_excluded_directory(name: &str) -> bool {
     name.starts_with('.') || EXCLUDED_DIRECTORY_NAMES.contains(&name.to_lowercase().as_str())
 }
 
-fn is_supported_text_file(name: &str) -> bool {
-    let normalized = name.to_lowercase();
-    if TEXT_FILE_NAMES.contains(&normalized.as_str()) {
+fn is_binary(content: &[u8]) -> bool {
+    if std::str::from_utf8(content).is_err() || content.contains(&0) {
         return true;
     }
-    Path::new(&normalized)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| TEXT_EXTENSIONS.contains(&extension))
+
+    let suspicious_controls = content
+        .iter()
+        .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t' | 0x0c | 0x08))
+        .count();
+    !content.is_empty() && suspicious_controls * 100 / content.len() > 1
 }
 
 fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
@@ -211,7 +210,7 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_symlink() {
+        if should_skip_entry(&entry, file_type) {
             continue;
         }
 
@@ -233,7 +232,7 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
                 kind: FileTreeNodeKind::Directory,
                 children: read_directory(root, &entry_path),
             });
-        } else if file_type.is_file() && is_supported_text_file(&name) {
+        } else if file_type.is_file() {
             nodes.push(FileTreeNode {
                 name,
                 path: relative_path,
@@ -249,6 +248,41 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     nodes
+}
+
+fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
+    if file_type.is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        {
+            return true;
+        }
+
+        // Shell shortcuts are ordinary .lnk files to std::fs, not symlinks.
+        // They are navigation objects rather than project file contents.
+        if file_type.is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+        {
+            return true;
+        }
+    }
+
+    #[cfg(not(windows))]
+    let _ = entry;
+
+    false
 }
 
 #[cfg(test)]
@@ -314,16 +348,74 @@ mod tests {
     }
 
     #[test]
-    fn tree_excludes_hidden_directories_and_unsupported_files() {
+    fn tree_excludes_hidden_directories_but_keeps_all_regular_files() {
         let (directory, _) = project();
         fs::create_dir(directory.path().join(".cache")).unwrap();
-        fs::write(directory.path().join("image.png"), "not really an image").unwrap();
+        fs::write(directory.path().join("unknown.custom"), "unknown text").unwrap();
         fs::write(directory.path().join("README"), "read me").unwrap();
+        fs::write(directory.path().join("binary.bin"), [0, 159, 146, 150]).unwrap();
+        fs::write(
+            directory.path().join("АвтоКодер_тестовый файл.txt"),
+            "обычный текст",
+        )
+        .unwrap();
 
         let nodes = read_directory(directory.path(), directory.path());
         let names: Vec<_> = nodes.iter().map(|node| node.name.as_str()).collect();
 
-        assert_eq!(names, ["notes.txt", "README"]);
+        assert_eq!(
+            names,
+            [
+                "binary.bin",
+                "notes.txt",
+                "README",
+                "unknown.custom",
+                "АвтоКодер_тестовый файл.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_text_with_known_unknown_and_absent_extensions() {
+        let (directory, _) = project();
+        fs::write(directory.path().join("message.custom"), "custom text").unwrap();
+        fs::write(directory.path().join("NO_EXTENSION"), "plain text").unwrap();
+
+        assert_eq!(read_file(directory.path(), "notes.txt").unwrap(), "before");
+        assert_eq!(
+            read_file(directory.path(), "message.custom").unwrap(),
+            "custom text"
+        );
+        assert_eq!(
+            read_file(directory.path(), "NO_EXTENSION").unwrap(),
+            "plain text"
+        );
+    }
+
+    #[test]
+    fn rejects_binary_content_instead_of_returning_it_as_text() {
+        let (directory, _) = project();
+        fs::write(directory.path().join("binary.txt"), [0, 159, 146, 150]).unwrap();
+
+        assert_eq!(
+            read_file(directory.path(), "binary.txt").unwrap_err(),
+            "This binary file cannot be opened as text."
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tree_skips_windows_shell_shortcuts_even_though_they_are_regular_files() {
+        let (directory, _) = project();
+        fs::write(
+            directory.path().join("Network.lnk"),
+            "shell shortcut fixture",
+        )
+        .unwrap();
+
+        let nodes = read_directory(directory.path(), directory.path());
+
+        assert!(!nodes.iter().any(|node| node.name == "Network.lnk"));
     }
 }
 
