@@ -22,5 +22,10 @@
   "settings.llm": "AI Model",
   "settings.language": "Language",
   "common.apply": "Apply",
-  "common.cancel": "Cancel"
+  "common.cancel": "Cancel",
+  "editor.unsaved": "Unsaved changes",
+  "editor.saving": "Saving…",
+  "editor.read_error": "Unable to read this file as text.",
+  "editor.save_error": "Unable to save the file.",
+  "editor.discard_confirm": "Discard unsaved changes?"
 }

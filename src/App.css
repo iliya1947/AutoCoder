@@ -155,12 +155,24 @@ button:disabled {
 
 .tree-node {
   display: block;
+  width: 100%;
   padding-block: 7px;
   padding-inline-end: 8px;
+  border: 0;
   border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  background: transparent;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+button.tree-node:hover,
+button.tree-node.active {
+  color: #fff;
+  background: #273752;
 }
 
 .tree-node.directory::before {
@@ -214,6 +226,28 @@ button:disabled {
 .save-button {
   padding: 6px 12px;
   font-size: 0.8125rem;
+}
+
+.save-button:disabled {
+  opacity: 0.45;
+}
+
+.dirty-indicator {
+  margin-inline-start: 8px;
+  color: #f4bd61;
+  font-size: 0.65rem;
+}
+
+.editor-error {
+  margin: 8px 0 0;
+  color: #ff9b9b;
+  font-size: 0.8125rem;
+}
+
+.monaco-container {
+  flex: 1;
+  min-height: 360px;
+  padding-top: 12px;
 }
 
 .editor-placeholder {
