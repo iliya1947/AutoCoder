@@ -13,7 +13,7 @@ const translations: Record<Language, Record<string, string>> = {
 
 export function useTranslation() {
   const [lang, setLang] = useState<Language>(() => {
-    const saved = localStorage.getItem("autocoder_lang");
+    const saved = typeof localStorage === "undefined" ? null : localStorage.getItem("autocoder_lang");
     return (saved as Language) || "ru";
   });
 
