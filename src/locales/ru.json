@@ -22,5 +22,10 @@
   "settings.llm": "Модель ИИ",
   "settings.language": "Язык",
   "common.apply": "Применить",
-  "common.cancel": "Отмена"
+  "common.cancel": "Отмена",
+  "editor.unsaved": "Есть несохранённые изменения",
+  "editor.saving": "Сохранение…",
+  "editor.read_error": "Не удалось прочитать файл как текст.",
+  "editor.save_error": "Не удалось сохранить файл.",
+  "editor.discard_confirm": "Отменить несохранённые изменения?"
 }
