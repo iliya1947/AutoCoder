@@ -9,7 +9,20 @@ use serde::Serialize;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[".git", "node_modules", "target", ".venv"];
+const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
+    ".git",
+    ".idea",
+    ".venv",
+    ".vscode",
+    "dist",
+    "node_modules",
+    "target",
+];
+const TEXT_EXTENSIONS: &[&str] = &[
+    "c", "cc", "cpp", "cs", "css", "go", "h", "hpp", "html", "java", "js", "jsx", "json", "md",
+    "php", "py", "rb", "rs", "sh", "sql", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
+];
+const TEXT_FILE_NAMES: &[&str] = &["dockerfile", "license", "makefile", "readme"];
 
 #[derive(Default)]
 struct ProjectState {
@@ -87,9 +100,8 @@ fn read_project_file(
     relative_path: String,
     project_state: State<'_, ProjectState>,
 ) -> Result<FileReadResult, String> {
-    let path = resolve_project_file(&relative_path, &project_state)?;
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("Unable to read this file as text: {error}"))?;
+    let root = project_root(&project_state)?;
+    let content = read_file(&root, &relative_path)?;
     Ok(FileReadResult { content })
 }
 
@@ -100,48 +112,29 @@ fn save_project_file(
     content: String,
     project_state: State<'_, ProjectState>,
 ) -> Result<(), String> {
-    // Resolve and canonicalize again immediately before backup/write. This prevents
-    // relative traversal and rejects symlinks whose target is outside the project.
-    let path = resolve_project_file(&relative_path, &project_state)?;
+    let root = project_root(&project_state)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
-    let backup_dir = app
+    let backup_root = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?
-        .join("backups")
-        .join(timestamp.to_string());
-    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
-
-    fs::copy(&path, backup_dir.join("content.bak"))
-        .map_err(|error| format!("Unable to create backup: {error}"))?;
-    let metadata = BackupMetadata {
-        created_at_unix_ms: timestamp / 1_000_000,
-        original_path: path.to_string_lossy().into_owned(),
-    };
-    let metadata_json = serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?;
-    fs::write(backup_dir.join("metadata.json"), metadata_json)
-        .map_err(|error| format!("Unable to save backup metadata: {error}"))?;
-
-    let rechecked_path = resolve_project_file(&relative_path, &project_state)?;
-    if rechecked_path != path {
-        return Err("The file path changed while it was being saved.".to_string());
-    }
-    fs::write(rechecked_path, content).map_err(|error| format!("Unable to save file: {error}"))
+        .join("backups");
+    save_file(&root, &relative_path, &content, &backup_root, timestamp)
 }
 
-fn resolve_project_file(
-    relative_path: &str,
-    project_state: &State<'_, ProjectState>,
-) -> Result<PathBuf, String> {
-    let root = project_state
+fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
+    project_state
         .root
         .lock()
         .map_err(|_| "Unable to access the project state.".to_string())?
         .clone()
-        .ok_or_else(|| "Open a project first.".to_string())?;
+        .ok_or_else(|| "Open a project first.".to_string())
+}
+
+fn resolve_project_file(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
     let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
     let candidate =
         fs::canonicalize(root.join(relative_path)).map_err(|error| error.to_string())?;
@@ -156,6 +149,56 @@ fn resolve_project_file(
         return Err("The selected path is not a file.".to_string());
     }
     Ok(candidate)
+}
+
+fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
+    let path = resolve_project_file(root, relative_path)?;
+    fs::read_to_string(path).map_err(|error| format!("Unable to read this file as text: {error}"))
+}
+
+fn save_file(
+    root: &Path,
+    relative_path: &str,
+    content: &str,
+    backup_root: &Path,
+    timestamp: u128,
+) -> Result<(), String> {
+    // Resolve immediately before backup and again before writing. This rejects
+    // traversal and symlinks outside the project, including a path changed mid-save.
+    let path = resolve_project_file(root, relative_path)?;
+    let backup_dir = backup_root.join(timestamp.to_string());
+    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
+    fs::copy(&path, backup_dir.join("content.bak"))
+        .map_err(|error| format!("Unable to create backup: {error}"))?;
+
+    let metadata = BackupMetadata {
+        created_at_unix_ms: timestamp / 1_000_000,
+        original_path: path.to_string_lossy().into_owned(),
+    };
+    let metadata_json = serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?;
+    fs::write(backup_dir.join("metadata.json"), metadata_json)
+        .map_err(|error| format!("Unable to save backup metadata: {error}"))?;
+
+    let rechecked_path = resolve_project_file(root, relative_path)?;
+    if rechecked_path != path {
+        return Err("The file path changed while it was being saved.".to_string());
+    }
+    fs::write(rechecked_path, content).map_err(|error| format!("Unable to save file: {error}"))
+}
+
+fn is_excluded_directory(name: &str) -> bool {
+    name.starts_with('.') || EXCLUDED_DIRECTORY_NAMES.contains(&name.to_lowercase().as_str())
+}
+
+fn is_supported_text_file(name: &str) -> bool {
+    let normalized = name.to_lowercase();
+    if TEXT_FILE_NAMES.contains(&normalized.as_str()) {
+        return true;
+    }
+    Path::new(&normalized)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| TEXT_EXTENSIONS.contains(&extension))
 }
 
 fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
@@ -181,7 +224,7 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
             .into_owned();
 
         if file_type.is_dir() {
-            if EXCLUDED_DIRECTORY_NAMES.contains(&name.as_str()) {
+            if is_excluded_directory(&name) {
                 continue;
             }
             nodes.push(FileTreeNode {
@@ -190,7 +233,7 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
                 kind: FileTreeNodeKind::Directory,
                 children: read_directory(root, &entry_path),
             });
-        } else if file_type.is_file() {
+        } else if file_type.is_file() && is_supported_text_file(&name) {
             nodes.push(FileTreeNode {
                 name,
                 path: relative_path,
@@ -206,6 +249,79 @@ fn read_directory(root: &Path, path: &Path) -> Vec<FileTreeNode> {
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn project() -> (TempDir, PathBuf) {
+        let directory = TempDir::new().expect("temporary project");
+        let file = directory.path().join("notes.txt");
+        fs::write(&file, "before").expect("fixture file");
+        (directory, file)
+    }
+
+    #[test]
+    fn rejects_paths_outside_the_project() {
+        let (directory, _) = project();
+        let outside = directory.path().parent().unwrap().join("outside.txt");
+        fs::write(&outside, "secret").expect("outside fixture");
+
+        let result = resolve_project_file(directory.path(), "../outside.txt");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reads_a_project_file() {
+        let (directory, _) = project();
+        assert_eq!(read_file(directory.path(), "notes.txt").unwrap(), "before");
+    }
+
+    #[test]
+    fn saves_a_file_and_preserves_a_backup_with_metadata() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        let timestamp = 1_725_000_000_123_000_000;
+
+        save_file(
+            directory.path(),
+            "notes.txt",
+            "after",
+            backups.path(),
+            timestamp,
+        )
+        .unwrap();
+
+        let backup_dir = backups.path().join(timestamp.to_string());
+        assert_eq!(fs::read_to_string(file).unwrap(), "after");
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("content.bak")).unwrap(),
+            "before"
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(backup_dir.join("metadata.json")).unwrap()).unwrap();
+        assert_eq!(metadata["createdAtUnixMs"], timestamp / 1_000_000);
+        assert!(metadata["originalPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("notes.txt"));
+    }
+
+    #[test]
+    fn tree_excludes_hidden_directories_and_unsupported_files() {
+        let (directory, _) = project();
+        fs::create_dir(directory.path().join(".cache")).unwrap();
+        fs::write(directory.path().join("image.png"), "not really an image").unwrap();
+        fs::write(directory.path().join("README"), "read me").unwrap();
+
+        let nodes = read_directory(directory.path(), directory.path());
+        let names: Vec<_> = nodes.iter().map(|node| node.name.as_str()).collect();
+
+        assert_eq!(names, ["notes.txt", "README"]);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
