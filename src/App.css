@@ -387,3 +387,32 @@ button.tree-node.active {
     min-height: 360px;
   }
 }
+
+.assistant-message,
+.user-message,
+.chat-status,
+.chat-error {
+  margin: 12px 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  white-space: pre-wrap;
+}
+
+.user-message {
+  margin-inline-start: 20px;
+  background: #254f96;
+}
+
+.assistant-message {
+  margin-inline-end: 20px;
+  background: #273752;
+}
+
+.chat-status {
+  color: #aebbd4;
+}
+
+.chat-error {
+  color: #ffb2b2;
+  background: #49262d;
+}

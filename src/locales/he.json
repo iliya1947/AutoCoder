@@ -30,5 +30,8 @@
   "editor.discard_confirm": "לבטל שינויים שלא נשמרו?",
   "files.no_supported_files": "אין קבצים בפרויקט.",
   "editor.loading": "טוען קובץ…",
-  "editor.read_error_title": "לא ניתן לפתוח את הקובץ"
+  "editor.read_error_title": "לא ניתן לפתוח את הקובץ",
+  "chat.ollama": "Ollama",
+  "chat.sending": "Ollama משיב…",
+  "chat.error": "לא ניתן לקבל תשובה. ודא ש-Python ו-Ollama פועלים."
 }
