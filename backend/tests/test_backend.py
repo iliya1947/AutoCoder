@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -8,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
+import main as backend_main
 from main import parse_messages, parse_request
 from provider import Message, OllamaProvider, ProviderError
 
@@ -24,13 +26,35 @@ class FakeResponse:
 
 
 class BackendTests(unittest.TestCase):
-    def test_programmatic_utf8_stdin_preserves_cyrillic_through_parse_request(self):
+    @patch("provider.request.urlopen", return_value=FakeResponse())
+    def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
-        messages = parse_request(json.loads(stdin_bytes.decode("utf-8")))
+        binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(stdin_bytes)})()
 
-        self.assertIn("АвтоКодер_тестовый файл.txt", messages[0].content)
-        self.assertEqual(messages[1].content, "Ответь дословно только содержимым открытого файла")
+        with patch.object(backend_main.sys, "stdin", binary_stdin), patch.object(
+            backend_main.sys, "stdout", io.StringIO()
+        ):
+            self.assertEqual(backend_main.main(), 0)
+
+        sent_body = urlopen.call_args.args[0].data
+        sent_messages = json.loads(sent_body.decode("utf-8"))["messages"]
+        self.assertIn("АвтоКодер_тестовый файл.txt", sent_messages[0]["content"])
+        self.assertEqual(sent_messages[1]["content"], "Ответь дословно только содержимым открытого файла")
+        self.assertIn("АвтоКодер_тестовый файл.txt".encode("utf-8"), sent_body)
+        self.assertIn("Ответь дословно только содержимым открытого файла".encode("utf-8"), sent_body)
+        self.assertNotIn("РћС".encode("utf-8"), sent_body)
         self.assertFalse(byte_report(stdin_bytes)["hasUtf8Bom"])
+
+    def test_invalid_utf8_stdin_uses_existing_error_path(self):
+        binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"\xff")})()
+        stderr = io.StringIO()
+
+        with patch.object(backend_main.sys, "stdin", binary_stdin), patch.object(
+            backend_main.sys, "stderr", stderr
+        ):
+            self.assertEqual(backend_main.main(), 1)
+
+        self.assertIn("utf-8", stderr.getvalue())
 
     def test_stdin_capture_reports_exact_input_bytes(self):
         input_bytes = b'{"messages":[{"role":"user","content":"??????"}]}'
