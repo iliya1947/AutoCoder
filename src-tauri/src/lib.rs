@@ -432,6 +432,17 @@ mod tests {
     }
 
     #[test]
+    fn chat_response_accepts_bomless_utf8_cyrillic_from_backend() {
+        let bytes =
+            r#"{"message":{"role":"assistant","content":"Готово: файл сохранён"}}"#.as_bytes();
+
+        assert!(!bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+        let response: ChatResponse = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(response.message.role, "assistant");
+        assert_eq!(response.message.content, "Готово: файл сохранён");
+    }
+
+    #[test]
     fn rejects_paths_outside_the_project() {
         let (directory, _) = project();
         let outside = directory.path().parent().unwrap().join("outside.txt");

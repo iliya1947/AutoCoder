@@ -90,11 +90,21 @@ def read_stdin_payload() -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def write_stdout_response(answer: Message) -> None:
+    """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
+    response = json.dumps(
+        {"message": answer.__dict__},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    sys.stdout.buffer.write(response)
+    sys.stdout.buffer.flush()
+
+
 def main() -> int:
     try:
         payload = read_stdin_payload()
         answer = OllamaProvider().chat(parse_request(payload))
-        json.dump({"message": answer.__dict__}, sys.stdout, ensure_ascii=False)
+        write_stdout_response(answer)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

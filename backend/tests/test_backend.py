@@ -32,8 +32,10 @@ class BackendTests(unittest.TestCase):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(stdin_bytes)})()
 
+        binary_stdout = type("BinaryStdout", (), {"buffer": io.BytesIO()})()
+
         with patch.object(backend_main.sys, "stdin", binary_stdin), patch.object(
-            backend_main.sys, "stdout", io.StringIO()
+            backend_main.sys, "stdout", binary_stdout
         ):
             self.assertEqual(backend_main.main(), 0)
 
@@ -45,6 +47,28 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Ответь дословно только содержимым открытого файла".encode("utf-8"), sent_body)
         self.assertNotIn("РћС".encode("utf-8"), sent_body)
         self.assertFalse(byte_report(stdin_bytes)["hasUtf8Bom"])
+
+    @patch("main.OllamaProvider.chat", return_value=Message("assistant", "Готово: файл сохранён"))
+    def test_production_stdout_is_bomless_utf8_json_with_cyrillic(self, _chat):
+        stdin_bytes = b'{"messages":[{"role":"user","content":"Save it"}]}'
+        binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(stdin_bytes)})()
+        stdout_bytes = io.BytesIO()
+        binary_stdout = type("BinaryStdout", (), {"buffer": stdout_bytes})()
+
+        with patch.object(backend_main.sys, "stdin", binary_stdin), patch.object(
+            backend_main.sys, "stdout", binary_stdout
+        ):
+            self.assertEqual(backend_main.main(), 0)
+
+        output = stdout_bytes.getvalue()
+        self.assertFalse(output.startswith(b"\xef\xbb\xbf"))
+        self.assertIn("Готово: файл сохранён".encode("utf-8"), output)
+        decoded = output.decode("utf-8")
+        self.assertNotIn("Р“РѕС‚РѕРІРѕ", decoded)
+        self.assertEqual(
+            json.loads(decoded),
+            {"message": {"role": "assistant", "content": "Готово: файл сохранён"}},
+        )
 
     def test_invalid_utf8_stdin_uses_existing_error_path(self):
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"\xff")})()
