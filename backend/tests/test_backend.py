@@ -42,6 +42,40 @@ class BackendTests(unittest.TestCase):
         self.assertIn("print('hi')", messages[0].content)
         self.assertEqual(messages[1], Message("user", "Explain this"))
 
+    @patch("provider.request.urlopen", return_value=FakeResponse())
+    def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "Ответь содержимым открытого файла"}],
+                "context": {
+                    "openFile": {
+                        "path": "АвтоКодер_тестовый файл.txt",
+                        "content": "123 123 123",
+                    }
+                },
+            }
+        )
+
+        OllamaProvider(model="qwen2.5-coder:7b").chat(messages)
+
+        sent = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(
+            sent["messages"],
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "The user currently has this project file open in AutoCoder.\n"
+                        "Use its path and content as context for the user's request.\n"
+                        "Path: АвтоКодер_тестовый файл.txt\n\n"
+                        "<open_file>\n123 123 123\n</open_file>"
+                    ),
+                },
+                {"role": "user", "content": "Ответь содержимым открытого файла"},
+            ],
+        )
+        self.assertFalse(sent["stream"])
+
     def test_rejects_invalid_open_file_context(self):
         with self.assertRaises(ValueError):
             parse_request({"messages": [{"role": "user", "content": "Hi"}], "context": {"openFile": {}}})
