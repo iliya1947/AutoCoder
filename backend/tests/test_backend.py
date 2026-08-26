@@ -54,6 +54,15 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(sent["model"], "test-model")
         self.assertFalse(sent["stream"])
 
+    @patch("provider.request.urlopen", return_value=FakeResponse())
+    def test_ollama_provider_sends_cyrillic_as_utf8(self, urlopen):
+        OllamaProvider(model="test-model").chat([Message("user", "Привет, мир!")])
+
+        body = urlopen.call_args.args[0].data
+        self.assertIn("Привет, мир!".encode("utf-8"), body)
+        self.assertNotIn(b"\\u041f", body)
+        self.assertEqual(json.loads(body)["messages"][0]["content"], "Привет, мир!")
+
 
 if __name__ == "__main__":
     unittest.main()
