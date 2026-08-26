@@ -391,6 +391,34 @@ mod tests {
     }
 
     #[test]
+    fn chat_request_serializes_cyrillic_as_utf8_without_a_bom() {
+        let request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: "Ответь дословно".to_string(),
+            }],
+            context: Some(ChatContext {
+                open_file: OpenFileContext {
+                    path: "АвтоКодер_тестовый файл.txt".to_string(),
+                    content: "123 123 123".to_string(),
+                },
+            }),
+        };
+        let bytes = serde_json::to_vec(&request).unwrap();
+
+        assert!(!bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+        assert!(bytes
+            .windows("Ответь дословно".len())
+            .any(|window| window == "Ответь дословно".as_bytes()));
+        let decoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded["messages"][0]["content"], "Ответь дословно");
+        assert_eq!(
+            decoded["context"]["openFile"]["path"],
+            "АвтоКодер_тестовый файл.txt"
+        );
+    }
+
+    #[test]
     fn rejects_paths_outside_the_project() {
         let (directory, _) = project();
         let outside = directory.path().parent().unwrap().join("outside.txt");

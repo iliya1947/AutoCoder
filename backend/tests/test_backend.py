@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from diagnose_chat import PAYLOAD, byte_report
 from main import parse_messages, parse_request
 from provider import Message, OllamaProvider, ProviderError
 
@@ -22,6 +24,27 @@ class FakeResponse:
 
 
 class BackendTests(unittest.TestCase):
+    def test_programmatic_utf8_stdin_preserves_cyrillic_through_parse_request(self):
+        stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
+        messages = parse_request(json.loads(stdin_bytes.decode("utf-8")))
+
+        self.assertIn("АвтоКодер_тестовый файл.txt", messages[0].content)
+        self.assertEqual(messages[1].content, "Ответь дословно только содержимым открытого файла")
+        self.assertFalse(byte_report(stdin_bytes)["hasUtf8Bom"])
+
+    def test_stdin_capture_reports_exact_input_bytes(self):
+        input_bytes = b'{"messages":[{"role":"user","content":"??????"}]}'
+        completed = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / "diagnose_chat.py"), "--capture-stdin"],
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            check=True,
+        )
+
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["stdin"]["hex"], input_bytes.hex(" "))
+        self.assertEqual(report["stdin"]["utf8Text"], input_bytes.decode())
+
     def test_parses_valid_contract(self):
         self.assertEqual(parse_messages({"messages": [{"role": "user", "content": "Hi"}]}), [Message("user", "Hi")])
 
