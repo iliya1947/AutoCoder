@@ -179,11 +179,16 @@ fn run_chat_backend(backend: &Path, request: &ChatRequest) -> Result<ChatRespons
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if error.is_empty() {
+        let error = if error.is_empty() {
             "The AI backend failed.".to_string()
         } else {
             error
-        });
+        };
+        eprintln!(
+            "AutoCoder chat backend failed with status {}: {}",
+            output.status, error
+        );
+        return Err(error);
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("The AI backend returned an invalid response: {error}"))

@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import unittest
+from urllib import error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -108,6 +109,21 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Do not assume their contents", messages[0].content)
         self.assertEqual(messages[1], Message("user", "Where are the tests?"))
 
+    def test_accepts_project_with_no_entries_and_open_file_together(self):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "Explain this"}],
+                "context": {
+                    "project": {"name": "Empty project", "entries": []},
+                    "openFile": {"path": "README", "content": "draft"},
+                },
+            }
+        )
+
+        self.assertEqual([message.role for message in messages], ["system", "system", "user"])
+        self.assertIn("Project: Empty project", messages[0].content)
+        self.assertIn("Path: README", messages[1].content)
+
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
         messages = parse_request(
@@ -153,6 +169,19 @@ class BackendTests(unittest.TestCase):
         sent = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(sent["model"], "test-model")
         self.assertFalse(sent["stream"])
+
+    @patch("provider.request.urlopen")
+    def test_ollama_http_error_preserves_response_details(self, urlopen):
+        urlopen.side_effect = error.HTTPError(
+            "http://127.0.0.1:11434/api/chat",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":"prompt is too long"}'),
+        )
+
+        with self.assertRaisesRegex(ProviderError, 'HTTP 400.*prompt is too long'):
+            OllamaProvider(model="test-model").chat([Message("user", "Hi")])
 
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_ollama_provider_sends_cyrillic_as_utf8(self, urlopen):
