@@ -49,13 +49,19 @@ def parse_request(payload: Any) -> list[Message]:
     return [file_message, *messages]
 
 
+def read_stdin_payload() -> Any:
+    """Read the Tauri bridge contract without consulting the host text encoding."""
+    raw = sys.stdin.buffer.read()
+    return json.loads(raw.decode("utf-8"))
+
+
 def main() -> int:
     try:
-        payload = json.load(sys.stdin)
+        payload = read_stdin_payload()
         answer = OllamaProvider().chat(parse_request(payload))
         json.dump({"message": answer.__dict__}, sys.stdout, ensure_ascii=False)
         return 0
-    except (ValueError, json.JSONDecodeError, ProviderError) as exc:
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
