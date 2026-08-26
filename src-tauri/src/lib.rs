@@ -76,13 +76,20 @@ struct ChatRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatContext {
-    open_file: OpenFileContext,
+    open_file: Option<OpenFileContext>,
+    project: Option<ProjectContext>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct OpenFileContext {
     path: String,
     content: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ProjectContext {
+    name: String,
+    entries: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -398,10 +405,11 @@ mod tests {
                 content: "Ответь дословно".to_string(),
             }],
             context: Some(ChatContext {
-                open_file: OpenFileContext {
+                open_file: Some(OpenFileContext {
                     path: "АвтоКодер_тестовый файл.txt".to_string(),
                     content: "123 123 123".to_string(),
-                },
+                }),
+                project: None,
             }),
         };
         let bytes = serde_json::to_vec(&request).unwrap();

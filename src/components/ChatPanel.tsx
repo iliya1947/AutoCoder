@@ -1,23 +1,40 @@
 import { FormEvent, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
-import { OpenedFile } from "../types/project";
+import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 type ChatResponse = { message: ChatMessage };
 export type ChatRequest = {
   messages: ChatMessage[];
-  context: { openFile: { path: string; content: string } } | null;
+  context: {
+    openFile?: { path: string; content: string };
+    project?: { name: string; entries: string[] };
+  } | null;
 };
 
-export function buildChatRequest(messages: ChatMessage[], openFile: OpenedFile | null): ChatRequest {
+function projectEntries(nodes: ProjectNode[]): string[] {
+  return nodes.flatMap((node) => [
+    `${node.kind === "directory" ? "directory" : "file"}: ${node.path}`,
+    ...(node.kind === "directory" ? projectEntries(node.children) : []),
+  ]);
+}
+
+export function buildChatRequest(
+  messages: ChatMessage[],
+  openFile: OpenedFile | null,
+  project: ProjectTree | null,
+): ChatRequest {
+  const context: NonNullable<ChatRequest["context"]> = {};
+  if (openFile) context.openFile = { path: openFile.path, content: openFile.content };
+  if (project) context.project = { name: project.name, entries: projectEntries(project.children) };
   return {
     messages,
-    context: openFile ? { openFile: { path: openFile.path, content: openFile.content } } : null,
+    context: Object.keys(context).length > 0 ? context : null,
   };
 }
 
-export function ChatPanel({ openFile }: { openFile: OpenedFile | null }) {
+export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; project: ProjectTree | null }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -35,7 +52,7 @@ export function ChatPanel({ openFile }: { openFile: OpenedFile | null }) {
     setError(false);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
-        request: buildChatRequest(nextMessages, openFile),
+        request: buildChatRequest(nextMessages, openFile, project),
       });
       setMessages((current) => [...current, response.message]);
     } catch {

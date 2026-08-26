@@ -10,7 +10,7 @@ describe("chat request", () => {
       path: "src/main.ts",
       content: "const current = true;",
       savedContent: "const current = false;",
-    });
+    }, null);
 
     expect(request).toEqual({
       messages,
@@ -18,7 +18,21 @@ describe("chat request", () => {
     });
   });
 
-  it("sends no context when no file is open", () => {
-    expect(buildChatRequest(messages, null)).toEqual({ messages, context: null });
+  it("includes the read-only project structure", () => {
+    expect(buildChatRequest(messages, null, {
+      name: "AutoCoder",
+      children: [{
+        name: "src", path: "src", kind: "directory", children: [
+          { name: "main.ts", path: "src/main.ts", kind: "file", children: [] },
+        ],
+      }],
+    })).toEqual({
+      messages,
+      context: { project: { name: "AutoCoder", entries: ["directory: src", "file: src/main.ts"] } },
+    });
+  });
+
+  it("sends no context when no project or file is open", () => {
+    expect(buildChatRequest(messages, null, null)).toEqual({ messages, context: null });
   });
 });

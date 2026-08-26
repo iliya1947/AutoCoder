@@ -61,7 +61,7 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSave={handleSave} />
-    <ChatPanel openFile={openFile} />
+    <ChatPanel openFile={openFile} project={project} />
   </main></div>;
 }
 
