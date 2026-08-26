@@ -16,6 +16,13 @@ Path: {path}
 <open_file>
 {content}
 </open_file>"""
+PROJECT_PROMPT = """This is the read-only structure of the project currently open in AutoCoder.
+Use it to understand which files and directories exist. Do not assume their contents.
+Project: {name}
+
+<project_structure>
+{entries}
+</project_structure>"""
 
 
 def parse_messages(payload: Any) -> list[Message]:
@@ -39,14 +46,42 @@ def parse_request(payload: Any) -> list[Message]:
     context = payload.get("context")
     if context is None:
         return messages
-    if not isinstance(context, dict) or not isinstance(context.get("openFile"), dict):
-        raise ValueError("Context must contain an openFile object.")
-    open_file = context["openFile"]
-    path, content = open_file.get("path"), open_file.get("content")
-    if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
-        raise ValueError("Open file context needs a path and text content.")
-    file_message = Message(role="system", content=OPEN_FILE_PROMPT.format(path=path, content=content))
-    return [file_message, *messages]
+    if not isinstance(context, dict):
+        raise ValueError("Context must be an object.")
+
+    context_messages: list[Message] = []
+    project = context.get("project")
+    if project is not None:
+        if not isinstance(project, dict):
+            raise ValueError("Project context must be an object.")
+        name, entries = project.get("name"), project.get("entries")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(entries, list)
+            or any(not isinstance(entry, str) or not entry.strip() for entry in entries)
+        ):
+            raise ValueError("Project context needs a name and text entries.")
+        context_messages.append(Message(
+            role="system",
+            content=PROJECT_PROMPT.format(name=name, entries="\n".join(entries)),
+        ))
+
+    open_file = context.get("openFile")
+    if open_file is not None:
+        if not isinstance(open_file, dict):
+            raise ValueError("Open file context must be an object.")
+        path, content = open_file.get("path"), open_file.get("content")
+        if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
+            raise ValueError("Open file context needs a path and text content.")
+        context_messages.append(Message(
+            role="system",
+            content=OPEN_FILE_PROMPT.format(path=path, content=content),
+        ))
+
+    if not context_messages:
+        raise ValueError("Context must contain an openFile or project object.")
+    return [*context_messages, *messages]
 
 
 def read_stdin_payload() -> Any:

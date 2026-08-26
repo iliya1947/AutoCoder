@@ -89,6 +89,25 @@ class BackendTests(unittest.TestCase):
         self.assertIn("print('hi')", messages[0].content)
         self.assertEqual(messages[1], Message("user", "Explain this"))
 
+    def test_adds_read_only_project_structure_as_system_context(self):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "Where are the tests?"}],
+                "context": {
+                    "project": {
+                        "name": "AutoCoder",
+                        "entries": ["directory: backend", "file: backend/main.py"],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(messages[0].role, "system")
+        self.assertIn("Project: AutoCoder", messages[0].content)
+        self.assertIn("file: backend/main.py", messages[0].content)
+        self.assertIn("Do not assume their contents", messages[0].content)
+        self.assertEqual(messages[1], Message("user", "Where are the tests?"))
+
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
         messages = parse_request(
