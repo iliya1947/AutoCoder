@@ -34,7 +34,8 @@ class OllamaProvider:
                 "model": self.model,
                 "messages": [message.__dict__ for message in messages],
                 "stream": False,
-            }
+            },
+            ensure_ascii=False,
         ).encode("utf-8")
         http_request = request.Request(
             self.url, data=body, headers={"Content-Type": "application/json"}, method="POST"
