@@ -44,7 +44,9 @@ class OllamaProvider:
             with request.urlopen(http_request, timeout=120) as response:
                 result = json.load(response)
         except error.HTTPError as exc:
-            raise ProviderError(f"Ollama returned HTTP {exc.code}.") from exc
+            details = exc.read().decode("utf-8", errors="replace").strip()
+            suffix = f" Response: {details}" if details else ""
+            raise ProviderError(f"Ollama returned HTTP {exc.code}.{suffix}") from exc
         except (error.URLError, TimeoutError) as exc:
             raise ProviderError("Cannot connect to Ollama. Start Ollama and verify its address.") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

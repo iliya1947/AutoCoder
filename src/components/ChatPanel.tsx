@@ -39,7 +39,7 @@ export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -49,14 +49,15 @@ export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; 
     setMessages(nextMessages);
     setMessage("");
     setSending(true);
-    setError(false);
+    setError(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(nextMessages, openFile, project),
       });
       setMessages((current) => [...current, response.message]);
-    } catch {
-      setError(true);
+    } catch (error) {
+      console.error("send_chat_message failed", error);
+      setError(error instanceof Error ? error.message : String(error));
     } finally {
       setSending(false);
     }
@@ -67,7 +68,10 @@ export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; 
     <div className="chat-messages" aria-live="polite">
       {messages.length === 0 && !sending ? <p className="empty-chat">{t("chat.empty")}</p> : messages.map((item, index) => <p className={`${item.role}-message`} key={`${item.role}-${index}`}>{item.content}</p>)}
       {sending && <p className="chat-status">{t("chat.sending")}</p>}
-      {error && <p className="chat-error" role="alert">{t("chat.error")}</p>}
+      {error && <p className="chat-error" role="alert">
+        {t("chat.error")}
+        {import.meta.env.DEV && <><br /><code>{error}</code></>}
+      </p>}
     </div>
     <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending} /><button type="submit" disabled={!message.trim() || sending}>{t("chat.send")}</button></form>
   </aside>;
