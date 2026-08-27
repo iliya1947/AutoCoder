@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, ChatMessage } from "./ChatPanel";
+import { buildChatRequest, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -48,5 +48,42 @@ describe("chat request", () => {
       path: "src/main.ts",
       content: "answer = 42",
     });
+  });
+
+  it("does not resend selection-derived history after the selection is cleared", () => {
+    const oldHistory: ChatMessage[] = [
+      { role: "user", content: "Что выделено?" },
+      { role: "assistant", content: "файл номер 2" },
+    ];
+    const file = { name: "two.txt", path: "two.txt", content: "Тестовый файл номер 2", savedContent: "Тестовый файл номер 2" };
+    const previousKey = chatContextKey(file, "файл номер 2", null);
+    const currentKey = chatContextKey(file, null, null);
+
+    const request = buildChatRequest(
+      messagesForCurrentContext(oldHistory, "Что сейчас выделено?", previousKey, currentKey),
+      file,
+      null,
+      null,
+    );
+
+    expect(request.context?.selection).toBeUndefined();
+    expect(request.messages).toEqual([{ role: "user", content: "Что сейчас выделено?" }]);
+    expect(JSON.stringify(request.messages)).not.toContain("файл номер 2");
+  });
+
+  it("does not resend selection-derived history after another file is opened", () => {
+    const first = { name: "one.txt", path: "one.txt", content: "old", savedContent: "old" };
+    const second = { name: "two.txt", path: "two.txt", content: "new", savedContent: "new" };
+    const history: ChatMessage[] = [{ role: "assistant", content: "old selection" }];
+    const requestMessages = messagesForCurrentContext(
+      history,
+      "Что выделено?",
+      chatContextKey(first, "old selection", null),
+      chatContextKey(second, null, null),
+    );
+
+    const request = buildChatRequest(requestMessages, second, null, null);
+    expect(request.context?.selection).toBeUndefined();
+    expect(request.messages).toEqual([{ role: "user", content: "Что выделено?" }]);
   });
 });
