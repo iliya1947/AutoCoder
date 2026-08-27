@@ -35,6 +35,7 @@
   "chat.sending": "Ollama is responding…",
   "chat.error": "Unable to get a response. Make sure Python and Ollama are running.",
   "chat.proposal": "Proposed replacement",
+  "chat.proposal_diff": "Line-by-line proposed changes",
   "chat.apply_proposal": "Apply to editor",
   "chat.proposal_stale": "The file changed after this proposal. Ask AI for a new proposal."
 }

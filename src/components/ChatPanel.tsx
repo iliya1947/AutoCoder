@@ -5,6 +5,7 @@ import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type FileProposal = { path: string; content: string; originalContent: string };
+export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
@@ -34,6 +35,47 @@ export function messagesForCurrentContext(
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
   return openFile?.path === proposal.path && openFile.content === proposal.originalContent;
+}
+
+export function buildLineDiff(originalContent: string, proposedContent: string): DiffLine[] {
+  const original = originalContent === "" ? [] : originalContent.split("\n");
+  const proposed = proposedContent === "" ? [] : proposedContent.split("\n");
+
+  // Keep rendering predictable for unusually large proposals instead of building
+  // an unbounded LCS table in the UI thread.
+  if (original.length * proposed.length > 1_000_000) {
+    return [
+      ...original.map((content, index) => ({ kind: "removed" as const, content, oldLine: index + 1, newLine: null })),
+      ...proposed.map((content, index) => ({ kind: "added" as const, content, oldLine: null, newLine: index + 1 })),
+    ];
+  }
+
+  const lengths = Array.from({ length: original.length + 1 }, () => new Uint32Array(proposed.length + 1));
+  for (let oldIndex = original.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = proposed.length - 1; newIndex >= 0; newIndex -= 1) {
+      lengths[oldIndex][newIndex] = original[oldIndex] === proposed[newIndex]
+        ? lengths[oldIndex + 1][newIndex + 1] + 1
+        : Math.max(lengths[oldIndex + 1][newIndex], lengths[oldIndex][newIndex + 1]);
+    }
+  }
+
+  const result: DiffLine[] = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+  while (oldIndex < original.length || newIndex < proposed.length) {
+    if (oldIndex < original.length && newIndex < proposed.length && original[oldIndex] === proposed[newIndex]) {
+      result.push({ kind: "context", content: original[oldIndex], oldLine: oldIndex + 1, newLine: newIndex + 1 });
+      oldIndex += 1;
+      newIndex += 1;
+    } else if (newIndex < proposed.length && (oldIndex === original.length || lengths[oldIndex][newIndex + 1] >= lengths[oldIndex + 1][newIndex])) {
+      result.push({ kind: "added", content: proposed[newIndex], oldLine: null, newLine: newIndex + 1 });
+      newIndex += 1;
+    } else {
+      result.push({ kind: "removed", content: original[oldIndex], oldLine: oldIndex + 1, newLine: null });
+      oldIndex += 1;
+    }
+  }
+  return result;
 }
 
 function projectEntries(nodes: ProjectNode[]): string[] {
@@ -108,7 +150,14 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
       </p>}
       {proposal && <section className="file-proposal">
         <strong>{t("chat.proposal")}: {proposal.path}</strong>
-        <div className="proposal-diff"><pre className="removed">{proposal.originalContent}</pre><pre className="added">{proposal.content}</pre></div>
+        <div className="proposal-diff" role="table" aria-label={t("chat.proposal_diff")}>
+          {buildLineDiff(proposal.originalContent, proposal.content).map((line, index) => <div className={`diff-line ${line.kind}`} role="row" key={`${line.kind}-${index}`}>
+            <span className="diff-line-number" role="cell">{line.oldLine ?? ""}</span>
+            <span className="diff-line-number" role="cell">{line.newLine ?? ""}</span>
+            <span className="diff-marker" aria-hidden="true">{line.kind === "added" ? "+" : line.kind === "removed" ? "−" : " "}</span>
+            <code role="cell">{line.content || " "}</code>
+          </div>)}
+        </div>
         {canApplyProposal(openFile, proposal)
           ? <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t("chat.apply_proposal")}</button>
           : <p className="proposal-stale">{t("chat.proposal_stale")}</p>}

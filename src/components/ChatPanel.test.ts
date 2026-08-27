@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, canApplyProposal, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -112,5 +112,21 @@ describe("chat request", () => {
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "old" }, proposal)).toBe(true);
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal({ name: "other.ts", path: "src/other.ts", content: "old", savedContent: "old" }, proposal)).toBe(false);
+  });
+
+  it("builds a line diff with stable old and new line numbers", () => {
+    expect(buildLineDiff("first\nold\nlast", "first\nnew\nlast\nextra")).toEqual([
+      { kind: "context", content: "first", oldLine: 1, newLine: 1 },
+      { kind: "added", content: "new", oldLine: null, newLine: 2 },
+      { kind: "removed", content: "old", oldLine: 2, newLine: null },
+      { kind: "context", content: "last", oldLine: 3, newLine: 3 },
+      { kind: "added", content: "extra", oldLine: null, newLine: 4 },
+    ]);
+  });
+
+  it("represents an empty-file replacement without a phantom line", () => {
+    expect(buildLineDiff("", "created")).toEqual([
+      { kind: "added", content: "created", oldLine: null, newLine: 1 },
+    ]);
   });
 });
