@@ -14,7 +14,10 @@ describe("chat request", () => {
 
     expect(request).toEqual({
       messages,
-      context: { openFile: { path: "src/main.ts", content: "const current = true;" } },
+      context: {
+        openFile: { path: "src/main.ts", content: "const current = true;" },
+        selection: { state: "none" },
+      },
     });
   });
 
@@ -45,8 +48,23 @@ describe("chat request", () => {
     };
 
     expect(buildChatRequest(messages, file, "answer = 42", null).context?.selection).toEqual({
+      state: "active",
       path: "src/main.ts",
       content: "answer = 42",
+    });
+  });
+
+  it("explicitly distinguishes no active selection from open-file content", () => {
+    const file = {
+      name: "two.txt",
+      path: "two.txt",
+      content: "Тестовый файл номер 2",
+      savedContent: "Тестовый файл номер 2",
+    };
+
+    expect(buildChatRequest(messages, file, null, null).context).toEqual({
+      openFile: { path: "two.txt", content: "Тестовый файл номер 2" },
+      selection: { state: "none" },
     });
   });
 
@@ -66,7 +84,8 @@ describe("chat request", () => {
       null,
     );
 
-    expect(request.context?.selection).toBeUndefined();
+    expect(request.context?.selection).toEqual({ state: "none" });
+    expect(request.context?.openFile?.content).toBe("Тестовый файл номер 2");
     expect(request.messages).toEqual([{ role: "user", content: "Что сейчас выделено?" }]);
     expect(JSON.stringify(request.messages)).not.toContain("файл номер 2");
   });
@@ -83,7 +102,7 @@ describe("chat request", () => {
     );
 
     const request = buildChatRequest(requestMessages, second, null, null);
-    expect(request.context?.selection).toBeUndefined();
+    expect(request.context?.selection).toEqual({ state: "none" });
     expect(request.messages).toEqual([{ role: "user", content: "Что выделено?" }]);
   });
 });
