@@ -62,12 +62,15 @@ export function buildLineDiff(originalContent: string, proposedContent: string):
   const result: DiffLine[] = [];
   let oldIndex = 0;
   let newIndex = 0;
+  // The table stores suffix lengths, so reconstruction also moves forward.
+  // Prefer a removal when both moves preserve the same LCS: replacements are
+  // then rendered in the conventional removed-before-added order.
   while (oldIndex < original.length || newIndex < proposed.length) {
     if (oldIndex < original.length && newIndex < proposed.length && original[oldIndex] === proposed[newIndex]) {
       result.push({ kind: "context", content: original[oldIndex], oldLine: oldIndex + 1, newLine: newIndex + 1 });
       oldIndex += 1;
       newIndex += 1;
-    } else if (newIndex < proposed.length && (oldIndex === original.length || lengths[oldIndex][newIndex + 1] >= lengths[oldIndex + 1][newIndex])) {
+    } else if (newIndex < proposed.length && (oldIndex === original.length || lengths[oldIndex][newIndex + 1] > lengths[oldIndex + 1][newIndex])) {
       result.push({ kind: "added", content: proposed[newIndex], oldLine: null, newLine: newIndex + 1 });
       newIndex += 1;
     } else {

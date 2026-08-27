@@ -117,10 +117,37 @@ describe("chat request", () => {
   it("builds a line diff with stable old and new line numbers", () => {
     expect(buildLineDiff("first\nold\nlast", "first\nnew\nlast\nextra")).toEqual([
       { kind: "context", content: "first", oldLine: 1, newLine: 1 },
-      { kind: "added", content: "new", oldLine: null, newLine: 2 },
       { kind: "removed", content: "old", oldLine: 2, newLine: null },
+      { kind: "added", content: "new", oldLine: null, newLine: 2 },
       { kind: "context", content: "last", oldLine: 3, newLine: 3 },
       { kind: "added", content: "extra", oldLine: null, newLine: 4 },
+    ]);
+  });
+
+  it("keeps unchanged Russian lines as context while reconstructing an LCS diff", () => {
+    const original = [
+      "Первая строка",
+      "Вторая строка",
+      "Третья строка",
+      "Четвертая строка",
+      "Пятая строка",
+    ].join("\n");
+    const proposed = [
+      "Первая строка",
+      "Вторая строка изменена",
+      "Третья строка",
+      "Пятая строка",
+      "Шестая строка",
+    ].join("\n");
+
+    expect(buildLineDiff(original, proposed)).toEqual([
+      { kind: "context", content: "Первая строка", oldLine: 1, newLine: 1 },
+      { kind: "removed", content: "Вторая строка", oldLine: 2, newLine: null },
+      { kind: "added", content: "Вторая строка изменена", oldLine: null, newLine: 2 },
+      { kind: "context", content: "Третья строка", oldLine: 3, newLine: 3 },
+      { kind: "removed", content: "Четвертая строка", oldLine: 4, newLine: null },
+      { kind: "context", content: "Пятая строка", oldLine: 5, newLine: 4 },
+      { kind: "added", content: "Шестая строка", oldLine: null, newLine: 5 },
     ]);
   });
 
