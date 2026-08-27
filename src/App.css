@@ -439,6 +439,17 @@ button.tree-node.active {
 .diff-line.added .diff-marker { color: #7ee2a8; }
 .proposal-stale { color: #ffcf8a; }
 
+.proposal-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.secondary-button {
+  border-color: #506078;
+  background: #26344a;
+}
+
 .user-message {
   margin-inline-start: 20px;
   background: #254f96;
