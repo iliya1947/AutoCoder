@@ -1,9 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: "disable-monaco-loader-cdn-fallback",
+      enforce: "pre",
+      transform(code, id) {
+        if (!id.includes("@monaco-editor/loader") || !id.includes("config")) return;
+        return code.replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/monaco-editor@[^/]+\/min\/vs/g, "/monaco-editor/vs");
+      },
+    },
+  ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

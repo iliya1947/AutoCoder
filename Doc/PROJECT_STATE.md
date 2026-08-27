@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-27 августа 2026 (обновлено после укрепления desktop-конфигурации).
+27 августа 2026 (обновлено после локализации Monaco и фиксации offline-first архитектуры).
 
 ## Текущий этап
 
@@ -11,6 +11,14 @@
 Файловый сценарий и backup фактически подтверждены на Windows. Чат передаёт историю, текущий текст открытого файла и read-only структуру проекта через Tauri в минимальный Python-backend и получает ответ локального Ollama; инструменты и постоянное хранение истории пока не подключены.
 
 ## Что подтверждено как сделанное
+
+### Полностью локальный frontend runtime (27 августа 2026)
+- Offline-first закреплён как обязательное архитектурное требование: установленный AutoCoder не зависит от интернета; исключение составляют только явно настроенные AI/API-провайдеры через backend/provider layer. Локальный Ollama остаётся полностью офлайн-сценарием.
+- Monaco 0.53.0 подключён из установленного ESM-пакета через поддерживаемую `loader.config({ monaco })` интеграцию `@monaco-editor/react` 4.7.0 с Vite. CDN AMD loader больше не используется.
+- Editor, JSON, CSS, HTML и TypeScript/JavaScript workers импортируются через Vite `?worker`, собираются в локальные hashed assets и выбираются через `MonacoEnvironment.getWorker`.
+- Из frontend удалена шаблонная ссылка на отсутствующий Vite icon. Других runtime-загрузок remote scripts, styles, fonts, icons или локализаций не найдено. URL npm/Cargo lock-файлов и metadata относятся к build-time, а локальный Ollama URL — к разрешённому provider layer.
+- CSP не получила внешних доменов: `connect-src` по-прежнему разрешает только Tauri IPC; дополнительно запрещены objects и forms, ограничен base URI. Добавлены source-тест и post-build проверка production assets на CDN references.
+- `npm test`, `npm run build`, JSON/CSP Tauri-конфигурация и Cargo metadata проверены в Linux. Следующая задача не меняется: ручная Windows-проверка установленной desktop-сборки при физически отключённой сети; не переходить к следующему этапу до неё.
 
 ### Desktop-конфигурация перед будущей сборкой (27 августа 2026)
 - Шаблонный Tauri identifier `com.tauri.dev` заменён на постоянный `com.iliya1947.autocoder`; Cargo metadata теперь содержит фактическое описание, автора и URL репозитория, а публикация внутреннего desktop crate в crates.io явно отключена.
