@@ -5,11 +5,14 @@ import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 type ChatResponse = { message: ChatMessage };
+type SelectionContext =
+  | { state: "active"; path: string; content: string }
+  | { state: "none" };
 export type ChatRequest = {
   messages: ChatMessage[];
   context: {
     openFile?: { path: string; content: string };
-    selection?: { path: string; content: string };
+    selection?: SelectionContext;
     project?: { name: string; entries: string[] };
   } | null;
 };
@@ -43,7 +46,11 @@ export function buildChatRequest(
 ): ChatRequest {
   const context: NonNullable<ChatRequest["context"]> = {};
   if (openFile) context.openFile = { path: openFile.path, content: openFile.content };
-  if (openFile && selection) context.selection = { path: openFile.path, content: selection };
+  if (openFile) {
+    context.selection = selection
+      ? { state: "active", path: openFile.path, content: selection }
+      : { state: "none" };
+  }
   if (project) context.project = { name: project.name, entries: projectEntries(project.children) };
   return {
     messages,

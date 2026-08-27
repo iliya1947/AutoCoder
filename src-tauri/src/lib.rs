@@ -88,9 +88,10 @@ struct OpenFileContext {
 }
 
 #[derive(Deserialize, Serialize)]
-struct SelectionContext {
-    path: String,
-    content: String,
+#[serde(tag = "state", rename_all = "camelCase")]
+enum SelectionContext {
+    Active { path: String, content: String },
+    None,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -421,7 +422,7 @@ mod tests {
                     path: "АвтоКодер_тестовый файл.txt".to_string(),
                     content: "123 123 123".to_string(),
                 }),
-                selection: None,
+                selection: Some(SelectionContext::None),
                 project: None,
             }),
         };
@@ -437,6 +438,7 @@ mod tests {
             decoded["context"]["openFile"]["path"],
             "АвтоКодер_тестовый файл.txt"
         );
+        assert_eq!(decoded["context"]["selection"]["state"], "none");
     }
 
     #[test]
@@ -448,6 +450,28 @@ mod tests {
         let response: ChatResponse = serde_json::from_slice(bytes).unwrap();
         assert_eq!(response.message.role, "assistant");
         assert_eq!(response.message.content, "Готово: файл сохранён");
+    }
+
+    #[test]
+    fn chat_request_distinguishes_active_and_absent_editor_selection() {
+        let active: ChatRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"What is selected?"}],"context":{"selection":{"state":"active","path":"two.txt","content":"123"}}}"#,
+        )
+        .unwrap();
+        let none: ChatRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"What is selected?"}],"context":{"selection":{"state":"none"}}}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            active.context.unwrap().selection,
+            Some(SelectionContext::Active { path, content })
+                if path == "two.txt" && content == "123"
+        ));
+        assert!(matches!(
+            none.context.unwrap().selection,
+            Some(SelectionContext::None)
+        ));
     }
 
     #[test]

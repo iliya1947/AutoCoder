@@ -154,6 +154,7 @@ class BackendTests(unittest.TestCase):
                 "messages": [{"role": "user", "content": "Explain the selection"}],
                 "context": {
                     "selection": {
+                        "state": "active",
                         "path": "src/main.py",
                         "content": "result = calculate()",
                     }
@@ -175,6 +176,23 @@ class BackendTests(unittest.TestCase):
                     "context": {"selection": {"path": "src/main.py", "content": ""}},
                 }
             )
+
+    def test_explicit_no_selection_is_distinct_from_open_file_content(self):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "What is selected?"}],
+                "context": {
+                    "openFile": {"path": "two.txt", "content": "Тестовый файл номер 2"},
+                    "selection": {"state": "none"},
+                },
+            }
+        )
+
+        self.assertEqual([message.role for message in messages], ["system", "system", "user"])
+        self.assertIn("<open_file>\nТестовый файл номер 2\n</open_file>", messages[0].content)
+        self.assertIn("no active text selection", messages[1].content)
+        self.assertIn("not to the open file content", messages[1].content)
+        self.assertNotIn("Тестовый файл номер 2", messages[1].content)
 
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):

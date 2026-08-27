@@ -30,6 +30,8 @@ Path: {path}
 <selection>
 {content}
 </selection>"""
+NO_SELECTION_PROMPT = """There is currently no active text selection in the AutoCoder editor.
+Treat questions about what is selected as referring to this selection state, not to the open file content."""
 
 
 def parse_messages(payload: Any) -> list[Message]:
@@ -90,18 +92,25 @@ def parse_request(payload: Any) -> list[Message]:
     if selection is not None:
         if not isinstance(selection, dict):
             raise ValueError("Selection context must be an object.")
-        path, content = selection.get("path"), selection.get("content")
-        if (
-            not isinstance(path, str)
-            or not path.strip()
-            or not isinstance(content, str)
-            or not content
-        ):
-            raise ValueError("Selection context needs a path and non-empty text content.")
-        context_messages.append(Message(
-            role="system",
-            content=SELECTION_PROMPT.format(path=path, content=content),
-        ))
+        state = selection.get("state")
+        if state == "none" and set(selection) == {"state"}:
+            context_messages.append(Message(role="system", content=NO_SELECTION_PROMPT))
+        elif state == "active":
+            path, content = selection.get("path"), selection.get("content")
+            if (
+                set(selection) != {"state", "path", "content"}
+                or not isinstance(path, str)
+                or not path.strip()
+                or not isinstance(content, str)
+                or not content
+            ):
+                raise ValueError("Active selection context needs a path and non-empty text content.")
+            context_messages.append(Message(
+                role="system",
+                content=SELECTION_PROMPT.format(path=path, content=content),
+            ))
+        else:
+            raise ValueError("Selection context needs an active or none state.")
 
     if not context_messages:
         raise ValueError("Context must contain an openFile, selection, or project object.")
