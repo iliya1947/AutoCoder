@@ -12,6 +12,12 @@
 
 ## Что подтверждено как сделанное
 
+### Разделение production- и test-only TypeScript-проверок (27 августа 2026)
+- Packaged Windows build была заблокирована до запуска нативной Tauri-сборки: `beforeBuildCommand` запускала `npm run build`, а production `tsc` включал Node-based тест `src/offlineRuntime.test.ts` из-за общего `include: ["src"]`.
+- Test-файлы `*.test.ts` и `*.test.tsx` исключены только из production `tsconfig.json`. Browser/Vite-конфигурация не получила глобальные Node types, strict mode не ослаблен, а offline regression test сохранён и по-прежнему обнаруживается Vitest в его test environment.
+- `npm test`, `npm run build`, `npm run check:offline`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` и `git diff --check` успешно выполнены в Linux. `npm run tauri build` теперь успешно проходит `beforeBuildCommand` и доходит до нативной Cargo-сборки, которая в текущем контейнере ожидаемо останавливается из-за отсутствия системной библиотеки `glib-2.0 >= 2.70`.
+- Следующий ручной шаг — повторить packaged Windows build и проверить установленное desktop-приложение; к следующему функциональному этапу до этой проверки не переходить.
+
 ### Полностью локальный frontend runtime (27 августа 2026)
 - Offline-first закреплён как обязательное архитектурное требование: установленный AutoCoder не зависит от интернета; исключение составляют только явно настроенные AI/API-провайдеры через backend/provider layer. Локальный Ollama остаётся полностью офлайн-сценарием.
 - Monaco 0.53.0 подключён из установленного ESM-пакета через поддерживаемую `loader.config({ monaco })` интеграцию `@monaco-editor/react` 4.7.0 с Vite. CDN AMD loader больше не используется.
