@@ -37,5 +37,6 @@
   "chat.proposal": "Proposed replacement",
   "chat.proposal_diff": "Line-by-line proposed changes",
   "chat.apply_proposal": "Apply to editor",
+  "chat.dismiss_proposal": "Dismiss proposal",
   "chat.proposal_stale": "The file changed after this proposal. Ask AI for a new proposal."
 }

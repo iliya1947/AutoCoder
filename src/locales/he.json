@@ -37,5 +37,6 @@
   "chat.proposal": "החלפה מוצעת",
   "chat.proposal_diff": "שינויים מוצעים לפי שורה",
   "chat.apply_proposal": "החל בעורך",
+  "chat.dismiss_proposal": "דחה את ההצעה",
   "chat.proposal_stale": "הקובץ השתנה לאחר ההצעה. בקש הצעה חדשה מהבינה המלאכותית."
 }

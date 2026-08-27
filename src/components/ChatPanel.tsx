@@ -128,6 +128,10 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
     setMessage("");
     setSending(true);
     setError(null);
+    // A proposal belongs to the response that produced it. Once a new request
+    // starts, remove the old review action so it cannot be applied while a
+    // different answer is pending.
+    setProposal(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
@@ -162,8 +166,14 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
           </div>)}
         </div>
         {canApplyProposal(openFile, proposal)
-          ? <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t("chat.apply_proposal")}</button>
-          : <p className="proposal-stale">{t("chat.proposal_stale")}</p>}
+          ? <div className="proposal-actions">
+            <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t("chat.apply_proposal")}</button>
+            <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
+          </div>
+          : <>
+            <p className="proposal-stale">{t("chat.proposal_stale")}</p>
+            <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
+          </>}
       </section>}
     </div>
     <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending} /><button type="submit" disabled={!message.trim() || sending}>{t("chat.send")}</button></form>
