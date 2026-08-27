@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-27 августа 2026 (обновлено после локализации Monaco и фиксации offline-first архитектуры).
+27 августа 2026 (обновлено после устранения зависимости packaged AI backend от системного Python).
 
 ## Текущий этап
 
@@ -11,6 +11,16 @@
 Файловый сценарий и backup фактически подтверждены на Windows. Чат передаёт историю, текущий текст открытого файла и read-only структуру проекта через Tauri в минимальный Python-backend и получает ответ локального Ollama; инструменты и постоянное хранение истории пока не подключены.
 
 ## Что подтверждено как сделанное
+
+### Автономный Python runtime для packaged Windows-приложения (27 августа 2026)
+- Причина ошибки AI Chat в установленном приложении подтверждена на Windows: Tauri запускал неявную команду `python`, поэтому результат зависел от системного Python, `PATH` и Windows App Execution Alias. Ручной `AUTOCODER_PYTHON` подтверждал исправность неизменённого `backend/main.py` и JSON-over-stdin/stdout контракта.
+- В соответствии с актуальной документацией Tauri 2 runtime оформлен как bundle resource, а его подготовка выполняется hook-командой `beforeBundleCommand`. Для Windows используется официальный CPython 3.10.11 embeddable package — предназначенный для приватной поставки внутри другого приложения и изолированный от установленных в системе пакетов и реестра.
+- Build-time скрипт загружает официальный `python-3.10.11-embed-amd64.zip`, обязательно проверяет закреплённый SHA-256 и распаковывает runtime перед bundling. Это не runtime-загрузка: установленный AutoCoder не обращается в интернет за Python или компонентами backend.
+- Tauri включает подготовленный runtime в `python-runtime/` рядом с resource `backend/` и на Windows запускает конкретный `resource_dir/python-runtime/python.exe` напрямую через `std::process::Command`, без shell и без поиска по `PATH`. `AUTOCODER_PYTHON` сохранён только как явный development/debug override.
+- Embedded `python310._pth` получает контролируемый относительный путь к соседнему `backend/`; существующие `backend/main.py`, `provider.py` и JSON-over-stdin/stdout контракт не изменены. Для дочернего процесса явно заданы `PYTHONUTF8=1` и `PYTHONIOENCODING=utf-8`.
+- Диагностика теперь различает отсутствие bundle script, отсутствие bundled runtime и ошибку запуска процесса; сообщение содержит фактический путь runtime и системную причину запуска вместо общего `AI backend`.
+- Добавлены Rust-тесты выбора bundled Windows runtime и сохранения явного debug override. В Linux успешно прошли 19 frontend-тестов, production frontend/offline build, Node syntax check, форматирование Rust, `git diff --check` и `npm audit` (0 известных уязвимостей). Полный Cargo test в контейнере по-прежнему ограничен отсутствием системной `glib-2.0 >= 2.70`.
+- Следующий обязательный manual test на Windows: выполнить чистую packaged-сборку с доступом к python.org на build-машине, установить её на систему без Python/без `python` в `PATH` и без `AUTOCODER_PYTHON`, отключить интернет, оставить локальный Ollama с `qwen2.5-coder:7b`, затем проверить кириллический запрос AI Chat. Дополнительно временно переименовать `python-runtime/python.exe` в установленном каталоге и убедиться, что UI показывает точный отсутствующий путь; после этого восстановить файл.
 
 ### Разделение production- и test-only TypeScript-проверок (27 августа 2026)
 - Packaged Windows build была заблокирована до запуска нативной Tauri-сборки: `beforeBuildCommand` запускала `npm run build`, а production `tsc` включал Node-based тест `src/offlineRuntime.test.ts` из-за общего `include: ["src"]`.
