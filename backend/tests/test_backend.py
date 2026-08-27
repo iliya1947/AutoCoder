@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
-from main import parse_messages, parse_request
+from main import parse_file_proposal, parse_messages, parse_request
 from provider import Message, OllamaProvider, ProviderError
 
 
@@ -42,7 +42,7 @@ class BackendTests(unittest.TestCase):
         sent_body = urlopen.call_args.args[0].data
         sent_messages = json.loads(sent_body.decode("utf-8"))["messages"]
         self.assertIn("АвтоКодер_тестовый файл.txt", sent_messages[0]["content"])
-        self.assertEqual(sent_messages[1]["content"], "Ответь дословно только содержимым открытого файла")
+        self.assertEqual(sent_messages[-1]["content"], "Ответь дословно только содержимым открытого файла")
         self.assertIn("АвтоКодер_тестовый файл.txt".encode("utf-8"), sent_body)
         self.assertIn("Ответь дословно только содержимым открытого файла".encode("utf-8"), sent_body)
         self.assertNotIn("РћС".encode("utf-8"), sent_body)
@@ -67,8 +67,32 @@ class BackendTests(unittest.TestCase):
         self.assertNotIn("Р“РѕС‚РѕРІРѕ", decoded)
         self.assertEqual(
             json.loads(decoded),
-            {"message": {"role": "assistant", "content": "Готово: файл сохранён"}},
+            {"message": {"role": "assistant", "content": "Готово: файл сохранён"}, "proposal": None},
         )
+
+    def test_extracts_file_proposal_for_current_open_file(self):
+        answer = Message(
+            "assistant",
+            'Предлагаю изменение.\n```autocoder-file\n{"path":"src/main.py","content":"print(42)\\n"}\n```',
+        )
+        payload = {
+            "context": {"openFile": {"path": "src/main.py", "content": "print(1)\n"}}
+        }
+
+        self.assertEqual(parse_file_proposal(answer, payload), {
+            "path": "src/main.py",
+            "content": "print(42)\n",
+            "originalContent": "print(1)\n",
+        })
+
+    def test_rejects_file_proposal_for_another_path(self):
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"path":"../outside.py","content":"bad"}\n```',
+        )
+        payload = {"context": {"openFile": {"path": "src/main.py", "content": "safe"}}}
+
+        self.assertIsNone(parse_file_proposal(answer, payload))
 
     def test_invalid_utf8_stdin_uses_existing_error_path(self):
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"\xff")})()
@@ -112,7 +136,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(messages[0].role, "system")
         self.assertIn("Path: src/main.py", messages[0].content)
         self.assertIn("print('hi')", messages[0].content)
-        self.assertEqual(messages[1], Message("user", "Explain this"))
+        self.assertIn("autocoder-file", messages[1].content)
+        self.assertEqual(messages[2], Message("user", "Explain this"))
 
     def test_adds_read_only_project_structure_as_system_context(self):
         messages = parse_request(
@@ -144,7 +169,7 @@ class BackendTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual([message.role for message in messages], ["system", "system", "user"])
+        self.assertEqual([message.role for message in messages], ["system", "system", "system", "user"])
         self.assertIn("Project: Empty project", messages[0].content)
         self.assertIn("Path: README", messages[1].content)
 
@@ -188,11 +213,11 @@ class BackendTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual([message.role for message in messages], ["system", "system", "user"])
+        self.assertEqual([message.role for message in messages], ["system", "system", "system", "user"])
         self.assertIn("<open_file>\nТестовый файл номер 2\n</open_file>", messages[0].content)
-        self.assertIn("no active text selection", messages[1].content)
-        self.assertIn("not to the open file content", messages[1].content)
-        self.assertNotIn("Тестовый файл номер 2", messages[1].content)
+        self.assertIn("no active text selection", messages[2].content)
+        self.assertIn("not to the open file content", messages[2].content)
+        self.assertNotIn("Тестовый файл номер 2", messages[2].content)
 
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
@@ -211,21 +236,11 @@ class BackendTests(unittest.TestCase):
         OllamaProvider(model="qwen2.5-coder:7b").chat(messages)
 
         sent = json.loads(urlopen.call_args.args[0].data)
-        self.assertEqual(
-            sent["messages"],
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "The user currently has this project file open in AutoCoder.\n"
-                        "Use its path and content as context for the user's request.\n"
-                        "Path: АвтоКодер_тестовый файл.txt\n\n"
-                        "<open_file>\n123 123 123\n</open_file>"
-                    ),
-                },
-                {"role": "user", "content": "Ответь содержимым открытого файла"},
-            ],
-        )
+        self.assertEqual(sent["messages"][0]["role"], "system")
+        self.assertIn("Path: АвтоКодер_тестовый файл.txt", sent["messages"][0]["content"])
+        self.assertIn("<open_file>\n123 123 123\n</open_file>", sent["messages"][0]["content"])
+        self.assertIn("autocoder-file", sent["messages"][1]["content"])
+        self.assertEqual(sent["messages"][2], {"role": "user", "content": "Ответь содержимым открытого файла"})
         self.assertFalse(sent["stream"])
 
     def test_rejects_invalid_open_file_context(self):

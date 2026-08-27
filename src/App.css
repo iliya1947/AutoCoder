@@ -398,6 +398,32 @@ button.tree-node.active {
   white-space: pre-wrap;
 }
 
+.file-proposal {
+  padding: 10px;
+  border: 1px solid #50678d;
+  border-radius: 7px;
+  background: #1d293c;
+}
+
+.proposal-diff {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.proposal-diff pre {
+  max-height: 160px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.proposal-diff .removed { background: #4a282f; }
+.proposal-diff .added { background: #224333; }
+.proposal-stale { color: #ffcf8a; }
+
 .user-message {
   margin-inline-start: 20px;
   background: #254f96;
