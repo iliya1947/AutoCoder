@@ -77,11 +77,18 @@ struct ChatRequest {
 #[serde(rename_all = "camelCase")]
 struct ChatContext {
     open_file: Option<OpenFileContext>,
+    selection: Option<SelectionContext>,
     project: Option<ProjectContext>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct OpenFileContext {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SelectionContext {
     path: String,
     content: String,
 }
@@ -414,6 +421,7 @@ mod tests {
                     path: "АвтоКодер_тестовый файл.txt".to_string(),
                     content: "123 123 123".to_string(),
                 }),
+                selection: None,
                 project: None,
             }),
         };

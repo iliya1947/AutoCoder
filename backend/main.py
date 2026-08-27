@@ -23,6 +23,13 @@ Project: {name}
 <project_structure>
 {entries}
 </project_structure>"""
+SELECTION_PROMPT = """The user selected this text in the currently open project file.
+Give it priority when the request refers to selected code or text.
+Path: {path}
+
+<selection>
+{content}
+</selection>"""
 
 
 def parse_messages(payload: Any) -> list[Message]:
@@ -79,8 +86,25 @@ def parse_request(payload: Any) -> list[Message]:
             content=OPEN_FILE_PROMPT.format(path=path, content=content),
         ))
 
+    selection = context.get("selection")
+    if selection is not None:
+        if not isinstance(selection, dict):
+            raise ValueError("Selection context must be an object.")
+        path, content = selection.get("path"), selection.get("content")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not isinstance(content, str)
+            or not content
+        ):
+            raise ValueError("Selection context needs a path and non-empty text content.")
+        context_messages.append(Message(
+            role="system",
+            content=SELECTION_PROMPT.format(path=path, content=content),
+        ))
+
     if not context_messages:
-        raise ValueError("Context must contain an openFile or project object.")
+        raise ValueError("Context must contain an openFile, selection, or project object.")
     return [*context_messages, *messages]
 
 

@@ -148,6 +148,34 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Project: Empty project", messages[0].content)
         self.assertIn("Path: README", messages[1].content)
 
+    def test_adds_editor_selection_as_prioritized_system_context(self):
+        messages = parse_request(
+            {
+                "messages": [{"role": "user", "content": "Explain the selection"}],
+                "context": {
+                    "selection": {
+                        "path": "src/main.py",
+                        "content": "result = calculate()",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(messages[0].role, "system")
+        self.assertIn("Path: src/main.py", messages[0].content)
+        self.assertIn("<selection>\nresult = calculate()\n</selection>", messages[0].content)
+        self.assertIn("Give it priority", messages[0].content)
+        self.assertEqual(messages[1], Message("user", "Explain the selection"))
+
+    def test_rejects_empty_editor_selection(self):
+        with self.assertRaisesRegex(ValueError, "Selection context"):
+            parse_request(
+                {
+                    "messages": [{"role": "user", "content": "Explain"}],
+                    "context": {"selection": {"path": "src/main.py", "content": ""}},
+                }
+            )
+
     @patch("provider.request.urlopen", return_value=FakeResponse())
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
         messages = parse_request(

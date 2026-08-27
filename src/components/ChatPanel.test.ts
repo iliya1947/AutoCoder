@@ -10,7 +10,7 @@ describe("chat request", () => {
       path: "src/main.ts",
       content: "const current = true;",
       savedContent: "const current = false;",
-    }, null);
+    }, null, null);
 
     expect(request).toEqual({
       messages,
@@ -19,7 +19,7 @@ describe("chat request", () => {
   });
 
   it("includes the read-only project structure", () => {
-    expect(buildChatRequest(messages, null, {
+    expect(buildChatRequest(messages, null, null, {
       name: "AutoCoder",
       children: [{
         name: "src", path: "src", kind: "directory", children: [
@@ -33,6 +33,20 @@ describe("chat request", () => {
   });
 
   it("sends no context when no project or file is open", () => {
-    expect(buildChatRequest(messages, null, null)).toEqual({ messages, context: null });
+    expect(buildChatRequest(messages, null, null, null)).toEqual({ messages, context: null });
+  });
+
+  it("includes the current editor selection with its file path", () => {
+    const file = {
+      name: "main.ts",
+      path: "src/main.ts",
+      content: "const answer = 42;",
+      savedContent: "const answer = 42;",
+    };
+
+    expect(buildChatRequest(messages, file, "answer = 42", null).context?.selection).toEqual({
+      path: "src/main.ts",
+      content: "answer = 42",
+    });
   });
 });
