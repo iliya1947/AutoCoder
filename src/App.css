@@ -406,22 +406,37 @@ button.tree-node.active {
 }
 
 .proposal-diff {
-  display: grid;
-  gap: 6px;
   margin: 8px 0;
-}
-
-.proposal-diff pre {
-  max-height: 160px;
-  margin: 0;
-  padding: 8px;
+  max-height: 240px;
   overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  border: 1px solid #35445d;
+  background: #172033;
+  font-family: Consolas, "Courier New", monospace;
 }
 
-.proposal-diff .removed { background: #4a282f; }
-.proposal-diff .added { background: #224333; }
+.diff-line {
+  display: grid;
+  grid-template-columns: 3.5em 3.5em 1.5em minmax(max-content, 1fr);
+  min-height: 1.5em;
+}
+
+.diff-line-number,
+.diff-marker {
+  padding: 1px 6px;
+  color: #8290a8;
+  text-align: end;
+  user-select: none;
+}
+
+.diff-line code {
+  padding: 1px 8px;
+  white-space: pre;
+}
+
+.diff-line.removed { background: #4a282f; }
+.diff-line.added { background: #224333; }
+.diff-line.removed .diff-marker { color: #ff9caa; }
+.diff-line.added .diff-marker { color: #7ee2a8; }
 .proposal-stale { color: #ffcf8a; }
 
 .user-message {
