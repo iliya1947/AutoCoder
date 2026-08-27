@@ -7,7 +7,8 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "npm run prepare:python-runtime"
   },
   "app": {
     "windows": [
@@ -27,7 +28,8 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../backend/": "backend/"
+      "../backend/": "backend/",
+      "runtime/python/": "python-runtime/"
     },
     "icon": [
       "icons/32x32.png",

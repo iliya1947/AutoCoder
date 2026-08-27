@@ -156,25 +156,57 @@ fn send_chat_message(app: tauri::AppHandle, request: ChatRequest) -> Result<Chat
         return Err("Chat messages cannot be empty.".to_string());
     }
 
-    let backend = app
+    let resource_dir = app
         .path()
         .resource_dir()
-        .map_err(|error| error.to_string())?
-        .join("backend")
-        .join("main.py");
-    run_chat_backend(&backend, &request)
+        .map_err(|error| format!("Unable to locate the AutoCoder resources: {error}"))?;
+    run_chat_backend(&resource_dir, &request)
 }
 
-fn run_chat_backend(backend: &Path, request: &ChatRequest) -> Result<ChatResponse, String> {
-    let python = std::env::var("AUTOCODER_PYTHON")
-        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.to_string());
-    let mut child = Command::new(python)
+fn backend_paths(resource_dir: &Path, python_override: Option<PathBuf>) -> (PathBuf, PathBuf) {
+    let backend = resource_dir.join("backend").join("main.py");
+    let python = python_override.unwrap_or_else(|| {
+        if cfg!(windows) {
+            resource_dir.join("python-runtime").join("python.exe")
+        } else {
+            PathBuf::from("python3")
+        }
+    });
+    (python, backend)
+}
+
+fn run_chat_backend(resource_dir: &Path, request: &ChatRequest) -> Result<ChatResponse, String> {
+    let python_override = std::env::var_os("AUTOCODER_PYTHON")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let (python, backend) = backend_paths(resource_dir, python_override);
+    if !backend.is_file() {
+        return Err(format!(
+            "The bundled AI backend script is missing: {}",
+            backend.display()
+        ));
+    }
+    if python.components().count() > 1 && !python.is_file() {
+        return Err(format!(
+            "The Python runtime for the AI backend is missing: {}. Reinstall AutoCoder or set AUTOCODER_PYTHON for development diagnostics.",
+            python.display()
+        ));
+    }
+
+    let mut child = Command::new(&python)
         .arg(backend)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Unable to start the Python backend: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "Unable to start the AI backend with Python runtime '{}': {error}",
+                python.display()
+            )
+        })?;
     serde_json::to_writer(
         child
             .stdin
@@ -448,6 +480,25 @@ mod tests {
             "АвтоКодер_тестовый файл.txt"
         );
         assert_eq!(decoded["context"]["selection"]["state"], "none");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_backend_uses_python_from_the_resource_directory() {
+        let resources = Path::new(r"C:\Program Files\AutoCoder\resources");
+        let (python, backend) = backend_paths(resources, None);
+
+        assert_eq!(python, resources.join("python-runtime").join("python.exe"));
+        assert_eq!(backend, resources.join("backend").join("main.py"));
+    }
+
+    #[test]
+    fn explicit_python_override_is_preserved_for_development() {
+        let resources = Path::new("resources");
+        let override_path = PathBuf::from("debug-python");
+        let (python, _) = backend_paths(resources, Some(override_path.clone()));
+
+        assert_eq!(python, override_path);
     }
 
     #[test]

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && node scripts/check-offline-runtime.mjs",
+    "prepare:python-runtime": "node scripts/prepare-python-runtime.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

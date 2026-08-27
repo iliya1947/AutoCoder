@@ -84,3 +84,6 @@ venv.bak/
 # Tauri / Rust build artifacts
 src-tauri/target/
 src-tauri/binaries/
+src-tauri/runtime/python/*
+!src-tauri/runtime/python/.gitkeep
+src-tauri/runtime/*.zip
