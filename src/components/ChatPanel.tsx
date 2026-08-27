@@ -4,7 +4,8 @@ import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
-type ChatResponse = { message: ChatMessage };
+export type FileProposal = { path: string; content: string; originalContent: string };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -29,6 +30,10 @@ export function messagesForCurrentContext(
 ): ChatMessage[] {
   const history = previousContextKey === currentContextKey ? messages : [];
   return [...history, { role: "user", content }];
+}
+
+export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
+  return openFile?.path === proposal.path && openFile.content === proposal.originalContent;
 }
 
 function projectEntries(nodes: ProjectNode[]): string[] {
@@ -58,12 +63,13 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, selection, project }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null }) {
+export function ChatPanel({ openFile, selection, project, onApplyProposal }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; onApplyProposal: (proposal: FileProposal) => void }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [proposal, setProposal] = useState<FileProposal | null>(null);
   const lastRequestContext = useRef<string | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -82,6 +88,7 @@ export function ChatPanel({ openFile, selection, project }: { openFile: OpenedFi
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
       setMessages((current) => [...current, response.message]);
+      setProposal(response.proposal ?? null);
     } catch (error) {
       console.error("send_chat_message failed", error);
       setError(error instanceof Error ? error.message : String(error));
@@ -99,6 +106,13 @@ export function ChatPanel({ openFile, selection, project }: { openFile: OpenedFi
         {t("chat.error")}
         {import.meta.env.DEV && <><br /><code>{error}</code></>}
       </p>}
+      {proposal && <section className="file-proposal">
+        <strong>{t("chat.proposal")}: {proposal.path}</strong>
+        <div className="proposal-diff"><pre className="removed">{proposal.originalContent}</pre><pre className="added">{proposal.content}</pre></div>
+        {canApplyProposal(openFile, proposal)
+          ? <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t("chat.apply_proposal")}</button>
+          : <p className="proposal-stale">{t("chat.proposal_stale")}</p>}
+      </section>}
     </div>
     <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending} /><button type="submit" disabled={!message.trim() || sending}>{t("chat.send")}</button></form>
   </aside>;

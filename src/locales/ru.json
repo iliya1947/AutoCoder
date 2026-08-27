@@ -33,5 +33,8 @@
   "editor.read_error_title": "Не удалось открыть файл",
   "chat.ollama": "Ollama",
   "chat.sending": "Ollama отвечает…",
-  "chat.error": "Не удалось получить ответ. Убедитесь, что Python и Ollama запущены."
+  "chat.error": "Не удалось получить ответ. Убедитесь, что Python и Ollama запущены.",
+  "chat.proposal": "Предложенная замена",
+  "chat.apply_proposal": "Применить в редакторе",
+  "chat.proposal_stale": "После предложения файл изменился. Запросите у ИИ новое предложение."
 }

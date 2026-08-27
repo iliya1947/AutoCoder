@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, canApplyProposal, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -104,5 +104,13 @@ describe("chat request", () => {
     const request = buildChatRequest(requestMessages, second, null, null);
     expect(request.context?.selection).toEqual({ state: "none" });
     expect(request.messages).toEqual([{ role: "user", content: "Что выделено?" }]);
+  });
+
+  it("applies a proposal only to the unchanged source file", () => {
+    const proposal = { path: "src/main.ts", originalContent: "old", content: "new" };
+
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "old" }, proposal)).toBe(true);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, proposal)).toBe(false);
+    expect(canApplyProposal({ name: "other.ts", path: "src/other.ts", content: "old", savedContent: "old" }, proposal)).toBe(false);
   });
 });

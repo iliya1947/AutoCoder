@@ -103,6 +103,15 @@ struct ProjectContext {
 #[derive(Deserialize, Serialize)]
 struct ChatResponse {
     message: ChatMessage,
+    proposal: Option<FileProposal>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileProposal {
+    path: String,
+    content: String,
+    original_content: String,
 }
 
 #[tauri::command]

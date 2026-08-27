@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any
 
@@ -32,6 +33,13 @@ Path: {path}
 </selection>"""
 NO_SELECTION_PROMPT = """There is currently no active text selection in the AutoCoder editor.
 Treat questions about what is selected as referring to this selection state, not to the open file content."""
+FILE_PROPOSAL_PROMPT = """When the user explicitly asks you to change the open file, you may propose a complete replacement.
+Keep your explanation outside the block and emit exactly one block in this form:
+```autocoder-file
+{"path": "the exact open file path", "content": "the complete replacement text"}
+```
+This is only a proposal for user review. Never claim that you changed or saved the file."""
+FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
 
 
 def parse_messages(payload: Any) -> list[Message]:
@@ -87,6 +95,7 @@ def parse_request(payload: Any) -> list[Message]:
             role="system",
             content=OPEN_FILE_PROMPT.format(path=path, content=content),
         ))
+        context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
 
     selection = context.get("selection")
     if selection is not None:
@@ -117,16 +126,43 @@ def parse_request(payload: Any) -> list[Message]:
     return [*context_messages, *messages]
 
 
+def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
+    """Extract a model proposal only when it targets the current open file."""
+    match = FILE_PROPOSAL_PATTERN.search(answer.content)
+    if match is None:
+        return None
+    try:
+        proposal = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    open_file = (payload.get("context") or {}).get("openFile") if isinstance(payload, dict) else None
+    if (
+        not isinstance(proposal, dict)
+        or set(proposal) != {"path", "content"}
+        or not isinstance(proposal.get("path"), str)
+        or not isinstance(proposal.get("content"), str)
+        or not isinstance(open_file, dict)
+        or proposal["path"] != open_file.get("path")
+        or not isinstance(open_file.get("content"), str)
+    ):
+        return None
+    return {
+        "path": proposal["path"],
+        "content": proposal["content"],
+        "originalContent": open_file["content"],
+    }
+
+
 def read_stdin_payload() -> Any:
     """Read the Tauri bridge contract without consulting the host text encoding."""
     raw = sys.stdin.buffer.read()
     return json.loads(raw.decode("utf-8"))
 
 
-def write_stdout_response(answer: Message) -> None:
+def write_stdout_response(answer: Message, proposal: dict[str, str] | None = None) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
-        {"message": answer.__dict__},
+        {"message": answer.__dict__, "proposal": proposal},
         ensure_ascii=False,
     ).encode("utf-8")
     sys.stdout.buffer.write(response)
@@ -137,7 +173,7 @@ def main() -> int:
     try:
         payload = read_stdin_payload()
         answer = OllamaProvider().chat(parse_request(payload))
-        write_stdout_response(answer)
+        write_stdout_response(answer, parse_file_proposal(answer, payload))
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

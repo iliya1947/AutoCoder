@@ -64,7 +64,12 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <ChatPanel openFile={openFile} selection={selection} project={project} />
+    <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={(proposal) => {
+      setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
+        ? { ...current, content: proposal.content }
+        : current);
+      setSelection(null);
+    }} />
   </main></div>;
 }
 
