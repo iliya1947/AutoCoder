@@ -9,6 +9,7 @@ export type ChatRequest = {
   messages: ChatMessage[];
   context: {
     openFile?: { path: string; content: string };
+    selection?: { path: string; content: string };
     project?: { name: string; entries: string[] };
   } | null;
 };
@@ -23,10 +24,12 @@ function projectEntries(nodes: ProjectNode[]): string[] {
 export function buildChatRequest(
   messages: ChatMessage[],
   openFile: OpenedFile | null,
+  selection: string | null,
   project: ProjectTree | null,
 ): ChatRequest {
   const context: NonNullable<ChatRequest["context"]> = {};
   if (openFile) context.openFile = { path: openFile.path, content: openFile.content };
+  if (openFile && selection) context.selection = { path: openFile.path, content: selection };
   if (project) context.project = { name: project.name, entries: projectEntries(project.children) };
   return {
     messages,
@@ -34,7 +37,7 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; project: ProjectTree | null }) {
+export function ChatPanel({ openFile, selection, project }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -52,7 +55,7 @@ export function ChatPanel({ openFile, project }: { openFile: OpenedFile | null; 
     setError(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
-        request: buildChatRequest(nextMessages, openFile, project),
+        request: buildChatRequest(nextMessages, openFile, selection, project),
       });
       setMessages((current) => [...current, response.message]);
     } catch (error) {

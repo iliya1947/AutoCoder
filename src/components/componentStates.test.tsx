@@ -11,7 +11,7 @@ describe("panel states", () => {
   });
 
   it("renders file loading and error states", () => {
-    const props = { file: null, saving: false, onChange: () => undefined, onSave: () => undefined };
+    const props = { file: null, saving: false, onChange: () => undefined, onSelectionChange: () => undefined, onSave: () => undefined };
     expect(renderToStaticMarkup(<Editor {...props} status="loading" />)).toContain("Загрузка файла");
     const error = renderToStaticMarkup(<Editor {...props} status="error" error="Ошибка чтения" />);
     expect(error).toContain('role="alert"');

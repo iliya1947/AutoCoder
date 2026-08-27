@@ -14,6 +14,7 @@ function App() {
   const [project, setProject] = useState<ProjectTree | null>(null);
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("idle");
   const [openFile, setOpenFile] = useState<OpenedFile | null>(null);
+  const [selection, setSelection] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -28,6 +29,7 @@ function App() {
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
         setOpenFile(null);
+        setSelection(null);
         setEditorStatus("idle");
         setProjectStatus("opened");
       } else setProjectStatus(project ? "opened" : "idle");
@@ -37,6 +39,7 @@ function App() {
   const handleOpenFile = async (node: ProjectNode) => {
     if (node.path === openFile?.path || (isDirty && !window.confirm(t("editor.discard_confirm")))) return;
     setOpenFile(null);
+    setSelection(null);
     setEditorError("");
     setEditorStatus("loading");
     try {
@@ -60,8 +63,8 @@ function App() {
 
   return <div className="app-shell"><WorkspaceHeader /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
-    <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSave={handleSave} />
-    <ChatPanel openFile={openFile} project={project} />
+    <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
+    <ChatPanel openFile={openFile} selection={selection} project={project} />
   </main></div>;
 }
 
