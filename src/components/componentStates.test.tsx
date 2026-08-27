@@ -1,9 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { Editor } from "./Editor";
+import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
 
 describe("panel states", () => {
+  it("maps a cleared Monaco selection to null", () => {
+    const model = { getValueInRange: (selection: string) => selection === "selected" ? "файл номер 2" : "" };
+    expect(selectedText(model, "selected")).toBe("файл номер 2");
+    expect(selectedText(model, "cleared")).toBeNull();
+  });
   it("renders project loading and error states", () => {
     const props = { project: null, activePath: undefined, onOpenProject: () => undefined, onOpenFile: () => undefined };
     expect(renderToStaticMarkup(<ProjectExplorer {...props} status="loading" />)).toContain("Загрузка файлов");

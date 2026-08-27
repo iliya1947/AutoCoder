@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
@@ -13,6 +13,20 @@ export type ChatRequest = {
     project?: { name: string; entries: string[] };
   } | null;
 };
+
+export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
+  return JSON.stringify([project?.name ?? null, openFile?.path ?? null, selection]);
+}
+
+export function messagesForCurrentContext(
+  messages: ChatMessage[],
+  content: string,
+  previousContextKey: string | null,
+  currentContextKey: string,
+): ChatMessage[] {
+  const history = previousContextKey === currentContextKey ? messages : [];
+  return [...history, { role: "user", content }];
+}
 
 function projectEntries(nodes: ProjectNode[]): string[] {
   return nodes.flatMap((node) => [
@@ -43,19 +57,22 @@ export function ChatPanel({ openFile, selection, project }: { openFile: OpenedFi
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastRequestContext = useRef<string | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = message.trim();
     if (!content || sending) return;
-    const nextMessages: ChatMessage[] = [...messages, { role: "user", content }];
-    setMessages(nextMessages);
+    const contextKey = chatContextKey(openFile, selection, project);
+    const requestMessages = messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
+    lastRequestContext.current = contextKey;
+    setMessages((current) => [...current, { role: "user", content }]);
     setMessage("");
     setSending(true);
     setError(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
-        request: buildChatRequest(nextMessages, openFile, selection, project),
+        request: buildChatRequest(requestMessages, openFile, selection, project),
       });
       setMessages((current) => [...current, response.message]);
     } catch (error) {

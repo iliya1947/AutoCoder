@@ -1,18 +1,41 @@
 import MonacoEditor, { OnMount } from "@monaco-editor/react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile } from "../types/project";
 import { editorLanguage } from "../utils/projectTree";
 
 export type EditorStatus = "idle" | "loading" | "error" | "ready";
 
+export function selectedText<T>(model: { getValueInRange: (selection: T) => string } | null, selection: T): string | null {
+  const selected = model?.getValueInRange(selection) ?? "";
+  return selected.length > 0 ? selected : null;
+}
+
 export function Editor({ file, status, error, saving, onChange, onSelectionChange, onSave }: { file: OpenedFile | null; status: EditorStatus; error?: string; saving: boolean; onChange: (content: string) => void; onSelectionChange: (content: string | null) => void; onSave: () => void }) {
   const { t } = useTranslation();
   const isDirty = file !== null && file.content !== file.savedContent;
+  const selectionCallback = useRef(onSelectionChange);
+  const listenerDisposer = useRef<(() => void) | null>(null);
+  selectionCallback.current = onSelectionChange;
+
+  useEffect(() => {
+    // A Monaco model can change without remounting this component. Clear the
+    // parent state after that render, including any selection restored by Monaco.
+    selectionCallback.current(null);
+  }, [file?.path]);
+
+  useEffect(() => () => listenerDisposer.current?.(), []);
+
   const handleMount: OnMount = (editor) => {
-    editor.onDidChangeCursorSelection(({ selection }) => {
-      const selected = editor.getModel()?.getValueInRange(selection) ?? "";
-      onSelectionChange(selected.length > 0 ? selected : null);
+    listenerDisposer.current?.();
+    const selectionListener = editor.onDidChangeCursorSelection(({ selection }) => {
+      selectionCallback.current(selectedText(editor.getModel(), selection));
     });
+    const modelListener = editor.onDidChangeModel(() => selectionCallback.current(null));
+    listenerDisposer.current = () => {
+      selectionListener.dispose();
+      modelListener.dispose();
+    };
   };
   return <section className="editor-panel" aria-labelledby="editor-heading">
     <div className="panel-heading editor-heading"><h2 id="editor-heading">{file?.name ?? t("editor.no_file")}{isDirty && <span className="dirty-indicator" title={t("editor.unsaved")} aria-label={t("editor.unsaved")}>●</span>}</h2><button type="button" className="save-button" onClick={onSave} disabled={!isDirty || saving}>{saving ? t("editor.saving") : t("editor.save")}</button></div>
