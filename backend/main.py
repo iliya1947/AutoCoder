@@ -33,11 +33,15 @@ Path: {path}
 </selection>"""
 NO_SELECTION_PROMPT = """There is currently no active text selection in the AutoCoder editor.
 Treat questions about what is selected as referring to this selection state, not to the open file content."""
-FILE_PROPOSAL_PROMPT = """When the user explicitly asks you to change the open file, you may propose a complete replacement.
-Keep your explanation outside the block and emit exactly one block in this form:
+FILE_PROPOSAL_PROMPT = """When the user explicitly asks you to change the open file or create a new project file, you may propose one file operation.
+Keep your explanation outside the block and emit exactly one block in one of these forms:
 ```autocoder-file
-{"path": "the exact open file path", "content": "the complete replacement text"}
+{"operation": "replace", "path": "the exact open file path", "content": "the complete replacement text"}
 ```
+```autocoder-file
+{"operation": "create", "path": "a new relative project file path", "content": "the complete new file text"}
+```
+Only propose create when the path is absent from the supplied project structure. Never use an absolute path or .. path components.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
 
@@ -123,11 +127,13 @@ def parse_request(payload: Any) -> list[Message]:
 
     if not context_messages:
         raise ValueError("Context must contain an openFile, selection, or project object.")
+    if project is not None and open_file is None:
+        context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
     return [*context_messages, *messages]
 
 
 def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
-    """Extract a model proposal only when it targets the current open file."""
+    """Extract a replacement of the open file or creation at a new project path."""
     match = FILE_PROPOSAL_PATTERN.search(answer.content)
     if match is None:
         return None
@@ -135,22 +141,41 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         proposal = json.loads(match.group(1))
     except json.JSONDecodeError:
         return None
-    open_file = (payload.get("context") or {}).get("openFile") if isinstance(payload, dict) else None
+    context = (payload.get("context") or {}) if isinstance(payload, dict) else {}
+    open_file = context.get("openFile")
+    project = context.get("project")
     if (
         not isinstance(proposal, dict)
-        or set(proposal) != {"path", "content"}
+        or set(proposal) != {"operation", "path", "content"}
+        or proposal.get("operation") not in {"replace", "create"}
         or not isinstance(proposal.get("path"), str)
+        or not proposal["path"].strip()
         or not isinstance(proposal.get("content"), str)
-        or not isinstance(open_file, dict)
-        or proposal["path"] != open_file.get("path")
-        or not isinstance(open_file.get("content"), str)
     ):
         return None
-    return {
-        "path": proposal["path"],
-        "content": proposal["content"],
-        "originalContent": open_file["content"],
-    }
+    if proposal["operation"] == "replace":
+        if (
+            not isinstance(open_file, dict)
+            or proposal["path"] != open_file.get("path")
+            or not isinstance(open_file.get("content"), str)
+        ):
+            return None
+        return {**proposal, "originalContent": open_file["content"]}
+
+    entries = project.get("entries") if isinstance(project, dict) else None
+    normalized = proposal["path"].replace("\\", "/")
+    normalized_entries = {
+        entry.replace("\\", "/") for entry in entries
+    } if isinstance(entries, list) else set()
+    if (
+        not isinstance(entries, list)
+        or normalized.startswith("/")
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        or f"file: {normalized}" in normalized_entries
+        or f"directory: {normalized}" in normalized_entries
+    ):
+        return None
+    return proposal
 
 
 def read_stdin_payload() -> Any:

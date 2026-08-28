@@ -207,9 +207,11 @@ struct ChatResponse {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileProposal {
+    operation: String,
     path: String,
     content: String,
-    original_content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_content: Option<String>,
 }
 
 #[tauri::command]
@@ -531,6 +533,24 @@ fn save_project_file(
     save_file(&root, &relative_path, &content, &backup_root, timestamp)
 }
 
+#[tauri::command]
+fn create_project_file(
+    relative_path: String,
+    content: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    create_file(&root, &relative_path, &content)?;
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Project".to_string());
+    Ok(ProjectTree {
+        name,
+        children: read_directory(&root, &root),
+    })
+}
+
 fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
     project_state
         .root
@@ -555,6 +575,44 @@ fn resolve_project_file(root: &Path, relative_path: &str) -> Result<PathBuf, Str
         return Err("The selected path is not a file.".to_string());
     }
     Ok(candidate)
+}
+
+fn create_file(root: &Path, relative_path: &str, content: &str) -> Result<(), String> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("The new file path must be a normalized relative path.".to_string());
+    }
+
+    let canonical_root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let canonical_parent = fs::canonicalize(canonical_root.join(parent))
+        .map_err(|error| format!("The destination directory does not exist: {error}"))?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err("The new file must be inside the project directory.".to_string());
+    }
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| "The new file needs a name.".to_string())?;
+    let destination = canonical_parent.join(file_name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| format!("Unable to create file: {error}"))?;
+    if let Err(error) = file
+        .write_all(content.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(&destination);
+        return Err(format!("Unable to create file: {error}"));
+    }
+    Ok(())
 }
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
@@ -1201,6 +1259,20 @@ mod tests {
     }
 
     #[test]
+    fn creates_a_new_file_without_overwriting_or_escaping_the_project() {
+        let (directory, _) = project();
+        fs::create_dir(directory.path().join("src")).unwrap();
+
+        create_file(directory.path(), "src/new.txt", "created").unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("src/new.txt")).unwrap(),
+            "created"
+        );
+        assert!(create_file(directory.path(), "src/new.txt", "overwritten").is_err());
+        assert!(create_file(directory.path(), "../outside.txt", "escaped").is_err());
+    }
+
+    #[test]
     fn reads_text_with_known_unknown_and_absent_extensions() {
         let (directory, _) = project();
         fs::write(directory.path().join("message.custom"), "custom text").unwrap();
@@ -1257,6 +1329,7 @@ pub fn run() {
             open_project,
             read_project_file,
             save_project_file,
+            create_project_file,
             send_chat_message
         ])
         .setup(|app| {

@@ -64,10 +64,20 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={(proposal) => {
-      setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
-        ? { ...current, content: proposal.content }
-        : current);
+    <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={async (proposal) => {
+      if (proposal.operation === "create") {
+        try {
+          const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });
+          setProject({ ...updated, children: transformProjectTree(updated.children) });
+          setOpenFile({ name: proposal.path.split(/[\\/]/).pop() ?? proposal.path, path: proposal.path, content: proposal.content, savedContent: proposal.content });
+          setEditorStatus("ready");
+          setEditorError("");
+        } catch { setEditorError(t("editor.create_error")); }
+      } else {
+        setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
+          ? { ...current, content: proposal.content }
+          : current);
+      }
       setSelection(null);
     }} />
   </main></div>;

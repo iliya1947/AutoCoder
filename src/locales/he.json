@@ -38,5 +38,8 @@
   "chat.proposal_diff": "שינויים מוצעים לפי שורה",
   "chat.apply_proposal": "החל בעורך",
   "chat.dismiss_proposal": "דחה את ההצעה",
-  "chat.proposal_stale": "הקובץ השתנה לאחר ההצעה. בקש הצעה חדשה מהבינה המלאכותית."
+  "chat.proposal_stale": "הקובץ השתנה לאחר ההצעה. בקש הצעה חדשה מהבינה המלאכותית.",
+  "chat.proposal_create": "קובץ חדש מוצע",
+  "chat.create_proposal": "צור קובץ",
+  "editor.create_error": "לא ניתן ליצור את הקובץ המוצע. ייתכן שהוא כבר קיים או שהתיקייה אינה זמינה."
 }

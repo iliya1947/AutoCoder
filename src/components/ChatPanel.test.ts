@@ -135,11 +135,12 @@ describe("chat request", () => {
   });
 
   it("applies a proposal only to the unchanged source file", () => {
-    const proposal = { path: "src/main.ts", originalContent: "old", content: "new" };
+    const proposal = { operation: "replace" as const, path: "src/main.ts", originalContent: "old", content: "new" };
 
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "old" }, proposal)).toBe(true);
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal({ name: "other.ts", path: "src/other.ts", content: "old", savedContent: "old" }, proposal)).toBe(false);
+    expect(canApplyProposal(null, { operation: "create", path: "src/new.ts", content: "new" })).toBe(true);
   });
 
   it("builds a line diff with stable old and new line numbers", () => {
