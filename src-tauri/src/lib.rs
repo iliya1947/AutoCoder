@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
     ".idea",
@@ -149,6 +152,14 @@ struct ProjectTree {
 #[derive(Serialize)]
 struct FileReadResult {
     content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalResult {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -645,6 +656,47 @@ fn restore_project_backup(
     Ok(ProjectTree {
         name,
         children: read_directory(&root, &root),
+    })
+}
+
+#[tauri::command]
+async fn execute_project_command(
+    command: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<TerminalResult, String> {
+    let root = project_root(&project_state)?;
+    tauri::async_runtime::spawn_blocking(move || run_project_command(&root, &command))
+        .await
+        .map_err(|error| format!("Unable to join command task: {error}"))?
+}
+
+fn run_project_command(root: &Path, command: &str) -> Result<TerminalResult, String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("The command cannot be empty.".to_string());
+    }
+    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    if !root.is_dir() {
+        return Err("The project root is not a directory.".to_string());
+    }
+
+    #[cfg(windows)]
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/S", "/C", command])
+        .current_dir(&root)
+        .creation_flags(0x08000000)
+        .output();
+    #[cfg(not(windows))]
+    let output = Command::new("sh")
+        .args(["-c", command])
+        .current_dir(&root)
+        .output();
+
+    let output = output.map_err(|error| format!("Unable to start command: {error}"))?;
+    Ok(TerminalResult {
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
@@ -1203,6 +1255,27 @@ mod tests {
         let file = directory.path().join("notes.txt");
         fs::write(&file, "before").expect("fixture file");
         (directory, file)
+    }
+
+    #[test]
+    fn terminal_command_runs_in_project_and_captures_output() {
+        let (directory, _) = project();
+        #[cfg(windows)]
+        let command = "echo output & echo problem 1>&2 & exit /b 7";
+        #[cfg(not(windows))]
+        let command = "printf output; printf problem >&2; exit 7";
+
+        let result = run_project_command(directory.path(), command).unwrap();
+
+        assert_eq!(result.exit_code, Some(7));
+        assert!(result.stdout.contains("output"));
+        assert!(result.stderr.contains("problem"));
+    }
+
+    #[test]
+    fn terminal_rejects_empty_command() {
+        let (directory, _) = project();
+        assert!(run_project_command(directory.path(), "  ").is_err());
     }
 
     #[cfg(unix)]
@@ -1865,6 +1938,7 @@ pub fn run() {
             delete_project_file,
             list_project_backups,
             restore_project_backup,
+            execute_project_command,
             send_chat_message
         ])
         .setup(|app| {
