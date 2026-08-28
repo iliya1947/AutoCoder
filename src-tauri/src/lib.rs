@@ -3,14 +3,14 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 mod process_lifecycle;
-use process_lifecycle::ProcessLifecycle;
+use process_lifecycle::{ChildIo, OwnedChild, ProcessLifecycle};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
@@ -31,7 +31,7 @@ struct ProjectState {
 }
 
 struct OllamaState {
-    owned: Mutex<Option<Child>>,
+    owned: Mutex<Option<OwnedChild>>,
     lifecycle: Arc<ProcessLifecycle>,
 }
 
@@ -61,7 +61,7 @@ impl OllamaState {
     ) -> Result<(), String>
     where
         R: FnMut() -> bool,
-        L: FnOnce() -> Result<Child, String>,
+        L: FnOnce() -> Result<OwnedChild, String>,
         S: FnMut(),
     {
         let mut owned = self
@@ -356,7 +356,7 @@ fn ollama_executable() -> Option<PathBuf> {
     })
 }
 
-fn launch_ollama(lifecycle: &ProcessLifecycle) -> Result<Child, String> {
+fn launch_ollama(lifecycle: &ProcessLifecycle) -> Result<OwnedChild, String> {
     let executable = ollama_executable().ok_or_else(|| {
         "Local Ollama was not found. Install Ollama; automatic downloads are disabled.".to_string()
     })?;
@@ -367,12 +367,14 @@ fn launch_ollama(lifecycle: &ProcessLifecycle) -> Result<Child, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut child = lifecycle.spawn(&mut command).map_err(|error| {
-        format!(
-            "Failed to start Ollama at '{}': {error}",
-            executable.display()
-        )
-    })?;
+    let mut child = lifecycle
+        .spawn(&mut command, ChildIo::Ollama)
+        .map_err(|error| {
+            format!(
+                "Failed to start Ollama at '{}': {error}",
+                executable.display()
+            )
+        })?;
     if let Some(stderr) = child.stderr.take() {
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -454,12 +456,14 @@ fn run_chat_backend(
     if uses_managed_local_ollama() {
         command.env("AUTOCODER_OLLAMA_MANAGED", "1");
     }
-    let mut child = lifecycle.spawn(&mut command).map_err(|error| {
-        format!(
-            "Unable to start the AI backend with Python runtime '{}': {error}",
-            python.display()
-        )
-    })?;
+    let mut child = lifecycle
+        .spawn(&mut command, ChildIo::PythonBridge)
+        .map_err(|error| {
+            format!(
+                "Unable to start the AI backend with Python runtime '{}': {error}",
+                python.display()
+            )
+        })?;
     serde_json::to_writer(
         child
             .stdin
@@ -706,7 +710,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn sleeping_child(seconds: &str) -> Child {
+    fn sleeping_child(seconds: &str) -> OwnedChild {
         Command::new("sleep")
             .arg(seconds)
             .spawn()
@@ -756,7 +760,14 @@ mod tests {
         lifecycle.shutdown();
         assert!(!lifecycle.is_accepting());
         let mut command = Command::new("must-not-run");
-        assert!(lifecycle.spawn(&mut command).is_err());
+        assert!(lifecycle.spawn(&mut command, ChildIo::Ollama).is_err());
+    }
+
+    #[test]
+    fn windows_owned_launch_is_suspended_before_job_assignment() {
+        let flags = process_lifecycle::owned_creation_flags(true);
+        assert_ne!(flags & 0x0000_0004, 0); // CREATE_SUSPENDED
+        assert_ne!(flags & 0x0800_0000, 0); // CREATE_NO_WINDOW
     }
 
     #[test]

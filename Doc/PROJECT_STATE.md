@@ -12,6 +12,11 @@
 
 ## Что подтверждено как сделанное
 
+### Устранение Windows race до назначения в Job (28 августа 2026)
+- Windows owned launch больше не использует последовательность `std::process::Command::spawn` → `AssignProcessToJobObject`. Минимальный Win32 launcher создаёт процесс через `CreateProcessW` с `CREATE_SUSPENDED`, назначает ещё не исполняющийся процесс в AutoCoder Job и только затем вызывает `ResumeThread`. При ошибке назначения или resume процесс завершается, ожидается и все Win32 handles закрываются.
+- Launcher сохраняет наследуемые stdin/stdout/stderr pipes Python bridge, stderr pipe Ollama, Unicode environment/command line, current directory и production `CREATE_NO_WINDOW`. Добавлена архитектурная проверка обязательного `CREATE_SUSPENDED` flag.
+- Дополнительный Windows manual test: owned fixture должна немедленно создавать child/helper; затем закрытие AutoCoder должно удалить parent и child. Проверить, что child ни на мгновение не появляется вне Job (например, через Process Explorer Job membership). Этот packaged тест ожидает выполнения на целевой Windows-машине.
+
 ### Общий lifecycle owned-процессов и HTTP readiness Ollama (28 августа 2026)
 - Добавлена единая desktop-точка запуска owned-процессов `ProcessLifecycle`. На Windows она создаёт Job Object, включает `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, назначает в Job только процессы, запущенные AutoCoder, запрещает новые запуски при shutdown и завершает содержимое Job. Ollama и bundled Python запускаются через этот механизм; внешний Ollama не назначается. Использованы официальные Win32 API: https://learn.microsoft.com/windows/win32/procthread/job-objects, https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject и https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject.
 - Readiness больше не определяется открытым TCP-портом: Rust выполняет bounded `GET /api/version`, требует HTTP 200 и непустое JSON-поле `version`, как описано в https://docs.ollama.com/api-reference/get-version. Python chat bridge не запускается до готовности API.
