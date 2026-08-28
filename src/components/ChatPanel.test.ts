@@ -106,6 +106,34 @@ describe("chat request", () => {
     expect(request.messages).toEqual([{ role: "user", content: "Что выделено?" }]);
   });
 
+  it("does not resend history after the open file content changes", () => {
+    const original = { name: "main.ts", path: "main.ts", content: "const value = 1;", savedContent: "const value = 1;" };
+    const edited = { ...original, content: "const value = 2;" };
+    const history: ChatMessage[] = [{ role: "assistant", content: "The value is 1." }];
+
+    expect(messagesForCurrentContext(
+      history,
+      "What is the value now?",
+      chatContextKey(original, null, null),
+      chatContextKey(edited, null, null),
+    )).toEqual([{ role: "user", content: "What is the value now?" }]);
+  });
+
+  it("does not resend history after the project structure changes", () => {
+    const originalProject = { name: "demo", children: [] };
+    const updatedProject = {
+      name: "demo",
+      children: [{ name: "new.ts", path: "new.ts", kind: "file" as const, children: [] }],
+    };
+
+    expect(messagesForCurrentContext(
+      [{ role: "assistant", content: "The project is empty." }],
+      "List the files now.",
+      chatContextKey(null, null, originalProject),
+      chatContextKey(null, null, updatedProject),
+    )).toEqual([{ role: "user", content: "List the files now." }]);
+  });
+
   it("applies a proposal only to the unchanged source file", () => {
     const proposal = { path: "src/main.ts", originalContent: "old", content: "new" };
 
