@@ -152,8 +152,7 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
       {messages.length === 0 && !sending ? <p className="empty-chat">{t("chat.empty")}</p> : messages.map((item, index) => <p className={`${item.role}-message`} key={`${item.role}-${index}`}>{item.content}</p>)}
       {sending && <p className="chat-status">{t("chat.sending")}</p>}
       {error && <p className="chat-error" role="alert">
-        {t("chat.error")}
-        {import.meta.env.DEV && <><br /><code>{error}</code></>}
+        {t("chat.error")}<br /><code>{error}</code>
       </p>}
       {proposal && <section className="file-proposal">
         <strong>{t("chat.proposal")}: {proposal.path}</strong>

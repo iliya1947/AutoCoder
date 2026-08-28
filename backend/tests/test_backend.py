@@ -5,17 +5,20 @@ import sys
 import unittest
 from urllib import error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
 from main import parse_file_proposal, parse_messages, parse_request
-from provider import Message, OllamaProvider, ProviderError
+from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
 class FakeResponse:
+    def __init__(self, payload=None):
+        self.payload = payload or {"message": {"role": "assistant", "content": "Ready"}}
+
     def __enter__(self):
         return self
 
@@ -23,11 +26,20 @@ class FakeResponse:
         return None
 
     def read(self):
-        return json.dumps({"message": {"role": "assistant", "content": "Ready"}}).encode()
+        return json.dumps(self.payload).encode()
+
+
+def ready_ollama(request_or_url, **_kwargs):
+    url = request_or_url.full_url if hasattr(request_or_url, "full_url") else request_or_url
+    if url.endswith("/api/version"):
+        return FakeResponse({"version": "0.11.8"})
+    if url.endswith("/api/tags"):
+        return FakeResponse({"models": [{"name": "qwen2.5-coder:7b"}, {"name": "test-model"}]})
+    return FakeResponse()
 
 
 class BackendTests(unittest.TestCase):
-    @patch("provider.request.urlopen", return_value=FakeResponse())
+    @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(stdin_bytes)})()
@@ -219,7 +231,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("not to the open file content", messages[2].content)
         self.assertNotIn("Тестовый файл номер 2", messages[2].content)
 
-    @patch("provider.request.urlopen", return_value=FakeResponse())
+    @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_open_file_request_matches_working_ollama_message_shape(self, urlopen):
         messages = parse_request(
             {
@@ -247,7 +259,7 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_request({"messages": [{"role": "user", "content": "Hi"}], "context": {"openFile": {}}})
 
-    @patch("provider.request.urlopen", return_value=FakeResponse())
+    @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_ollama_provider_returns_assistant_message(self, urlopen):
         result = OllamaProvider(model="test-model").chat([Message("user", "Hi")])
         self.assertEqual(result, Message("assistant", "Ready"))
@@ -257,18 +269,20 @@ class BackendTests(unittest.TestCase):
 
     @patch("provider.request.urlopen")
     def test_ollama_http_error_preserves_response_details(self, urlopen):
-        urlopen.side_effect = error.HTTPError(
-            "http://127.0.0.1:11434/api/chat",
-            400,
-            "Bad Request",
-            {},
-            io.BytesIO(b'{"error":"prompt is too long"}'),
-        )
+        def response(request_or_url, **_kwargs):
+            url = request_or_url.full_url if hasattr(request_or_url, "full_url") else request_or_url
+            if url.endswith("/api/version"):
+                return FakeResponse({"version": "0.11.8"})
+            if url.endswith("/api/tags"):
+                return FakeResponse({"models": [{"name": "test-model"}]})
+            raise error.HTTPError(url, 400, "Bad Request", {}, io.BytesIO(b'{"error":"prompt is too long"}'))
+
+        urlopen.side_effect = response
 
         with self.assertRaisesRegex(ProviderError, 'HTTP 400.*prompt is too long'):
             OllamaProvider(model="test-model").chat([Message("user", "Hi")])
 
-    @patch("provider.request.urlopen", return_value=FakeResponse())
+    @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_ollama_provider_sends_cyrillic_as_utf8(self, urlopen):
         OllamaProvider(model="test-model").chat([Message("user", "Привет, мир!")])
 
@@ -276,6 +290,104 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Привет, мир!".encode("utf-8"), body)
         self.assertNotIn(b"\\u041f", body)
         self.assertEqual(json.loads(body)["messages"][0]["content"], "Привет, мир!")
+
+    def test_running_ollama_is_used_without_launching_or_relaunching(self):
+        launcher = Mock()
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434",
+            opener=lambda *_args, **_kwargs: FakeResponse({"version": "1.0"}),
+            process_launcher=launcher,
+        )
+
+        runtime.ensure_ready()
+        runtime.ensure_ready()
+
+        launcher.assert_not_called()
+
+    def test_stopped_ollama_is_started_then_becomes_ready(self):
+        process = Mock()
+        process.poll.return_value = None
+        launcher = Mock(return_value=process)
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434",
+            opener=Mock(),
+            executable_finder=lambda: Path("C:/Users/test/AppData/Local/Programs/Ollama/ollama.exe"),
+            process_launcher=launcher,
+            sleep=lambda _seconds: None,
+        )
+        runtime.is_ready = Mock(side_effect=[False, False, True])
+
+        runtime.ensure_ready()
+
+        launcher.assert_called_once()
+        self.assertEqual(runtime.is_ready.call_count, 3)
+
+    def test_missing_local_ollama_has_specific_error(self):
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434", opener=Mock(), executable_finder=lambda: None
+        )
+        runtime.is_ready = Mock(return_value=False)
+
+        with self.assertRaisesRegex(ProviderError, "Local Ollama was not found"):
+            runtime.ensure_ready()
+
+    def test_ollama_launch_error_reports_executable_and_system_reason(self):
+        executable = Path("C:/Ollama/ollama.exe")
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434",
+            opener=Mock(),
+            executable_finder=lambda: executable,
+            process_launcher=Mock(side_effect=OSError(5, "Access is denied")),
+        )
+        runtime.is_ready = Mock(return_value=False)
+
+        with self.assertRaisesRegex(ProviderError, r"C:/Ollama/ollama.exe.*Access is denied"):
+            runtime.ensure_ready()
+
+    def test_ollama_start_timeout_reports_path_and_endpoint(self):
+        process = Mock()
+        process.poll.return_value = None
+        clock = iter([0.0, 0.0, 1.0])
+        executable = Path("C:/Ollama/ollama.exe")
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434",
+            timeout=0.5,
+            opener=Mock(),
+            executable_finder=lambda: executable,
+            process_launcher=lambda _path: process,
+            monotonic=lambda: next(clock),
+            sleep=lambda _seconds: None,
+        )
+        runtime.is_ready = Mock(return_value=False)
+
+        with self.assertRaisesRegex(ProviderError, r"Timed out.*C:/Ollama/ollama.exe.*127.0.0.1"):
+            runtime.ensure_ready()
+
+    def test_missing_model_has_specific_error_and_does_not_chat(self):
+        def opener(request_or_url, **_kwargs):
+            url = request_or_url.full_url if hasattr(request_or_url, "full_url") else request_or_url
+            if url.endswith("/api/version"):
+                return FakeResponse({"version": "1.0"})
+            if url.endswith("/api/tags"):
+                return FakeResponse({"models": [{"name": "another-model:latest"}]})
+            self.fail("Chat must not run when the required model is absent")
+
+        with self.assertRaisesRegex(ProviderError, "qwen2.5-coder:7b.*is not installed"):
+            OllamaProvider(opener=opener).chat([Message("user", "Hi")])
+
+    def test_remote_endpoint_is_not_managed(self):
+        runtime = Mock()
+        provider = OllamaProvider(
+            url="https://explicit-provider.example/api/chat",
+            model="remote-model",
+            runtime=runtime,
+            opener=lambda *_args, **_kwargs: FakeResponse(),
+        )
+
+        provider.chat([Message("user", "Hi")])
+
+        runtime.ensure_ready.assert_not_called()
+        runtime.ensure_model.assert_not_called()
 
 
 if __name__ == "__main__":

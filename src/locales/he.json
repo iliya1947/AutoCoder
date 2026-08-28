@@ -33,7 +33,7 @@
   "editor.read_error_title": "לא ניתן לפתוח את הקובץ",
   "chat.ollama": "Ollama",
   "chat.sending": "Ollama משיב…",
-  "chat.error": "לא ניתן לקבל תשובה. ודא ש-Python ו-Ollama פועלים.",
+  "chat.error": "לא ניתן לקבל תשובת AI:",
   "chat.proposal": "החלפה מוצעת",
   "chat.proposal_diff": "שינויים מוצעים לפי שורה",
   "chat.apply_proposal": "החל בעורך",
