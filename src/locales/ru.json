@@ -53,5 +53,14 @@
   "backups.empty": "Для этого проекта нет резервных копий.",
   "backups.error": "Не удалось прочитать или восстановить резервную копию. Файл мог измениться на диске.",
   "backups.restore": "Восстановить",
-  "backups.restoring": "Восстановление…"
+  "backups.restoring": "Восстановление…",
+  "terminal.title": "Терминал",
+  "terminal.open_project": "Откройте проект для выполнения команд.",
+  "terminal.empty": "Здесь появится вывод команды.",
+  "terminal.command": "Команда проекта",
+  "terminal.placeholder": "Введите команду в каталоге проекта",
+  "terminal.run": "Выполнить",
+  "terminal.running": "Выполнение…",
+  "terminal.exit_code": "Код завершения",
+  "terminal.unknown_exit": "неизвестен"
 }

@@ -16,7 +16,8 @@ body {
 
 button,
 select,
-textarea {
+textarea,
+input {
   font: inherit;
 }
 
@@ -88,6 +89,61 @@ button:disabled {
 .editor-panel {
   min-width: 0;
   padding: 16px;
+}
+
+.center-workspace {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.center-workspace .editor-panel {
+  flex: 1;
+}
+
+.terminal-panel {
+  min-height: 190px;
+  padding: 12px 16px;
+  border-top: 1px solid #293348;
+  background: #0b1019;
+}
+
+.terminal-output {
+  height: 110px;
+  margin: 8px 0;
+  overflow: auto;
+  color: #c8d3e8;
+  font: 0.78rem/1.45 Consolas, "Courier New", monospace;
+}
+
+.terminal-output p,
+.terminal-output pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-stderr, .terminal-failure { color: #ff9b9b; }
+.terminal-success { color: #8de2b2; }
+
+.terminal-form {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  color: #79a8ff;
+}
+
+.terminal-form input {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #3a4965;
+  border-radius: 5px;
+  color: #edf3ff;
+  background: #151c2a;
+}
+
+.terminal-form button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 5px;
+  color: #fff;
+  background: #3978e8;
 }
 
 .file-panel,

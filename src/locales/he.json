@@ -53,5 +53,14 @@
   "backups.empty": "אין גיבויים לפרויקט זה.",
   "backups.error": "לא ניתן לקרוא או לשחזר את הגיבוי. ייתכן שהקובץ השתנה בדיסק.",
   "backups.restore": "שחזר",
-  "backups.restoring": "משחזר…"
+  "backups.restoring": "משחזר…",
+  "terminal.title": "מסוף",
+  "terminal.open_project": "יש לפתוח פרויקט כדי להריץ פקודות.",
+  "terminal.empty": "פלט הפקודה יופיע כאן.",
+  "terminal.command": "פקודת פרויקט",
+  "terminal.placeholder": "הזן פקודה בתיקיית הפרויקט",
+  "terminal.run": "הרץ",
+  "terminal.running": "מריץ…",
+  "terminal.exit_code": "קוד יציאה",
+  "terminal.unknown_exit": "לא ידוע"
 }

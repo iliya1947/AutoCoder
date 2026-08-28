@@ -151,6 +151,14 @@ struct FileReadResult {
     content: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalResult {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupMetadata {
@@ -645,6 +653,64 @@ fn restore_project_backup(
     Ok(ProjectTree {
         name,
         children: read_directory(&root, &root),
+    })
+}
+
+#[tauri::command]
+async fn execute_project_command(
+    command: String,
+    project_state: State<'_, ProjectState>,
+    lifecycle: State<'_, Arc<ProcessLifecycle>>,
+) -> Result<TerminalResult, String> {
+    let root = project_root(&project_state)?;
+    let lifecycle = Arc::clone(lifecycle.inner());
+    tauri::async_runtime::spawn_blocking(move || run_project_command(&root, &command, &lifecycle))
+        .await
+        .map_err(|error| format!("Unable to join command task: {error}"))?
+}
+
+fn run_project_command(
+    root: &Path,
+    command: &str,
+    lifecycle: &ProcessLifecycle,
+) -> Result<TerminalResult, String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("The command cannot be empty.".to_string());
+    }
+    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    if !root.is_dir() {
+        return Err("The project root is not a directory.".to_string());
+    }
+
+    #[cfg(windows)]
+    let mut process = {
+        let mut process = Command::new("cmd.exe");
+        process.args(["/D", "/S", "/C", command]);
+        process
+    };
+    #[cfg(not(windows))]
+    let mut process = {
+        let mut process = Command::new("sh");
+        process.args(["-c", command]);
+        process
+    };
+    process
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = lifecycle
+        .spawn(&mut process, ChildIo::Terminal)
+        .map_err(|error| format!("Unable to start owned command: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Unable to collect command output: {error}"))?;
+    Ok(TerminalResult {
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
@@ -1203,6 +1269,59 @@ mod tests {
         let file = directory.path().join("notes.txt");
         fs::write(&file, "before").expect("fixture file");
         (directory, file)
+    }
+
+    #[test]
+    fn terminal_command_runs_in_project_and_captures_output() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        #[cfg(windows)]
+        let command = "echo output & echo problem 1>&2 & exit /b 7";
+        #[cfg(not(windows))]
+        let command = "printf output; printf problem >&2; exit 7";
+
+        let result = run_project_command(directory.path(), command, &lifecycle).unwrap();
+
+        assert_eq!(result.exit_code, Some(7));
+        assert!(result.stdout.contains("output"));
+        assert!(result.stderr.contains("problem"));
+    }
+
+    #[test]
+    fn terminal_rejects_empty_command() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        assert!(run_project_command(directory.path(), "  ", &lifecycle).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lifecycle_shutdown_interrupts_long_terminal_command() {
+        use std::os::windows::process::CommandExt;
+
+        let (directory, _) = project();
+        let mut external = Command::new("cmd.exe")
+            .args(["/D", "/S", "/C", "ping 127.0.0.1 -n 60 >nul"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .unwrap();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C", "ping 127.0.0.1 -n 60 >nul"])
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = lifecycle.spawn(&mut command, ChildIo::Terminal).unwrap();
+
+        lifecycle.shutdown();
+
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(external.try_wait().unwrap().is_none());
+        external.kill().unwrap();
+        external.wait().unwrap();
     }
 
     #[cfg(unix)]
@@ -1865,6 +1984,7 @@ pub fn run() {
             delete_project_file,
             list_project_backups,
             restore_project_backup,
+            execute_project_command,
             send_chat_message
         ])
         .setup(|app| {

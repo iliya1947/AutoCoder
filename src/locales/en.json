@@ -53,5 +53,14 @@
   "backups.empty": "There are no backups for this project.",
   "backups.error": "Unable to read or restore the backup. The file may have changed on disk.",
   "backups.restore": "Restore",
-  "backups.restoring": "Restoring…"
+  "backups.restoring": "Restoring…",
+  "terminal.title": "Terminal",
+  "terminal.open_project": "Open a project to run commands.",
+  "terminal.empty": "Command output will appear here.",
+  "terminal.command": "Project command",
+  "terminal.placeholder": "Enter a command in the project directory",
+  "terminal.run": "Run",
+  "terminal.running": "Running…",
+  "terminal.exit_code": "Exit",
+  "terminal.unknown_exit": "unknown"
 }

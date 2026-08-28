@@ -13,6 +13,7 @@ pub(crate) type OwnedChild = std::process::Child;
 pub(crate) enum ChildIo {
     Ollama,
     PythonBridge,
+    Terminal,
 }
 
 #[cfg(any(windows, test))]
@@ -206,7 +207,7 @@ mod windows {
         } else {
             None
         };
-        let stdout = if matches!(io, ChildIo::PythonBridge) {
+        let stdout = if matches!(io, ChildIo::PythonBridge | ChildIo::Terminal) {
             Some(RawPipe::new(true)?)
         } else {
             None

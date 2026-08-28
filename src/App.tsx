@@ -6,6 +6,7 @@ import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
 import { FileReadResult, OpenedFile, ProjectNode, ProjectTree } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
@@ -73,7 +74,8 @@ function App() {
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
-    <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
+    <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
+    <TerminalPanel projectOpen={project !== null} /></section>
     <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={async (proposal) => {
       if (proposal.operation === "create") {
         try {
