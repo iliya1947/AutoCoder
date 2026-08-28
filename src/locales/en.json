@@ -33,7 +33,7 @@
   "editor.read_error_title": "Unable to open file",
   "chat.ollama": "Ollama",
   "chat.sending": "Ollama is responding…",
-  "chat.error": "Unable to get a response. Make sure Python and Ollama are running.",
+  "chat.error": "Unable to get an AI response:",
   "chat.proposal": "Proposed replacement",
   "chat.proposal_diff": "Line-by-line proposed changes",
   "chat.apply_proposal": "Apply to editor",
