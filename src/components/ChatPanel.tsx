@@ -7,7 +7,7 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type FileProposal =
   | { operation: "replace"; path: string; content: string; originalContent: string }
   | { operation: "create"; path: string; content: string }
-  | { operation: "delete"; path: string; originalContent: string };
+  | { operation: "delete"; path: string; originalContent: string; expectedSavedContent: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null };
 type SelectionContext =
@@ -16,7 +16,7 @@ type SelectionContext =
 export type ChatRequest = {
   messages: ChatMessage[];
   context: {
-    openFile?: { path: string; content: string };
+    openFile?: { path: string; content: string; savedContent: string };
     selection?: SelectionContext;
     project?: { name: string; entries: string[] };
   } | null;
@@ -41,8 +41,10 @@ export function messagesForCurrentContext(
 }
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
-  return proposal.operation === "create"
-    || (openFile?.path === proposal.path && openFile.content === proposal.originalContent);
+  if (proposal.operation === "create") return true;
+  if (openFile?.path !== proposal.path || openFile.content !== proposal.originalContent) return false;
+  return proposal.operation !== "delete"
+    || (openFile.content === openFile.savedContent && openFile.savedContent === proposal.expectedSavedContent);
 }
 
 export function buildLineDiff(originalContent: string, proposedContent: string): DiffLine[] {
@@ -103,7 +105,7 @@ export function buildChatRequest(
   project: ProjectTree | null,
 ): ChatRequest {
   const context: NonNullable<ChatRequest["context"]> = {};
-  if (openFile) context.openFile = { path: openFile.path, content: openFile.content };
+  if (openFile) context.openFile = { path: openFile.path, content: openFile.content, savedContent: openFile.savedContent };
   if (openFile) {
     context.selection = selection
       ? { state: "active", path: openFile.path, content: selection }
@@ -178,7 +180,7 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
             <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
           </div>
           : <>
-            <p className="proposal-stale">{t("chat.proposal_stale")}</p>
+            <p className="proposal-stale">{t(proposal.operation === "delete" && openFile?.content !== openFile?.savedContent ? "chat.proposal_delete_dirty" : "chat.proposal_stale")}</p>
             <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
           </>}
       </section>}

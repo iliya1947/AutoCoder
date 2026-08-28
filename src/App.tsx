@@ -75,7 +75,10 @@ function App() {
         } catch { setEditorError(t("editor.create_error")); }
       } else if (proposal.operation === "delete") {
         try {
-          const updated = await invoke<ProjectTree>("delete_project_file", { relativePath: proposal.path });
+          const updated = await invoke<ProjectTree>("delete_project_file", {
+            relativePath: proposal.path,
+            expectedContent: proposal.expectedSavedContent,
+          });
           setProject({ ...updated, children: transformProjectTree(updated.children) });
           setOpenFile(null);
           setEditorStatus("idle");

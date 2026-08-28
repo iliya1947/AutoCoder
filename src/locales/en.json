@@ -44,5 +44,6 @@
   "editor.create_error": "Unable to create the proposed file. It may already exist or its directory may be unavailable.",
   "chat.proposal_delete": "Proposed file deletion",
   "chat.delete_proposal": "Delete file",
+  "chat.proposal_delete_dirty": "Save or discard the unsaved changes before deleting this file.",
   "editor.delete_error": "Unable to delete the proposed file. It may have changed or no longer exist."
 }
