@@ -15,7 +15,7 @@ describe("chat request", () => {
     expect(request).toEqual({
       messages,
       context: {
-        openFile: { path: "src/main.ts", content: "const current = true;" },
+        openFile: { path: "src/main.ts", content: "const current = true;", savedContent: "const current = false;" },
         selection: { state: "none" },
       },
     });
@@ -63,7 +63,7 @@ describe("chat request", () => {
     };
 
     expect(buildChatRequest(messages, file, null, null).context).toEqual({
-      openFile: { path: "two.txt", content: "Тестовый файл номер 2" },
+      openFile: { path: "two.txt", content: "Тестовый файл номер 2", savedContent: "Тестовый файл номер 2" },
       selection: { state: "none" },
     });
   });
@@ -141,6 +141,11 @@ describe("chat request", () => {
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal({ name: "other.ts", path: "src/other.ts", content: "old", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal(null, { operation: "create", path: "src/new.ts", content: "new" })).toBe(true);
+    const deletion = { operation: "delete" as const, path: "src/main.ts", originalContent: "old", expectedSavedContent: "old" };
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "old" }, deletion)).toBe(true);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "older" }, deletion)).toBe(false);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "edited" }, deletion)).toBe(false);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "external" }, deletion)).toBe(false);
   });
 
   it("builds a line diff with stable old and new line numbers", () => {

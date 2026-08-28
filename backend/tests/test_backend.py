@@ -88,7 +88,7 @@ class BackendTests(unittest.TestCase):
             'Предлагаю изменение.\n```autocoder-file\n{"operation":"replace","path":"src/main.py","content":"print(42)\\n"}\n```',
         )
         payload = {
-            "context": {"openFile": {"path": "src/main.py", "content": "print(1)\n"}}
+            "context": {"openFile": {"path": "src/main.py", "content": "print(1)\n", "savedContent": "print(1)\n"}}
         }
 
         self.assertEqual(parse_file_proposal(answer, payload), {
@@ -103,9 +103,34 @@ class BackendTests(unittest.TestCase):
             "assistant",
             '```autocoder-file\n{"operation":"create","path":"../outside.py","content":"bad"}\n```',
         )
-        payload = {"context": {"openFile": {"path": "src/main.py", "content": "safe"}}}
+        payload = {"context": {"openFile": {"path": "src/main.py", "content": "safe", "savedContent": "safe"}}}
 
         self.assertIsNone(parse_file_proposal(answer, payload))
+
+    def test_extracts_delete_proposal_only_for_current_open_file(self):
+        payload = {"context": {"openFile": {"path": "src/main.py", "content": "print(1)\n", "savedContent": "print(1)\n"}}}
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"delete","path":"src/main.py"}\n```',
+        )
+
+        self.assertEqual(parse_file_proposal(answer, payload), {
+            "operation": "delete",
+            "path": "src/main.py",
+            "originalContent": "print(1)\n",
+            "expectedSavedContent": "print(1)\n",
+        })
+
+        other = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"delete","path":"src/other.py"}\n```',
+        )
+        self.assertIsNone(parse_file_proposal(other, payload))
+
+        dirty_payload = {"context": {"openFile": {
+            "path": "src/main.py", "content": "unsaved", "savedContent": "saved"
+        }}}
+        self.assertIsNone(parse_file_proposal(answer, dirty_payload))
 
     def test_extracts_new_file_proposal_for_an_absent_project_path(self):
         answer = Message(
@@ -176,7 +201,7 @@ class BackendTests(unittest.TestCase):
         messages = parse_request(
             {
                 "messages": [{"role": "user", "content": "Explain this"}],
-                "context": {"openFile": {"path": "src/main.py", "content": "print('hi')"}},
+                "context": {"openFile": {"path": "src/main.py", "content": "print('hi')", "savedContent": "print('hi')"}},
             }
         )
 
@@ -212,7 +237,7 @@ class BackendTests(unittest.TestCase):
                 "messages": [{"role": "user", "content": "Explain this"}],
                 "context": {
                     "project": {"name": "Empty project", "entries": []},
-                    "openFile": {"path": "README", "content": "draft"},
+                    "openFile": {"path": "README", "content": "draft", "savedContent": "draft"},
                 },
             }
         )
@@ -255,7 +280,7 @@ class BackendTests(unittest.TestCase):
             {
                 "messages": [{"role": "user", "content": "What is selected?"}],
                 "context": {
-                    "openFile": {"path": "two.txt", "content": "Тестовый файл номер 2"},
+                    "openFile": {"path": "two.txt", "content": "Тестовый файл номер 2", "savedContent": "Тестовый файл номер 2"},
                     "selection": {"state": "none"},
                 },
             }
@@ -276,6 +301,7 @@ class BackendTests(unittest.TestCase):
                     "openFile": {
                         "path": "АвтоКодер_тестовый файл.txt",
                         "content": "123 123 123",
+                        "savedContent": "123 123 123",
                     }
                 },
             }

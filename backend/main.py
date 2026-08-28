@@ -33,7 +33,7 @@ Path: {path}
 </selection>"""
 NO_SELECTION_PROMPT = """There is currently no active text selection in the AutoCoder editor.
 Treat questions about what is selected as referring to this selection state, not to the open file content."""
-FILE_PROPOSAL_PROMPT = """When the user explicitly asks you to change the open file or create a new project file, you may propose one file operation.
+FILE_PROPOSAL_PROMPT = """When the user explicitly asks you to change, create, or delete a project file, you may propose one file operation.
 Keep your explanation outside the block and emit exactly one block in one of these forms:
 ```autocoder-file
 {"operation": "replace", "path": "the exact open file path", "content": "the complete replacement text"}
@@ -41,7 +41,11 @@ Keep your explanation outside the block and emit exactly one block in one of the
 ```autocoder-file
 {"operation": "create", "path": "a new relative project file path", "content": "the complete new file text"}
 ```
+```autocoder-file
+{"operation": "delete", "path": "the exact open file path"}
+```
 Only propose create when the path is absent from the supplied project structure. Never use an absolute path or .. path components.
+Only propose delete for the currently open file, and only when its current content is identical to its saved content.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
@@ -106,9 +110,14 @@ def parse_request(payload: Any) -> list[Message]:
     if open_file is not None:
         if not isinstance(open_file, dict):
             raise ValueError("Open file context must be an object.")
-        path, content = open_file.get("path"), open_file.get("content")
-        if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
-            raise ValueError("Open file context needs a path and text content.")
+        path, content, saved_content = open_file.get("path"), open_file.get("content"), open_file.get("savedContent")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not isinstance(content, str)
+            or not isinstance(saved_content, str)
+        ):
+            raise ValueError("Open file context needs a path, text content, and saved content.")
         context_messages.append(Message(
             role="system",
             content=OPEN_FILE_PROMPT.format(path=path, content=content),
@@ -147,7 +156,7 @@ def parse_request(payload: Any) -> list[Message]:
 
 
 def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
-    """Extract a replacement of the open file or creation at a new project path."""
+    """Extract a safe replacement, creation, or deletion proposal."""
     match = FILE_PROPOSAL_PATTERN.search(answer.content)
     if match is None:
         return None
@@ -160,12 +169,27 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     project = context.get("project")
     if (
         not isinstance(proposal, dict)
-        or set(proposal) != {"operation", "path", "content"}
-        or proposal.get("operation") not in {"replace", "create"}
+        or proposal.get("operation") not in {"replace", "create", "delete"}
         or not isinstance(proposal.get("path"), str)
         or not proposal["path"].strip()
-        or not isinstance(proposal.get("content"), str)
     ):
+        return None
+    if proposal["operation"] == "delete":
+        if (
+            set(proposal) != {"operation", "path"}
+            or not isinstance(open_file, dict)
+            or proposal["path"] != open_file.get("path")
+            or not isinstance(open_file.get("content"), str)
+            or not isinstance(open_file.get("savedContent"), str)
+            or open_file["content"] != open_file["savedContent"]
+        ):
+            return None
+        return {
+            **proposal,
+            "originalContent": open_file["content"],
+            "expectedSavedContent": open_file["savedContent"],
+        }
+    if set(proposal) != {"operation", "path", "content"} or not isinstance(proposal.get("content"), str):
         return None
     if proposal["operation"] == "replace":
         if (

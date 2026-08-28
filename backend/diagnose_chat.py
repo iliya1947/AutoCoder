@@ -16,7 +16,11 @@ from urllib import error, request
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 PAYLOAD = {
     "messages": [{"role": "user", "content": "Ответь дословно только содержимым открытого файла"}],
-    "context": {"openFile": {"path": "АвтоКодер_тестовый файл.txt", "content": "123 123 123"}},
+    "context": {"openFile": {
+        "path": "АвтоКодер_тестовый файл.txt",
+        "content": "123 123 123",
+        "savedContent": "123 123 123",
+    }},
 }
 
 
