@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { ChatPanel } from "./components/ChatPanel";
+import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
@@ -18,6 +19,7 @@ function App() {
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [backupsOpen, setBackupsOpen] = useState(false);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -61,7 +63,15 @@ function App() {
     finally { setSaving(false); }
   };
 
-  return <div className="app-shell"><WorkspaceHeader /><main className="workspace">
+  const handleRestored = (backup: BackupEntry, updated: ProjectTree) => {
+    setProject({ ...updated, children: transformProjectTree(updated.children) });
+    setOpenFile({ name: backup.relativePath.split("/").pop() ?? backup.relativePath, path: backup.relativePath, content: backup.content, savedContent: backup.content });
+    setSelection(null);
+    setEditorStatus("ready");
+    setEditorError("");
+  };
+
+  return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={async (proposal) => {
@@ -91,7 +101,7 @@ function App() {
       }
       setSelection(null);
     }} />
-  </main></div>;
+  </main><BackupDialog open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={handleRestored} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
 }
 
 export default App;

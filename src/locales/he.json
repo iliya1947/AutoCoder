@@ -45,5 +45,13 @@
   "chat.proposal_delete": "מחיקת קובץ מוצעת",
   "chat.delete_proposal": "מחק קובץ",
   "chat.proposal_delete_dirty": "שמור או בטל את השינויים שלא נשמרו לפני מחיקת הקובץ.",
-  "editor.delete_error": "לא ניתן למחוק את הקובץ המוצע. ייתכן שהוא השתנה או אינו קיים עוד."
+  "editor.delete_error": "לא ניתן למחוק את הקובץ המוצע. ייתכן שהוא השתנה או אינו קיים עוד.",
+  "common.close": "סגור",
+  "backups.open": "גיבויים",
+  "backups.title": "גיבויי הפרויקט",
+  "backups.loading": "טוען גיבויים…",
+  "backups.empty": "אין גיבויים לפרויקט זה.",
+  "backups.error": "לא ניתן לקרוא או לשחזר את הגיבוי. ייתכן שהקובץ השתנה בדיסק.",
+  "backups.restore": "שחזר",
+  "backups.restoring": "משחזר…"
 }
