@@ -1,5 +1,6 @@
 use std::{
     fs,
+    fs::OpenOptions,
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
@@ -592,7 +593,75 @@ fn save_file(
     if rechecked_path != path {
         return Err("The file path changed while it was being saved.".to_string());
     }
-    fs::write(rechecked_path, content).map_err(|error| format!("Unable to save file: {error}"))
+    atomic_replace(&rechecked_path, content.as_bytes(), timestamp)
+        .map_err(|error| format!("Unable to save file: {error}"))
+}
+
+fn atomic_replace(path: &Path, content: &[u8], timestamp: u128) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "The file has no parent directory",
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let temporary = parent.join(format!(".{file_name}.autocoder-{timestamp}.tmp"));
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| {
+        file.set_permissions(fs::metadata(path)?.permissions())?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn replace_file(replacement: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(replacement, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(replacement: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let replacement: Vec<u16> = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let succeeded = unsafe {
+        ReplaceFileW(
+            destination.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if succeeded == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn is_excluded_directory(name: &str) -> bool {
@@ -997,6 +1066,25 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("notes.txt"));
+        assert_eq!(
+            fs::read_dir(directory.path()).unwrap().count(),
+            1,
+            "the atomic replacement must not leave a temporary file"
+        );
+    }
+
+    #[test]
+    fn atomic_replace_does_not_overwrite_an_existing_temporary_file() {
+        let (directory, file) = project();
+        let timestamp = 42;
+        let temporary = directory.path().join(".notes.txt.autocoder-42.tmp");
+        fs::write(&temporary, "do not overwrite").unwrap();
+
+        let error = atomic_replace(&file, b"after", timestamp).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(file).unwrap(), "before");
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "do not overwrite");
     }
 
     #[test]

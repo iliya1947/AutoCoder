@@ -4,6 +4,18 @@
 контекст редактора, предложение замены, построчный diff и lifecycle дочерних процессов.
 Проверку нужно выполнять на Windows 10/11 с установленной packaged-сборкой AutoCoder.
 
+## Фактический статус на 28 августа 2026
+
+- Основной сценарий контекста, proposal/diff, Reject, Apply, Save и backup: **PASS**.
+- Lifecycle owned Ollama, external Ollama и shutdown во время запроса: **PASS**.
+- Отсутствующий `ollama.exe`: **не проверено отдельно**.
+- Отсутствующая модель: **не проверено отдельно**.
+- HTTP 503 readiness: **не проверено отдельно**.
+
+Checklist сохраняется для воспроизведения уже подтверждённого основного сценария и будущих
+диагностических прогонов. Непроверенные негативные сценарии не отменяют подтверждённый
+результат основного packaged Windows-сценария.
+
 ## Подготовка
 
 1. Заранее установить Ollama и модель `qwen2.5-coder:7b`.
@@ -18,6 +30,19 @@
 3. Отключить сеть. Не удалять модель после отключения сети.
 4. Завершить все процессы Ollama и запустить установленный AutoCoder.
 5. Открыть тестовый проект и `chat-check.txt`.
+
+Перед проверкой зафиксировать среду в PowerShell, чтобы результат можно было повторить:
+
+```powershell
+Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber
+Get-FileHash "<путь к установленному autocoder.exe>" -Algorithm SHA256
+ollama list
+```
+
+Не помещать в отчёт имена пользователя, полный путь к домашнему каталогу и другие
+персональные данные. Для каждого раздела ниже использовать один из статусов: `PASS`,
+`FAIL` или `BLOCKED`. `BLOCKED` означает, что проверка не запускалась из-за конкретного
+ограничения среды, и не считается успешным результатом.
 
 ## Основной сценарий
 
@@ -69,3 +94,28 @@
 `send_chat_message failed` из DevTools и `AutoCoder chat backend failed` из журнала
 запуска. До успешного прохождения основного сценария не расширять File Tool на создание
 или удаление файлов.
+
+Скопировать в `Doc/PROJECT_STATE.md` заполненный блок:
+
+```text
+Дата и время (с часовым поясом):
+Windows edition/version/build:
+AutoCoder version и SHA-256:
+Ollama version:
+Модель из `ollama list`:
+Сеть физически отключена: PASS / FAIL / BLOCKED
+Основной сценарий: PASS / FAIL / BLOCKED
+Lifecycle owned Ollama: PASS / FAIL / BLOCKED
+Lifecycle external Ollama: PASS / FAIL / BLOCKED
+Закрытие во время запроса: PASS / FAIL / BLOCKED
+Ошибка отсутствующего executable: PASS / FAIL / BLOCKED
+Ошибка отсутствующей модели: PASS / FAIL / BLOCKED
+HTTP 503 не принят за readiness: PASS / FAIL / BLOCKED
+Backup (путь и проверенное исходное содержимое):
+Точная ошибка и диагностические строки при FAIL:
+Итог: PASS / FAIL / BLOCKED
+```
+
+Итоговый `PASS` допустим только тогда, когда все строки проверки имеют статус `PASS`.
+Если хотя бы одна строка имеет статус `FAIL` или `BLOCKED`, зафиксировать её как следующий
+конкретный шаг и не объявлять Windows-сценарий подтверждённым.
