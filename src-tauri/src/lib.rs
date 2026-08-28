@@ -621,15 +621,33 @@ fn atomic_replace(path: &Path, content: &[u8], timestamp: u128) -> std::io::Resu
         drop(file);
         replace_file(&temporary, path)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
     result
 }
 
 #[cfg(not(windows))]
 fn replace_file(replacement: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(replacement, destination)
+    let result = fs::rename(replacement, destination);
+    if result.is_err() {
+        let _ = fs::remove_file(replacement);
+    }
+    result
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum WindowsReplaceFailure {
+    OriginalNamesRetained,
+    RestoreSafetyBackup,
+}
+
+fn classify_windows_replace_failure(error_code: i32) -> WindowsReplaceFailure {
+    // Microsoft documents 1175 and 1176 (when lpBackupFileName is supplied)
+    // as retaining the original names. 1177 moves the old destination to the
+    // supplied backup name and therefore requires restoration before cleanup.
+    match error_code {
+        1177 => WindowsReplaceFailure::RestoreSafetyBackup,
+        1175 | 1176 => WindowsReplaceFailure::OriginalNamesRetained,
+        _ => WindowsReplaceFailure::OriginalNamesRetained,
+    }
 }
 
 #[cfg(windows)]
@@ -637,31 +655,78 @@ fn replace_file(replacement: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
-    let destination: Vec<u16> = destination
+    let mut safety_name = replacement.as_os_str().to_os_string();
+    safety_name.push(".replaced.bak");
+    let safety_backup = PathBuf::from(safety_name);
+    let destination_wide: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect();
-    let replacement: Vec<u16> = replacement
+    let replacement_wide: Vec<u16> = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let safety_backup_wide: Vec<u16> = safety_backup
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect();
     let succeeded = unsafe {
         ReplaceFileW(
-            destination.as_ptr(),
-            replacement.as_ptr(),
-            std::ptr::null(),
+            destination_wide.as_ptr(),
+            replacement_wide.as_ptr(),
+            safety_backup_wide.as_ptr(),
             0,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
     };
-    if succeeded == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    if succeeded != 0 {
+        let _ = fs::remove_file(safety_backup);
+        return Ok(());
     }
+
+    let error = std::io::Error::last_os_error();
+    let disposition = classify_windows_replace_failure(error.raw_os_error().unwrap_or_default());
+    if disposition == WindowsReplaceFailure::RestoreSafetyBackup || !destination.is_file() {
+        restore_windows_safety_backup(&safety_backup, destination).map_err(|restore_error| {
+            std::io::Error::new(
+                restore_error.kind(),
+                format!(
+                    "ReplaceFileW failed ({error}); restoring '{}' to '{}' also failed ({restore_error}). Recovery copies were preserved.",
+                    safety_backup.display(),
+                    destination.display()
+                ),
+            )
+        })?;
+    }
+    if destination.is_file() {
+        // Only discard the proposed new content after the old destination has
+        // been verified or restored. The app-data backup remains independent.
+        let _ = fs::remove_file(replacement);
+    }
+    Err(error)
+}
+
+#[cfg(windows)]
+fn restore_windows_safety_backup(safety_backup: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.is_file() {
+        return Ok(());
+    }
+    fs::rename(safety_backup, destination).or_else(|rename_error| {
+        if destination.exists() {
+            return Err(rename_error);
+        }
+        let mut source = fs::File::open(safety_backup)?;
+        let mut restored = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?;
+        std::io::copy(&mut source, &mut restored)?;
+        restored.sync_all()
+    })
 }
 
 fn is_excluded_directory(name: &str) -> bool {
@@ -1085,6 +1150,26 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(file).unwrap(), "before");
         assert_eq!(fs::read_to_string(temporary).unwrap(), "do not overwrite");
+    }
+
+    #[test]
+    fn classifies_documented_windows_replace_partial_failures() {
+        assert_eq!(
+            classify_windows_replace_failure(1175),
+            WindowsReplaceFailure::OriginalNamesRetained
+        );
+        assert_eq!(
+            classify_windows_replace_failure(1176),
+            WindowsReplaceFailure::OriginalNamesRetained
+        );
+        assert_eq!(
+            classify_windows_replace_failure(1177),
+            WindowsReplaceFailure::RestoreSafetyBackup
+        );
+        assert_eq!(
+            classify_windows_replace_failure(87),
+            WindowsReplaceFailure::OriginalNamesRetained
+        );
     }
 
     #[test]
