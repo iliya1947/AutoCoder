@@ -4,7 +4,9 @@ import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
-export type FileProposal = { path: string; content: string; originalContent: string };
+export type FileProposal =
+  | { operation: "replace"; path: string; content: string; originalContent: string }
+  | { operation: "create"; path: string; content: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null };
 type SelectionContext =
@@ -38,7 +40,8 @@ export function messagesForCurrentContext(
 }
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
-  return openFile?.path === proposal.path && openFile.content === proposal.originalContent;
+  return proposal.operation === "create"
+    || (openFile?.path === proposal.path && openFile.content === proposal.originalContent);
 }
 
 export function buildLineDiff(originalContent: string, proposedContent: string): DiffLine[] {
@@ -159,9 +162,9 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
         {t("chat.error")}<br /><code>{error}</code>
       </p>}
       {proposal && <section className="file-proposal">
-        <strong>{t("chat.proposal")}: {proposal.path}</strong>
+        <strong>{t(proposal.operation === "create" ? "chat.proposal_create" : "chat.proposal")}: {proposal.path}</strong>
         <div className="proposal-diff" role="table" aria-label={t("chat.proposal_diff")}>
-          {buildLineDiff(proposal.originalContent, proposal.content).map((line, index) => <div className={`diff-line ${line.kind}`} role="row" key={`${line.kind}-${index}`}>
+          {buildLineDiff(proposal.operation === "replace" ? proposal.originalContent : "", proposal.content).map((line, index) => <div className={`diff-line ${line.kind}`} role="row" key={`${line.kind}-${index}`}>
             <span className="diff-line-number" role="cell">{line.oldLine ?? ""}</span>
             <span className="diff-line-number" role="cell">{line.newLine ?? ""}</span>
             <span className="diff-marker" aria-hidden="true">{line.kind === "added" ? "+" : line.kind === "removed" ? "−" : " "}</span>
@@ -170,7 +173,7 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
         </div>
         {canApplyProposal(openFile, proposal)
           ? <div className="proposal-actions">
-            <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t("chat.apply_proposal")}</button>
+            <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t(proposal.operation === "create" ? "chat.create_proposal" : "chat.apply_proposal")}</button>
             <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
           </div>
           : <>

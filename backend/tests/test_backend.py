@@ -85,13 +85,14 @@ class BackendTests(unittest.TestCase):
     def test_extracts_file_proposal_for_current_open_file(self):
         answer = Message(
             "assistant",
-            'Предлагаю изменение.\n```autocoder-file\n{"path":"src/main.py","content":"print(42)\\n"}\n```',
+            'Предлагаю изменение.\n```autocoder-file\n{"operation":"replace","path":"src/main.py","content":"print(42)\\n"}\n```',
         )
         payload = {
             "context": {"openFile": {"path": "src/main.py", "content": "print(1)\n"}}
         }
 
         self.assertEqual(parse_file_proposal(answer, payload), {
+            "operation": "replace",
             "path": "src/main.py",
             "content": "print(42)\n",
             "originalContent": "print(1)\n",
@@ -100,11 +101,45 @@ class BackendTests(unittest.TestCase):
     def test_rejects_file_proposal_for_another_path(self):
         answer = Message(
             "assistant",
-            '```autocoder-file\n{"path":"../outside.py","content":"bad"}\n```',
+            '```autocoder-file\n{"operation":"create","path":"../outside.py","content":"bad"}\n```',
         )
         payload = {"context": {"openFile": {"path": "src/main.py", "content": "safe"}}}
 
         self.assertIsNone(parse_file_proposal(answer, payload))
+
+    def test_extracts_new_file_proposal_for_an_absent_project_path(self):
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"create","path":"src/new.py","content":"print(42)\\n"}\n```',
+        )
+        payload = {"context": {"project": {
+            "name": "demo", "entries": ["directory: src", "file: src/main.py"]
+        }}}
+
+        self.assertEqual(parse_file_proposal(answer, payload), {
+            "operation": "create", "path": "src/new.py", "content": "print(42)\n"
+        })
+
+    def test_rejects_new_file_proposal_for_an_existing_path(self):
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"create","path":"src/main.py","content":"replace"}\n```',
+        )
+        payload = {"context": {"project": {
+            "name": "demo", "entries": ["directory: src", "file: src/main.py"]
+        }}}
+
+        self.assertIsNone(parse_file_proposal(answer, payload))
+
+    def test_rejects_windows_unsafe_new_file_paths(self):
+        payload = {"context": {"project": {"name": "demo", "entries": []}}}
+        for path in ("existing.txt:stream", "CON.txt", "NUL.txt", "COM1.log", "bad?.txt", "bad*.txt", "bad. "):
+            answer = Message(
+                "assistant",
+                f'```autocoder-file\n{{"operation":"create","path":{json.dumps(path)},"content":"bad"}}\n```',
+            )
+            with self.subTest(path=path):
+                self.assertIsNone(parse_file_proposal(answer, payload))
 
     def test_invalid_utf8_stdin_uses_existing_error_path(self):
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"\xff")})()
@@ -168,7 +203,8 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Project: AutoCoder", messages[0].content)
         self.assertIn("file: backend/main.py", messages[0].content)
         self.assertIn("Do not assume their contents", messages[0].content)
-        self.assertEqual(messages[1], Message("user", "Where are the tests?"))
+        self.assertIn("autocoder-file", messages[1].content)
+        self.assertEqual(messages[2], Message("user", "Where are the tests?"))
 
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(
