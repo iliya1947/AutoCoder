@@ -826,11 +826,12 @@ fn restore_backup(
     if backup.current_content.as_deref() != expected_current_content {
         return Err("The file changed on disk after the backup list was opened.".to_string());
     }
-    if backup.current_content.is_some() {
-        save_file(
+    if let Some(expected_current_content) = expected_current_content {
+        save_file_checked(
             root,
             &backup.relative_path,
             &backup.content,
+            expected_current_content.as_bytes(),
             backup_root,
             timestamp,
         )
@@ -846,12 +847,58 @@ fn save_file(
     backup_root: &Path,
     timestamp: u128,
 ) -> Result<(), String> {
+    save_file_with_expected(
+        root,
+        relative_path,
+        content,
+        None,
+        backup_root,
+        timestamp,
+        || {},
+    )
+}
+
+fn save_file_checked(
+    root: &Path,
+    relative_path: &str,
+    content: &str,
+    expected_disk_content: &[u8],
+    backup_root: &Path,
+    timestamp: u128,
+) -> Result<(), String> {
+    save_file_with_expected(
+        root,
+        relative_path,
+        content,
+        Some(expected_disk_content),
+        backup_root,
+        timestamp,
+        || {},
+    )
+}
+
+fn save_file_with_expected<F>(
+    root: &Path,
+    relative_path: &str,
+    content: &str,
+    expected_disk_content: Option<&[u8]>,
+    backup_root: &Path,
+    timestamp: u128,
+    before_recheck: F,
+) -> Result<(), String>
+where
+    F: FnOnce(),
+{
     // Resolve immediately before backup and again before writing. This rejects
     // traversal and symlinks outside the project, including a path changed mid-save.
     let path = resolve_project_file(root, relative_path)?;
+    let disk_content = fs::read(&path).map_err(|error| format!("Unable to read file: {error}"))?;
+    if expected_disk_content.is_some_and(|expected| expected != disk_content) {
+        return Err("The file changed on disk after the backup list was opened.".to_string());
+    }
     let backup_dir = backup_root.join(timestamp.to_string());
     fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
-    fs::copy(&path, backup_dir.join("content.bak"))
+    fs::write(backup_dir.join("content.bak"), &disk_content)
         .map_err(|error| format!("Unable to create backup: {error}"))?;
 
     let metadata = BackupMetadata {
@@ -862,9 +909,15 @@ fn save_file(
     fs::write(backup_dir.join("metadata.json"), metadata_json)
         .map_err(|error| format!("Unable to save backup metadata: {error}"))?;
 
+    before_recheck();
     let rechecked_path = resolve_project_file(root, relative_path)?;
     if rechecked_path != path {
         return Err("The file path changed while it was being saved.".to_string());
+    }
+    let rechecked_content = fs::read(&rechecked_path)
+        .map_err(|error| format!("Unable to recheck file before saving: {error}"))?;
+    if rechecked_content != disk_content {
+        return Err("The file changed on disk while it was being backed up.".to_string());
     }
     atomic_replace(&rechecked_path, content.as_bytes(), timestamp)
         .map_err(|error| format!("Unable to save file: {error}"))
@@ -1531,6 +1584,61 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("changed on disk"));
         assert_eq!(fs::read_to_string(file).unwrap(), "new external content");
+    }
+
+    #[test]
+    fn refuses_restore_when_an_existing_file_changed_after_listing() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        save_file(
+            directory.path(),
+            "notes.txt",
+            "listed version",
+            backups.path(),
+            2_000_000,
+        )
+        .unwrap();
+        let listed = list_backups(directory.path(), backups.path()).unwrap();
+        let expected = listed[0].current_content.as_deref().unwrap();
+        fs::write(&file, "external version").unwrap();
+
+        let error = restore_backup(
+            directory.path(),
+            backups.path(),
+            "2000000",
+            Some(expected),
+            3_000_000,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed on disk"));
+        assert_eq!(fs::read_to_string(file).unwrap(), "external version");
+        assert!(!backups.path().join("3000000").exists());
+    }
+
+    #[test]
+    fn checked_save_refuses_a_change_between_backup_and_replacement() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        let file_during_recheck = file.clone();
+
+        let error = save_file_with_expected(
+            directory.path(),
+            "notes.txt",
+            "restored version",
+            Some(b"before"),
+            backups.path(),
+            2_000_000,
+            move || fs::write(file_during_recheck, "external version").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed on disk"));
+        assert_eq!(fs::read_to_string(file).unwrap(), "external version");
+        assert_eq!(
+            fs::read_to_string(backups.path().join("2000000/content.bak")).unwrap(),
+            "before"
+        );
     }
 
     #[test]
