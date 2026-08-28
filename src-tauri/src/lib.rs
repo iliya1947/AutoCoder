@@ -151,11 +151,21 @@ struct FileReadResult {
     content: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupMetadata {
     created_at_unix_ms: u128,
     original_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupEntry {
+    id: String,
+    created_at_unix_ms: u128,
+    relative_path: String,
+    content: String,
+    current_content: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -590,6 +600,54 @@ fn delete_project_file(
     })
 }
 
+#[tauri::command]
+fn list_project_backups(
+    app: tauri::AppHandle,
+    project_state: State<'_, ProjectState>,
+) -> Result<Vec<BackupEntry>, String> {
+    let root = project_root(&project_state)?;
+    let backup_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("backups");
+    list_backups(&root, &backup_root)
+}
+
+#[tauri::command]
+fn restore_project_backup(
+    app: tauri::AppHandle,
+    backup_id: String,
+    expected_current_content: Option<String>,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let backup_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("backups");
+    restore_backup(
+        &root,
+        &backup_root,
+        &backup_id,
+        expected_current_content.as_deref(),
+        timestamp,
+    )?;
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Project".to_string());
+    Ok(ProjectTree {
+        name,
+        children: read_directory(&root, &root),
+    })
+}
+
 fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
     project_state
         .root
@@ -695,6 +753,90 @@ fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
         return Err("This binary file cannot be opened as text.".to_string());
     }
     String::from_utf8(content).map_err(|error| format!("Unable to read this file as text: {error}"))
+}
+
+fn backup_entry(root: &Path, backup_root: &Path, id: &str) -> Result<BackupEntry, String> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("Invalid backup identifier.".to_string());
+    }
+    let canonical_root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let directory = backup_root.join(id);
+    let metadata: BackupMetadata = serde_json::from_slice(
+        &fs::read(directory.join("metadata.json"))
+            .map_err(|error| format!("Unable to read backup metadata: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid backup metadata: {error}"))?;
+    let original = PathBuf::from(&metadata.original_path);
+    let relative = original
+        .strip_prefix(&canonical_root)
+        .map_err(|_| "This backup belongs to another project.".to_string())?;
+    if relative.as_os_str().is_empty() || relative.components().any(|component| {
+        !matches!(component, std::path::Component::Normal(name) if is_safe_windows_path_component(name))
+    }) {
+        return Err("The backup path is unsafe.".to_string());
+    }
+    let content_bytes = fs::read(directory.join("content.bak"))
+        .map_err(|error| format!("Unable to read backup content: {error}"))?;
+    if is_binary(&content_bytes) {
+        return Err("Binary backups cannot be restored in the text editor.".to_string());
+    }
+    let content = String::from_utf8(content_bytes)
+        .map_err(|error| format!("Unable to read backup content as text: {error}"))?;
+    let relative_path = relative.to_string_lossy().replace('\\', "/");
+    let target = canonical_root.join(relative);
+    let current_content = if target.exists() {
+        Some(read_file(&canonical_root, &relative_path)?)
+    } else {
+        None
+    };
+    Ok(BackupEntry {
+        id: id.to_string(),
+        created_at_unix_ms: metadata.created_at_unix_ms,
+        relative_path,
+        content,
+        current_content,
+    })
+}
+
+fn list_backups(root: &Path, backup_root: &Path) -> Result<Vec<BackupEntry>, String> {
+    let mut backups = Vec::new();
+    let entries = match fs::read_dir(backup_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(backups),
+        Err(error) => return Err(format!("Unable to list backups: {error}")),
+    };
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if let Ok(backup) = backup_entry(root, backup_root, &id) {
+            backups.push(backup);
+        }
+    }
+    backups.sort_by(|left, right| right.created_at_unix_ms.cmp(&left.created_at_unix_ms));
+    Ok(backups)
+}
+
+fn restore_backup(
+    root: &Path,
+    backup_root: &Path,
+    id: &str,
+    expected_current_content: Option<&str>,
+    timestamp: u128,
+) -> Result<(), String> {
+    let backup = backup_entry(root, backup_root, id)?;
+    if backup.current_content.as_deref() != expected_current_content {
+        return Err("The file changed on disk after the backup list was opened.".to_string());
+    }
+    if backup.current_content.is_some() {
+        save_file(
+            root,
+            &backup.relative_path,
+            &backup.content,
+            backup_root,
+            timestamp,
+        )
+    } else {
+        create_file(root, &backup.relative_path, &backup.content)
+    }
 }
 
 fn save_file(
@@ -1311,6 +1453,87 @@ mod tests {
     }
 
     #[test]
+    fn lists_only_backups_for_the_open_project_and_restores_safely() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        save_file(
+            directory.path(),
+            "notes.txt",
+            "after",
+            backups.path(),
+            2_000_000,
+        )
+        .unwrap();
+
+        let other = backups.path().join("3000000");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("content.bak"), "foreign").unwrap();
+        fs::write(
+            other.join("metadata.json"),
+            serde_json::to_vec(&BackupMetadata {
+                created_at_unix_ms: 3,
+                original_path: directory
+                    .path()
+                    .join("../foreign.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let listed = list_backups(directory.path(), backups.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].relative_path, "notes.txt");
+        assert_eq!(listed[0].content, "before");
+        assert_eq!(listed[0].current_content.as_deref(), Some("after"));
+
+        let stale = restore_backup(
+            directory.path(),
+            backups.path(),
+            "2000000",
+            Some("stale"),
+            4_000_000,
+        );
+        assert!(stale.unwrap_err().contains("changed on disk"));
+        restore_backup(
+            directory.path(),
+            backups.path(),
+            "2000000",
+            Some("after"),
+            4_000_000,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "before");
+        assert_eq!(
+            fs::read_to_string(backups.path().join("4000000/content.bak")).unwrap(),
+            "after"
+        );
+    }
+
+    #[test]
+    fn restores_a_deleted_file_without_overwriting_a_new_file() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        delete_file(
+            directory.path(),
+            "notes.txt",
+            b"before",
+            backups.path(),
+            2_000_000,
+        )
+        .unwrap();
+
+        restore_backup(directory.path(), backups.path(), "2000000", None, 3_000_000).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "before");
+        fs::write(&file, "new external content").unwrap();
+        let error = restore_backup(directory.path(), backups.path(), "2000000", None, 4_000_000)
+            .unwrap_err();
+        assert!(error.contains("changed on disk"));
+        assert_eq!(fs::read_to_string(file).unwrap(), "new external content");
+    }
+
+    #[test]
     fn atomic_replace_does_not_overwrite_an_existing_temporary_file() {
         let (directory, file) = project();
         let timestamp = 42;
@@ -1532,6 +1755,8 @@ pub fn run() {
             save_project_file,
             create_project_file,
             delete_project_file,
+            list_project_backups,
+            restore_project_backup,
             send_chat_message
         ])
         .setup(|app| {

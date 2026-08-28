@@ -45,5 +45,13 @@
   "chat.proposal_delete": "Proposed file deletion",
   "chat.delete_proposal": "Delete file",
   "chat.proposal_delete_dirty": "Save or discard the unsaved changes before deleting this file.",
-  "editor.delete_error": "Unable to delete the proposed file. It may have changed or no longer exist."
+  "editor.delete_error": "Unable to delete the proposed file. It may have changed or no longer exist.",
+  "common.close": "Close",
+  "backups.open": "Backups",
+  "backups.title": "Project backups",
+  "backups.loading": "Loading backups…",
+  "backups.empty": "There are no backups for this project.",
+  "backups.error": "Unable to read or restore the backup. The file may have changed on disk.",
+  "backups.restore": "Restore",
+  "backups.restoring": "Restoring…"
 }

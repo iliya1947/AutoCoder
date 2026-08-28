@@ -468,3 +468,75 @@ button.tree-node.active {
   color: #ffb2b2;
   background: #49262d;
 }
+
+.header-actions {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.header-button,
+.backup-dialog button {
+  padding: 7px 10px;
+  border: 1px solid #506078;
+  border-radius: 6px;
+  color: #edf3ff;
+}
+
+.header-button:disabled { opacity: 0.45; }
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(5 9 16 / 75%);
+}
+
+.backup-dialog {
+  width: min(880px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  padding: 18px;
+  border: 1px solid #3a4965;
+  border-radius: 10px;
+  background: #171e2e;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
+}
+
+.backup-browser {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(300px, 1.3fr);
+  gap: 12px;
+  height: min(500px, 60vh);
+  margin: 16px 0;
+}
+
+.backup-list {
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.backup-list button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: start;
+  background: transparent;
+}
+
+.backup-list button.active { background: #273752; }
+.backup-list span { color: #9eabc2; font-size: 0.75rem; }
+.backup-preview { min-width: 0; overflow: hidden; border: 1px solid #35445d; background: #101521; }
+.backup-preview p { margin: 0; padding: 8px 12px; border-bottom: 1px solid #35445d; color: #aebbd4; }
+.backup-preview pre { height: calc(100% - 38px); margin: 0; padding: 12px; overflow: auto; color: #edf3ff; white-space: pre; }
+.backup-actions { justify-content: flex-end; }
+
+@media (max-width: 620px) {
+  .header-actions { width: 100%; align-items: stretch; justify-content: space-between; }
+  .backup-browser { grid-template-columns: 1fr; height: 55vh; }
+  .backup-preview { min-height: 220px; }
+}
