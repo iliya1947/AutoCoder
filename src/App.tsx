@@ -73,6 +73,14 @@ function App() {
           setEditorStatus("ready");
           setEditorError("");
         } catch { setEditorError(t("editor.create_error")); }
+      } else if (proposal.operation === "delete") {
+        try {
+          const updated = await invoke<ProjectTree>("delete_project_file", { relativePath: proposal.path });
+          setProject({ ...updated, children: transformProjectTree(updated.children) });
+          setOpenFile(null);
+          setEditorStatus("idle");
+          setEditorError("");
+        } catch { setEditorError(t("editor.delete_error")); }
       } else {
         setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
           ? { ...current, content: proposal.content }

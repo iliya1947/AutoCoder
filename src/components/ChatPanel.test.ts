@@ -141,6 +141,8 @@ describe("chat request", () => {
     expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal({ name: "other.ts", path: "src/other.ts", content: "old", savedContent: "old" }, proposal)).toBe(false);
     expect(canApplyProposal(null, { operation: "create", path: "src/new.ts", content: "new" })).toBe(true);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "old", savedContent: "old" }, { operation: "delete", path: "src/main.ts", originalContent: "old" })).toBe(true);
+    expect(canApplyProposal({ name: "main.ts", path: "src/main.ts", content: "edited", savedContent: "old" }, { operation: "delete", path: "src/main.ts", originalContent: "old" })).toBe(false);
   });
 
   it("builds a line diff with stable old and new line numbers", () => {

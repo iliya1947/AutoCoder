@@ -107,6 +107,25 @@ class BackendTests(unittest.TestCase):
 
         self.assertIsNone(parse_file_proposal(answer, payload))
 
+    def test_extracts_delete_proposal_only_for_current_open_file(self):
+        payload = {"context": {"openFile": {"path": "src/main.py", "content": "print(1)\n"}}}
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"delete","path":"src/main.py"}\n```',
+        )
+
+        self.assertEqual(parse_file_proposal(answer, payload), {
+            "operation": "delete",
+            "path": "src/main.py",
+            "originalContent": "print(1)\n",
+        })
+
+        other = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"delete","path":"src/other.py"}\n```',
+        )
+        self.assertIsNone(parse_file_proposal(other, payload))
+
     def test_extracts_new_file_proposal_for_an_absent_project_path(self):
         answer = Message(
             "assistant",

@@ -209,7 +209,8 @@ struct ChatResponse {
 struct FileProposal {
     operation: String,
     path: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     original_content: Option<String>,
 }
@@ -551,6 +552,33 @@ fn create_project_file(
     })
 }
 
+#[tauri::command]
+fn delete_project_file(
+    app: tauri::AppHandle,
+    relative_path: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let backup_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("backups");
+    delete_file(&root, &relative_path, &backup_root, timestamp)?;
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Project".to_string());
+    Ok(ProjectTree {
+        name,
+        children: read_directory(&root, &root),
+    })
+}
+
 fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
     project_state
         .root
@@ -687,6 +715,32 @@ fn save_file(
     }
     atomic_replace(&rechecked_path, content.as_bytes(), timestamp)
         .map_err(|error| format!("Unable to save file: {error}"))
+}
+
+fn delete_file(
+    root: &Path,
+    relative_path: &str,
+    backup_root: &Path,
+    timestamp: u128,
+) -> Result<(), String> {
+    let path = resolve_project_file(root, relative_path)?;
+    let backup_dir = backup_root.join(timestamp.to_string());
+    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
+    fs::copy(&path, backup_dir.join("content.bak"))
+        .map_err(|error| format!("Unable to create backup: {error}"))?;
+    let metadata = BackupMetadata {
+        created_at_unix_ms: timestamp / 1_000_000,
+        original_path: path.to_string_lossy().into_owned(),
+    };
+    let metadata_json = serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?;
+    fs::write(backup_dir.join("metadata.json"), metadata_json)
+        .map_err(|error| format!("Unable to save backup metadata: {error}"))?;
+
+    let rechecked_path = resolve_project_file(root, relative_path)?;
+    if rechecked_path != path {
+        return Err("The file path changed while it was being deleted.".to_string());
+    }
+    fs::remove_file(rechecked_path).map_err(|error| format!("Unable to delete file: {error}"))
 }
 
 fn atomic_replace(path: &Path, content: &[u8], timestamp: u128) -> std::io::Result<()> {
@@ -1307,6 +1361,35 @@ mod tests {
     }
 
     #[test]
+    fn deletes_a_file_only_after_preserving_a_backup() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        let timestamp = 1_725_000_000_456_000_000;
+
+        delete_file(directory.path(), "notes.txt", backups.path(), timestamp).unwrap();
+
+        assert!(!file.exists());
+        let backup_dir = backups.path().join(timestamp.to_string());
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("content.bak")).unwrap(),
+            "before"
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(backup_dir.join("metadata.json")).unwrap()).unwrap();
+        assert!(metadata["originalPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("notes.txt"));
+        assert!(delete_file(
+            directory.path(),
+            "../outside.txt",
+            backups.path(),
+            timestamp + 1
+        )
+        .is_err());
+    }
+
+    #[test]
     fn validates_windows_file_name_semantics_for_new_files() {
         for allowed in ["src", "new.txt", "данные-שלום.txt"] {
             assert!(is_safe_windows_path_component(std::ffi::OsStr::new(
@@ -1400,6 +1483,7 @@ pub fn run() {
             read_project_file,
             save_project_file,
             create_project_file,
+            delete_project_file,
             send_chat_message
         ])
         .setup(|app| {
