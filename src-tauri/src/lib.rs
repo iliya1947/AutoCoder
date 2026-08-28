@@ -581,11 +581,14 @@ fn create_file(root: &Path, relative_path: &str, content: &str) -> Result<(), St
     let relative = Path::new(relative_path);
     if relative.as_os_str().is_empty()
         || relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || relative.components().any(|component| match component {
+            std::path::Component::Normal(name) => !is_safe_windows_path_component(name),
+            _ => true,
+        })
     {
-        return Err("The new file path must be a normalized relative path.".to_string());
+        return Err(
+            "The new file path must use normalized, Windows-safe relative names.".to_string(),
+        );
     }
 
     let canonical_root = fs::canonicalize(root).map_err(|error| error.to_string())?;
@@ -613,6 +616,37 @@ fn create_file(root: &Path, relative_path: &str, content: &str) -> Result<(), St
         return Err(format!("Unable to create file: {error}"));
     }
     Ok(())
+}
+
+fn is_safe_windows_path_component(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if name.is_empty()
+        || name.ends_with(['.', ' '])
+        || name.chars().any(|character| {
+            character <= '\u{1f}'
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\'
+                )
+        })
+    {
+        return false;
+    }
+
+    let device_name = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !device_name.strip_prefix("COM").is_some_and(|number| {
+            matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+        && !device_name.strip_prefix("LPT").is_some_and(|number| {
+            matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
 }
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
@@ -1270,6 +1304,42 @@ mod tests {
         );
         assert!(create_file(directory.path(), "src/new.txt", "overwritten").is_err());
         assert!(create_file(directory.path(), "../outside.txt", "escaped").is_err());
+    }
+
+    #[test]
+    fn validates_windows_file_name_semantics_for_new_files() {
+        for allowed in ["src", "new.txt", "данные-שלום.txt"] {
+            assert!(is_safe_windows_path_component(std::ffi::OsStr::new(
+                allowed
+            )));
+        }
+        for denied in [
+            "existing.txt:stream",
+            "CON",
+            "CON.txt",
+            "NUL.txt",
+            "COM1.log",
+            "question?.txt",
+            "star*.txt",
+            "trailing.",
+            "trailing ",
+        ] {
+            assert!(
+                !is_safe_windows_path_component(std::ffi::OsStr::new(denied)),
+                "unexpectedly allowed {denied}"
+            );
+        }
+    }
+
+    #[test]
+    fn creates_a_file_with_a_normal_unicode_name() {
+        let (directory, _) = project();
+        fs::create_dir(directory.path().join("src")).unwrap();
+        create_file(directory.path(), "src/данные-שלום.txt", "unicode").unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("src/данные-שלום.txt")).unwrap(),
+            "unicode"
+        );
     }
 
     #[test]

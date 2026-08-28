@@ -131,6 +131,16 @@ class BackendTests(unittest.TestCase):
 
         self.assertIsNone(parse_file_proposal(answer, payload))
 
+    def test_rejects_windows_unsafe_new_file_paths(self):
+        payload = {"context": {"project": {"name": "demo", "entries": []}}}
+        for path in ("existing.txt:stream", "CON.txt", "NUL.txt", "COM1.log", "bad?.txt", "bad*.txt", "bad. "):
+            answer = Message(
+                "assistant",
+                f'```autocoder-file\n{{"operation":"create","path":{json.dumps(path)},"content":"bad"}}\n```',
+            )
+            with self.subTest(path=path):
+                self.assertIsNone(parse_file_proposal(answer, payload))
+
     def test_invalid_utf8_stdin_uses_existing_error_path(self):
         binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"\xff")})()
         stderr = io.StringIO()

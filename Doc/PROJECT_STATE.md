@@ -12,6 +12,11 @@
 
 ## Что подтверждено как сделанное
 
+### Windows-safe имена при создании файла (28 августа 2026)
+- Финальная Rust-проверка create path теперь отклоняет Windows-недопустимые символы и управляющие символы, trailing dot/space, Alternate Data Stream syntax с `:` и зарезервированные DOS device names, включая варианты с расширением. Обычные Unicode-имена разрешены; canonical parent, project-root boundary, существующий parent, `create_new` и cleanup при ошибке сохранены без изменений.
+- Python выполняет такую же предварительную фильтрацию, чтобы заведомо неприменимое предложение не попадало в preview, но security boundary остаётся в Tauri/Rust.
+- Правила сверены с Microsoft `Naming Files, Paths, and Namespaces` и `File Streams`: https://learn.microsoft.com/windows/win32/fileio/naming-a-file и https://learn.microsoft.com/windows/win32/fileio/file-streams.
+
 ### Безопасное предложение создания нового файла (28 августа 2026)
 - Контракт AI proposal теперь явно различает `replace` и `create`. Создание доступно при открытом проекте даже без открытого файла; backend принимает только новый относительный путь, отсутствующий в переданной структуре проекта.
 - UI показывает содержимое нового файла как полностью добавленный построчный preview и создаёт файл только после отдельного нажатия пользователя. После успеха дерево проекта обновляется, а новый сохранённый файл открывается в Monaco.

@@ -44,6 +44,20 @@ Keep your explanation outside the block and emit exactly one block in one of the
 Only propose create when the path is absent from the supplied project structure. Never use an absolute path or .. path components.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+}
+
+
+def is_safe_windows_relative_path(path: str) -> bool:
+    components = path.replace("\\", "/").split("/")
+    return all(
+        component not in {"", ".", ".."}
+        and not component.endswith((".", " "))
+        and not any(ord(character) <= 0x1F or character in '<>:"|?*' for character in component)
+        and component.split(".", 1)[0].upper() not in WINDOWS_RESERVED_NAMES
+        for component in components
+    )
 
 
 def parse_messages(payload: Any) -> list[Message]:
@@ -170,7 +184,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     if (
         not isinstance(entries, list)
         or normalized.startswith("/")
-        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        or not is_safe_windows_relative_path(proposal["path"])
         or f"file: {normalized}" in normalized_entries
         or f"directory: {normalized}" in normalized_entries
     ):
