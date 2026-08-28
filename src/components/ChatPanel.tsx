@@ -20,7 +20,11 @@ export type ChatRequest = {
 };
 
 export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
-  return JSON.stringify([project?.name ?? null, openFile?.path ?? null, selection]);
+  return JSON.stringify([
+    project ? [project.name, projectEntries(project.children)] : null,
+    openFile ? [openFile.path, openFile.content] : null,
+    selection,
+  ]);
 }
 
 export function messagesForCurrentContext(
