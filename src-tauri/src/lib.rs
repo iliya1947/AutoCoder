@@ -256,7 +256,18 @@ fn send_chat_message(
 fn uses_managed_local_ollama() -> bool {
     let url = std::env::var("AUTOCODER_OLLAMA_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:11434/api/chat".into());
-    url.starts_with("http://127.0.0.1:11434/") || url.starts_with("http://localhost:11434/")
+    is_managed_local_ollama_url(&url)
+}
+
+fn is_managed_local_ollama_url(url: &str) -> bool {
+    let Ok(url) = tauri::Url::parse(url) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && matches!(
+            url.host_str(),
+            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+        )
 }
 
 fn ollama_is_ready() -> bool {
@@ -732,6 +743,20 @@ mod tests {
         assert_eq!(windows_creation_flags(true, true, true), 0);
         assert_eq!(windows_creation_flags(false, true, false), 0);
         assert_eq!(windows_creation_flags(true, false, false), 0);
+    }
+
+    #[test]
+    fn managed_ollama_url_accepts_supported_loopback_hosts_only() {
+        assert!(is_managed_local_ollama_url(
+            "http://127.0.0.1:11434/api/chat"
+        ));
+        assert!(is_managed_local_ollama_url(
+            "http://localhost:11434/api/chat"
+        ));
+        assert!(is_managed_local_ollama_url("http://[::1]:11434/api/chat"));
+        assert!(!is_managed_local_ollama_url(
+            "https://ollama.example.com/api/chat"
+        ));
     }
 
     #[test]
