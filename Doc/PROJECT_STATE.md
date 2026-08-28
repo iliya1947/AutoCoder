@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-28 августа 2026 (начата реализация минимального Terminal Tool).
+28 августа 2026 (исправлены Windows blocker-ы минимального Terminal Tool).
 
 ## Текущий этап
 
@@ -14,8 +14,9 @@
 
 ### Минимальный Terminal Tool (28 августа 2026)
 - В центральную рабочую область добавлена минимальная terminal-панель: она доступна только после открытия проекта, принимает одну явную пользовательскую команду и показывает stdout, stderr и exit code.
-- Tauri выполняет команду с рабочим каталогом в canonical project root через `cmd.exe` на Windows и `sh` в среде разработки; выполнение вынесено из async runtime thread в blocking task. Запуск проходит через тот же общий `ProcessLifecycle`, что Ollama и bundled Python: на Windows shell назначается существующему Job Object до resume, поэтому команда и descendants завершаются при shutdown AutoCoder без воздействия на внешние процессы.
-- Добавлены frontend-тест состояния панели и Rust-регрессии cwd/stdout/stderr/exit code, запрета пустой команды, Windows shutdown во время долгой terminal-команды и сохранения внешнего процесса. Frontend/backend tests, production/offline build и Rust formatting проходят в Linux; запуск Rust-тестов в контейнере по-прежнему ограничен отсутствием системной `glib-2.0`. Следующий шаг — проверить минимальную terminal-панель и её lifecycle в packaged Windows-приложении, включая stderr, ненулевой exit code, descendants и незатронутый внешний процесс. AI не запускает команды автоматически, история и отмена из UI пока не добавлены.
+- Фактическая Windows-проверка выявила два blocker-а: `std::fs::canonicalize` возвращал локальный путь с extended-length prefix `\\?\`, который `cmd.exe` интерпретировал как неподдерживаемый UNC cwd; stdout/stderr безусловно декодировались как UTF-8, хотя `cmd.exe` использует Windows console code page. Canonical root остаётся security boundary, но перед `CreateProcessW` только локальный `VerbatimDisk` cwd преобразуется обратно в обычный drive path; настоящий `VerbatimUNC` не преобразуется. `cmd.exe /U` теперь выдаёт перенаправленный вывод в Unicode (UTF-16LE), и обе pipe декодируются соответственно. Решение основано на официальной документации Microsoft для [`cmd /U`](https://learn.microsoft.com/windows-server/administration/windows-commands/cmd), [console code pages](https://learn.microsoft.com/windows/console/console-code-pages) и [extended-length paths](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation).
+- Выполнение по-прежнему вынесено из async runtime thread в blocking task и проходит через тот же общий `ProcessLifecycle`, что Ollama и bundled Python: на Windows скрытый shell назначается существующему Job Object до resume, поэтому команда и descendants завершаются при shutdown AutoCoder без воздействия на внешние процессы. AI не запускает команды автоматически; PTY, persistent session, history, streaming и новая approval-логика не добавлялись.
+- Добавлены regression-тесты ASCII stdout/exit 0, реального cwd, Unicode project directory, сохранения настоящего UNC-представления, Unicode stdout/stderr, ненулевого exit code и shutdown долгого shell с descendant при сохранении внешнего процесса. Следующий шаг — повторить эти regression-сценарии в packaged Windows-сборке; до этого blocker-ы исправлены в коде, но новую сборку нельзя считать фактически подтверждённой на Windows.
 
 ### Просмотр и безопасное восстановление backup-копий (28 августа 2026)
 - В header добавлен доступный только при открытом проекте менеджер backup-копий: он показывает относящиеся к проекту версии в обратном хронологическом порядке и их текстовое содержимое.

@@ -686,7 +686,10 @@ fn run_project_command(
     #[cfg(windows)]
     let mut process = {
         let mut process = Command::new("cmd.exe");
-        process.args(["/D", "/S", "/C", command]);
+        // cmd.exe normally writes redirected output using a console code page. /U
+        // makes its redirected output UTF-16LE, so it can be decoded without
+        // depending on the machine's locale or active console code page.
+        process.args(["/D", "/U", "/S", "/C", command]);
         process
     };
     #[cfg(not(windows))]
@@ -695,8 +698,12 @@ fn run_project_command(
         process.args(["-c", command]);
         process
     };
+    #[cfg(windows)]
+    let shell_root = windows_shell_directory(&root);
+    #[cfg(not(windows))]
+    let shell_root = root.clone();
     process
-        .current_dir(&root)
+        .current_dir(&shell_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -709,9 +716,50 @@ fn run_project_command(
         .map_err(|error| format!("Unable to collect command output: {error}"))?;
     Ok(TerminalResult {
         exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: decode_terminal_output(&output.stdout),
+        stderr: decode_terminal_output(&output.stderr),
     })
+}
+
+#[cfg(windows)]
+fn windows_shell_directory(canonical_root: &Path) -> PathBuf {
+    use std::path::Prefix;
+
+    let mut components = canonical_root.components();
+    match components.next() {
+        // std::fs::canonicalize uses an extended-length path. cmd.exe treats a
+        // local \\?\C:\... cwd like a UNC cwd, so remove only the VerbatimDisk
+        // marker. VerbatimUNC is deliberately left unchanged.
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::VerbatimDisk(_)) =>
+        {
+            let drive = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => drive as char,
+                _ => unreachable!(),
+            };
+            let remainder = components.as_path();
+            PathBuf::from(format!("{drive}:\\")).join(remainder)
+        }
+        _ => canonical_root.to_path_buf(),
+    }
+}
+
+#[cfg(windows)]
+fn decode_terminal_output(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+    let mut units = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    if let Some(remainder) = bytes.chunks_exact(2).remainder().first() {
+        units.push(u16::from(*remainder));
+    }
+    String::from_utf16_lossy(&units)
+}
+
+#[cfg(not(windows))]
+fn decode_terminal_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
@@ -1288,6 +1336,63 @@ mod tests {
     }
 
     #[test]
+    fn terminal_ascii_stdout_is_readable() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result =
+            run_project_command(directory.path(), "echo AUTOCODER_TERMINAL_OK", &lifecycle)
+                .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("AUTOCODER_TERMINAL_OK"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_uses_unicode_project_directory_without_verbatim_cwd() {
+        let parent = TempDir::new().expect("temporary parent");
+        let directory = parent.path().join("AutoCoder_Тест");
+        fs::create_dir(&directory).unwrap();
+        let canonical = fs::canonicalize(&directory).unwrap();
+        let shell_directory = windows_shell_directory(&canonical);
+
+        assert_eq!(shell_directory, directory);
+        assert!(!shell_directory.to_string_lossy().starts_with(r"\\?\"));
+
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(&directory, "cd", &lifecycle).unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout.trim(), directory.to_string_lossy());
+        assert!(!result.stderr.contains("UNC"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_preserves_real_unc_directory_representation() {
+        let unc = Path::new(r"\\?\UNC\server\share\AutoCoder_Тест");
+        assert_eq!(windows_shell_directory(unc), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_unicode_stdout_and_stderr() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "echo Русский stdout & echo Русский stderr 1>&2 & exit /b 9",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(9));
+        assert!(result.stdout.contains("Русский stdout"));
+        assert!(result.stderr.contains("Русский stderr"));
+        assert!(!result.stdout.contains('�'));
+        assert!(!result.stderr.contains('�'));
+    }
+
+    #[test]
     fn terminal_rejects_empty_command() {
         let (directory, _) = project();
         let lifecycle = ProcessLifecycle::new().unwrap();
@@ -1308,7 +1413,12 @@ mod tests {
         let lifecycle = ProcessLifecycle::new().unwrap();
         let mut command = Command::new("cmd.exe");
         command
-            .args(["/D", "/S", "/C", "ping 127.0.0.1 -n 60 >nul"])
+            .args([
+                "/D",
+                "/S",
+                "/C",
+                "cmd.exe /D /S /C \"ping 127.0.0.1 -n 60 >nul\"",
+            ])
             .current_dir(directory.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
