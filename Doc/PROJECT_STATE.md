@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-28 августа 2026 (обновлено после переноса ownership Ollama в desktop runtime и скрытия production-консолей).
+28 августа 2026 (обновлено после введения общего lifecycle manager служебных процессов).
 
 ## Текущий этап
 
@@ -11,6 +11,21 @@
 Файловый сценарий и backup фактически подтверждены на Windows. Чат передаёт историю, текущий текст открытого файла и read-only структуру проекта через Tauri в минимальный Python-backend и получает ответ локального Ollama; инструменты и постоянное хранение истории пока не подключены.
 
 ## Что подтверждено как сделанное
+
+### Общий lifecycle owned-процессов и HTTP readiness Ollama (28 августа 2026)
+- Добавлена единая desktop-точка запуска owned-процессов `ProcessLifecycle`. На Windows она создаёт Job Object, включает `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, назначает в Job только процессы, запущенные AutoCoder, запрещает новые запуски при shutdown и завершает содержимое Job. Ollama и bundled Python запускаются через этот механизм; внешний Ollama не назначается. Использованы официальные Win32 API: https://learn.microsoft.com/windows/win32/procthread/job-objects, https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject и https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject.
+- Readiness больше не определяется открытым TCP-портом: Rust выполняет bounded `GET /api/version`, требует HTTP 200 и непустое JSON-поле `version`, как описано в https://docs.ollama.com/api-reference/get-version. Python chat bridge не запускается до готовности API.
+- Для managed loopback endpoint startup Ollama инициируется bounded background-потоком во время Tauri setup. Готовый внешний Ollama используется без ownership; owned `ollama serve` запускается только при неготовом API. Модель при startup не загружается, runtime-download и Windows autostart не добавлены.
+- Сохранены `CREATE_NO_WINDOW`, диагностический `AUTOCODER_SHOW_CHILD_CONSOLES` и JSON-over-pipes bridge. Job охватывает Python/Ollama descendants; непосредственный Ollama `Child` дополнительно reaped идемпотентным shutdown.
+- Добавлены тесты HTTP 503 при открытом TCP-порту, успешного `/api/version`, повторных запросов, external/owned Ollama, идемпотентного shutdown и запрета launch после shutdown. `cargo fmt --check` проходит; `cargo check`/`cargo test` в Linux-контейнере ограничены отсутствием `glib-2.0 >= 2.70`.
+
+### Windows packaged manual test — ожидает целевую Windows-машину
+Текущий контейнер Linux не предоставляет Task Manager или packaged Windows executable, поэтому следующие результаты не объявляются пройденными:
+1. **Owned Ollama:** перед запуском удалить Ollama-процессы; убедиться, что один `ollama.exe` появляется до первого сообщения; первый и последующие запросы проходят без второго launch и console window; после закрытия не остаются принадлежащие AutoCoder Ollama, llama-server, Python или helper processes.
+2. **Внешний Ollama:** запустить Ollama до AutoCoder; убедиться, что используется существующий API; после закрытия AutoCoder внешний Ollama и descendants продолжают работу.
+3. **Shutdown во время запроса:** начать AI request с owned Ollama и закрыть AutoCoder; убедиться, что созданные AutoCoder Python/Ollama/llama-server/helper processes отсутствуют.
+
+Фактический статус на 28 августа 2026: Linux-доступные automated checks выполнены; все три packaged Windows сценария требуют ручного запуска и фиксации результата на целевой машине.
 
 ### Desktop lifecycle Ollama и Windows child process UX (28 августа 2026)
 - Ownership локального `ollama serve` перенесён из короткоживущего Python chat-процесса в Tauri state. Если порт локального Ollama уже доступен, AutoCoder не запускает и не сохраняет чужой процесс; если AutoCoder запускает процесс сам, хранится именно его `std::process::Child`, без поиска/завершения процессов по имени или PID.

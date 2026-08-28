@@ -1,13 +1,16 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    net::{TcpStream, ToSocketAddrs},
+    net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+mod process_lifecycle;
+use process_lifecycle::ProcessLifecycle;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
@@ -27,16 +30,27 @@ struct ProjectState {
     root: Mutex<Option<PathBuf>>,
 }
 
-#[derive(Default)]
 struct OllamaState {
     owned: Mutex<Option<Child>>,
+    lifecycle: Arc<ProcessLifecycle>,
+}
+
+impl OllamaState {
+    fn new(lifecycle: Arc<ProcessLifecycle>) -> Self {
+        Self {
+            owned: Mutex::new(None),
+            lifecycle,
+        }
+    }
 }
 
 impl OllamaState {
     fn ensure_running(&self) -> Result<(), String> {
-        self.ensure_running_with(ollama_is_ready, launch_ollama, || {
-            thread::sleep(std::time::Duration::from_millis(250))
-        })
+        self.ensure_running_with(
+            ollama_is_ready,
+            || launch_ollama(&self.lifecycle),
+            || thread::sleep(std::time::Duration::from_millis(250)),
+        )
     }
 
     fn ensure_running_with<R, L, S>(
@@ -250,7 +264,7 @@ fn send_chat_message(
     if uses_managed_local_ollama() {
         ollama.ensure_running()?;
     }
-    run_chat_backend(&resource_dir, &request)
+    run_chat_backend(&resource_dir, &request, &ollama.lifecycle)
 }
 
 fn uses_managed_local_ollama() -> bool {
@@ -271,18 +285,51 @@ fn is_managed_local_ollama_url(url: &str) -> bool {
 }
 
 fn ollama_is_ready() -> bool {
-    ("127.0.0.1", 11434)
-        .to_socket_addrs()
+    ollama_api_is_ready("127.0.0.1:11434", std::time::Duration::from_millis(750))
+}
+
+fn ollama_api_is_ready(address: &str, timeout: std::time::Duration) -> bool {
+    let Ok(mut stream) = TcpStream::connect_timeout(
+        &match address.parse() {
+            Ok(value) => value,
+            Err(_) => return false,
+        },
+        timeout,
+    ) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /api/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = Vec::new();
+    if std::io::Read::read_to_end(&mut stream, &mut response).is_err() {
+        return false;
+    }
+    let Some(split) = response.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        return false;
+    };
+    let Ok(headers) = std::str::from_utf8(&response[..split]) else {
+        return false;
+    };
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("HTTP/1.1 200 ") || line.starts_with("HTTP/1.0 200 "))
+    {
+        return false;
+    }
+    serde_json::from_slice::<serde_json::Value>(&response[split + 4..])
         .ok()
-        .and_then(|mut addresses| {
-            addresses
-                .any(|address| {
-                    TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
-                        .is_ok()
-                })
-                .then_some(())
+        .is_some_and(|json| {
+            json.get("version")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|version| !version.is_empty())
         })
-        .is_some()
 }
 
 fn ollama_executable() -> Option<PathBuf> {
@@ -309,7 +356,7 @@ fn ollama_executable() -> Option<PathBuf> {
     })
 }
 
-fn launch_ollama() -> Result<Child, String> {
+fn launch_ollama(lifecycle: &ProcessLifecycle) -> Result<Child, String> {
     let executable = ollama_executable().ok_or_else(|| {
         "Local Ollama was not found. Install Ollama; automatic downloads are disabled.".to_string()
     })?;
@@ -320,8 +367,7 @@ fn launch_ollama() -> Result<Child, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    configure_child_process(&mut command);
-    let mut child = command.spawn().map_err(|error| {
+    let mut child = lifecycle.spawn(&mut command).map_err(|error| {
         format!(
             "Failed to start Ollama at '{}': {error}",
             executable.display()
@@ -375,7 +421,11 @@ fn backend_paths(resource_dir: &Path, python_override: Option<PathBuf>) -> (Path
     (python, backend)
 }
 
-fn run_chat_backend(resource_dir: &Path, request: &ChatRequest) -> Result<ChatResponse, String> {
+fn run_chat_backend(
+    resource_dir: &Path,
+    request: &ChatRequest,
+    lifecycle: &ProcessLifecycle,
+) -> Result<ChatResponse, String> {
     let python_override = std::env::var_os("AUTOCODER_PYTHON")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
@@ -404,8 +454,7 @@ fn run_chat_backend(resource_dir: &Path, request: &ChatRequest) -> Result<ChatRe
     if uses_managed_local_ollama() {
         command.env("AUTOCODER_OLLAMA_MANAGED", "1");
     }
-    configure_child_process(&mut command);
-    let mut child = command.spawn().map_err(|error| {
+    let mut child = lifecycle.spawn(&mut command).map_err(|error| {
         format!(
             "Unable to start the AI backend with Python runtime '{}': {error}",
             python.display()
@@ -646,6 +695,7 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
     use tempfile::TempDir;
 
     fn project() -> (TempDir, PathBuf) {
@@ -663,9 +713,55 @@ mod tests {
             .expect("sleep fixture")
     }
 
+    fn one_response_server(response: &'static [u8]) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            stream.write_all(response).unwrap();
+        });
+        (address, handle)
+    }
+
+    #[test]
+    fn open_tcp_port_without_version_api_is_not_ready() {
+        let (address, server) = one_response_server(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert!(!ollama_api_is_ready(
+            &address,
+            std::time::Duration::from_secs(1)
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn successful_version_api_is_ready() {
+        let (address, server) = one_response_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"version\":\"0.11.0\"}",
+        );
+        assert!(ollama_api_is_ready(
+            &address,
+            std::time::Duration::from_secs(1)
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn lifecycle_shutdown_is_idempotent_and_rejects_new_launches() {
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        lifecycle.shutdown();
+        lifecycle.shutdown();
+        assert!(!lifecycle.is_accepting());
+        let mut command = Command::new("must-not-run");
+        assert!(lifecycle.spawn(&mut command).is_err());
+    }
+
     #[test]
     fn existing_ollama_is_not_owned_or_stopped() {
-        let state = OllamaState::default();
+        let state = OllamaState::new(Arc::new(ProcessLifecycle::new().unwrap()));
         let mut launched = false;
         state
             .ensure_running_with(
@@ -685,7 +781,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn owned_ollama_is_stopped_and_reaped_on_shutdown() {
-        let state = OllamaState::default();
+        let state = OllamaState::new(Arc::new(ProcessLifecycle::new().unwrap()));
         *state.owned.lock().unwrap() = Some(sleeping_child("30"));
         state.shutdown();
         assert!(state.owned.lock().unwrap().is_none());
@@ -694,7 +790,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shutdown_is_safe_when_owned_ollama_already_exited() {
-        let state = OllamaState::default();
+        let state = OllamaState::new(Arc::new(ProcessLifecycle::new().unwrap()));
         let mut child = Command::new("true").spawn().unwrap();
         child.wait().unwrap();
         *state.owned.lock().unwrap() = Some(child);
@@ -706,7 +802,7 @@ mod tests {
     #[test]
     fn repeated_requests_do_not_launch_another_owned_ollama() {
         use std::cell::Cell;
-        let state = OllamaState::default();
+        let state = OllamaState::new(Arc::new(ProcessLifecycle::new().unwrap()));
         let ready_calls = Cell::new(0);
         let launches = Cell::new(0);
         state
@@ -966,9 +1062,12 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let lifecycle =
+        Arc::new(ProcessLifecycle::new().expect("unable to initialize owned process lifecycle"));
     let app = tauri::Builder::default()
         .manage(ProjectState::default())
-        .manage(OllamaState::default())
+        .manage(OllamaState::new(Arc::clone(&lifecycle)))
+        .manage(Arc::clone(&lifecycle))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -984,12 +1083,21 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            if uses_managed_local_ollama() {
+                let app_handle = app.handle().clone();
+                thread::spawn(move || {
+                    if let Err(error) = app_handle.state::<OllamaState>().ensure_running() {
+                        eprintln!("Managed Ollama startup failed: {error}");
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            app_handle.state::<Arc<ProcessLifecycle>>().shutdown();
             app_handle.state::<OllamaState>().shutdown();
         }
     });
