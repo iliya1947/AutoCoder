@@ -16,7 +16,7 @@ pub(crate) enum ChildIo {
 }
 
 #[cfg(any(windows, test))]
-fn owned_creation_flags(no_window: bool) -> u32 {
+pub(crate) fn owned_creation_flags(no_window: bool) -> u32 {
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
     const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -132,8 +132,8 @@ unsafe impl Sync for ProcessLifecycle {}
 mod windows {
     use super::*;
     use std::{
-        collections::BTreeMap,
-        ffi::{OsStr, OsString},
+        cmp::Ordering,
+        ffi::OsStr,
         fs::File,
         io::Read,
         mem::{size_of, zeroed},
@@ -145,6 +145,7 @@ mod windows {
             CloseHandle, GetLastError, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
             STILL_ACTIVE, WAIT_OBJECT_0,
         },
+        Globalization::{CompareStringOrdinal, CSTR_EQUAL, CSTR_LESS_THAN},
         Security::SECURITY_ATTRIBUTES,
         System::{
             JobObjects::AssignProcessToJobObject,
@@ -383,32 +384,102 @@ mod windows {
         OsStr::new(&text).encode_wide().chain(Some(0)).collect()
     }
     fn environment_block(command: &Command) -> Vec<u16> {
-        let mut vars: BTreeMap<String, OsString> = std::env::vars_os()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().to_uppercase(),
-                    OsString::from(format!("{}={}", k.to_string_lossy(), v.to_string_lossy())),
-                )
-            })
-            .collect();
-        for (k, v) in command.get_envs() {
-            let key = k.to_string_lossy().to_uppercase();
-            if let Some(v) = v {
-                vars.insert(
-                    key,
-                    OsString::from(format!("{}={}", k.to_string_lossy(), v.to_string_lossy())),
-                );
-            } else {
-                vars.remove(&key);
-            }
+        let inherited = std::env::vars_os()
+            .map(|(key, value)| (key.encode_wide().collect(), value.encode_wide().collect()));
+        let overrides = command.get_envs().map(|(key, value)| {
+            (
+                key.encode_wide().collect(),
+                value.map(|value| value.encode_wide().collect()),
+            )
+        });
+        environment_block_from(inherited, overrides)
+    }
+
+    fn environment_block_from(
+        inherited: impl IntoIterator<Item = (Vec<u16>, Vec<u16>)>,
+        overrides: impl IntoIterator<Item = (Vec<u16>, Option<Vec<u16>>)>,
+    ) -> Vec<u16> {
+        let mut vars: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+        for (key, value) in inherited {
+            set_environment_entry(&mut vars, key, Some(value));
         }
+        for (key, value) in overrides {
+            set_environment_entry(&mut vars, key, value);
+        }
+        vars.sort_by(|left, right| compare_environment_keys(&left.0, &right.0));
         let mut block = Vec::new();
-        for item in vars.values() {
-            block.extend(item.encode_wide());
+        for (key, value) in vars {
+            block.extend(key);
+            block.push(b'=' as u16);
+            block.extend(value);
             block.push(0);
         }
         block.push(0);
         block
+    }
+
+    fn set_environment_entry(
+        vars: &mut Vec<(Vec<u16>, Vec<u16>)>,
+        key: Vec<u16>,
+        value: Option<Vec<u16>>,
+    ) {
+        let existing = vars
+            .iter()
+            .position(|entry| compare_environment_keys(&entry.0, &key) == Ordering::Equal);
+        match (existing, value) {
+            (Some(index), Some(value)) => vars[index] = (key, value),
+            (None, Some(value)) => vars.push((key, value)),
+            (Some(index), None) => {
+                vars.remove(index);
+            }
+            (None, None) => {}
+        }
+    }
+
+    fn compare_environment_keys(left: &[u16], right: &[u16]) -> Ordering {
+        let result = unsafe {
+            CompareStringOrdinal(
+                left.as_ptr(),
+                left.len() as i32,
+                right.as_ptr(),
+                right.len() as i32,
+                1,
+            )
+        };
+        match result {
+            CSTR_LESS_THAN => Ordering::Less,
+            CSTR_EQUAL => Ordering::Equal,
+            3 => Ordering::Greater,
+            _ => left.cmp(right),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn wide(value: &str) -> Vec<u16> {
+            OsStr::new(value).encode_wide().collect()
+        }
+
+        #[test]
+        fn environment_block_preserves_unicode_and_applies_case_insensitive_overrides() {
+            let block = environment_block_from(
+                [
+                    (wide("ПЕРЕМЕННАЯ"), wide("исходное")),
+                    (wide("REMOVE_ME"), wide("x")),
+                ],
+                [
+                    (wide("переменная"), Some(wide("значение-שלום"))),
+                    (wide("REMOVE_me"), None),
+                    (wide("PYTHONUTF8"), Some(wide("1"))),
+                ],
+            );
+            let expected: Vec<u16> = "PYTHONUTF8=1\0переменная=значение-שלום\0\0"
+                .encode_utf16()
+                .collect();
+            assert_eq!(block, expected);
+        }
     }
     fn creation_flags() -> u32 {
         let show = std::env::var_os("AUTOCODER_SHOW_CHILD_CONSOLES").is_some_and(|v| v != "0");

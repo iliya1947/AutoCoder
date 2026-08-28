@@ -12,6 +12,10 @@
 
 ## Что подтверждено как сделанное
 
+### Lossless Windows environment block (28 августа 2026)
+- Win32 `CreateProcessW` launcher больше не преобразует environment keys/values через `to_string_lossy()`: inherited environment и `Command::env`/`env_remove` собираются напрямую из wide `OsStr`/UTF-16 units.
+- Case-insensitive сопоставление и рекомендованная сортировка ключей выполняются Windows `CompareStringOrdinal(..., TRUE)`; добавлен Windows unit test с кириллическим key/value, Hebrew value, case-insensitive override, удалением и `PYTHONUTF8=1`.
+
 ### Устранение Windows race до назначения в Job (28 августа 2026)
 - Windows owned launch больше не использует последовательность `std::process::Command::spawn` → `AssignProcessToJobObject`. Минимальный Win32 launcher создаёт процесс через `CreateProcessW` с `CREATE_SUSPENDED`, назначает ещё не исполняющийся процесс в AutoCoder Job и только затем вызывает `ResumeThread`. При ошибке назначения или resume процесс завершается, ожидается и все Win32 handles закрываются.
 - Launcher сохраняет наследуемые stdin/stdout/stderr pipes Python bridge, stderr pipe Ollama, Unicode environment/command line, current directory и production `CREATE_NO_WINDOW`. Добавлена архитектурная проверка обязательного `CREATE_SUSPENDED` flag.
