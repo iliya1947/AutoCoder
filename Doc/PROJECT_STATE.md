@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-28 августа 2026 (обновлено после реализации управления локальным Ollama из packaged AI backend).
+28 августа 2026 (обновлено после переноса ownership Ollama в desktop runtime и скрытия production-консолей).
 
 ## Текущий этап
 
@@ -11,6 +11,14 @@
 Файловый сценарий и backup фактически подтверждены на Windows. Чат передаёт историю, текущий текст открытого файла и read-only структуру проекта через Tauri в минимальный Python-backend и получает ответ локального Ollama; инструменты и постоянное хранение истории пока не подключены.
 
 ## Что подтверждено как сделанное
+
+### Desktop lifecycle Ollama и Windows child process UX (28 августа 2026)
+- Ownership локального `ollama serve` перенесён из короткоживущего Python chat-процесса в Tauri state. Если порт локального Ollama уже доступен, AutoCoder не запускает и не сохраняет чужой процесс; если AutoCoder запускает процесс сам, хранится именно его `std::process::Child`, без поиска/завершения процессов по имени или PID.
+- На событии `tauri::RunEvent::Exit` AutoCoder проверяет только owned child, завершает его при необходимости и обязательно вызывает `wait`; уже завершившийся owned child безопасно удаляется из state. Это соответствует актуальному Tauri 2 lifecycle API (`Builder::build`, `App::run`, `RunEvent::Exit`).
+- Повторные chat requests используют один managed процесс. Python provider получает признак desktop-managed lifecycle и больше не может независимо породить второй Ollama для стандартного loopback endpoint. Явно настроенные нестандартные/внешние endpoints сохранили прежнее provider-managed поведение.
+- Фактическое видимое окно при каждом сообщении создавал новый bundled `python.exe`, запускаемый Rust bridge без Windows creation flags. Теперь и bundled Python backend, и запускаемый Tauri процесс `ollama serve` получают `CREATE_NO_WINDOW` в release Windows build; shell не используется, stdin/stdout/stderr Python остаются pipe и UTF-8 JSON bridge не изменён. Для диагностики можно задать `AUTOCODER_SHOW_CHILD_CONSOLES=1` в debug/development сценарии; stderr Python и exit status по-прежнему возвращаются программно, stderr Ollama дренируется в runtime log.
+- Добавлены Rust unit tests для внешнего Ollama, остановки и reap owned process, безопасного shutdown уже завершившегося child, отсутствия повторного launch и release Windows `CREATE_NO_WINDOW` policy.
+- Windows manual test для packaged build: (1) запустить Ollama вручную, открыть/закрыть AutoCoder и убедиться, что исходный Ollama продолжает работать; (2) завершить Ollama, запустить AutoCoder, сделать два chat request и убедиться в Диспетчере задач, что существует только один фоновый owned `ollama.exe`, нет всплывающих `python.exe`/terminal окон, а после обычного закрытия AutoCoder owned Ollama исчезает; (3) повторить закрытие после принудительного завершения owned Ollama и убедиться, что AutoCoder закрывается без ошибки. Проверять offline с заранее установленной моделью; autostart и runtime-download не используются.
 
 ### Управление локальным Ollama на Windows (28 августа 2026)
 - Перед локальным chat request backend проверяет API через `GET /api/version`. Уже готовый Ollama используется как есть; новый процесс в этом случае не создаётся.

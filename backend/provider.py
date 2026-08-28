@@ -89,6 +89,10 @@ class OllamaRuntime:
     def ensure_ready(self) -> None:
         if self.is_ready():
             return
+        if os.environ.get("AUTOCODER_OLLAMA_MANAGED") == "1":
+            raise ProviderError(
+                f"AutoCoder could not connect to its managed Ollama service at {self.api_root}."
+            )
         executable = self.executable_finder()
         if executable is None:
             raise ProviderError(
