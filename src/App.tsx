@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { ChatPanel } from "./components/ChatPanel";
@@ -12,6 +12,21 @@ import { useTranslation } from "./hooks/useTranslation";
 import { FileReadResult, OpenedFile, ProjectNode, ProjectTree } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
 import { operationError } from "./utils/invokeError";
+
+export function isLatestFileRead(requestId: number, latestRequestId: number): boolean {
+  return requestId === latestRequestId;
+}
+
+export function markFileSaved(
+  current: OpenedFile | null,
+  path: string,
+  expectedContent: string,
+  savedContent: string,
+): OpenedFile | null {
+  return current?.path === path && current.savedContent === expectedContent
+    ? { ...current, savedContent }
+    : current;
+}
 
 function App() {
   const { t } = useTranslation();
@@ -27,6 +42,7 @@ function App() {
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
   const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
+  const latestFileRead = useRef(0);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -36,6 +52,7 @@ function App() {
     try {
       const selected = await invoke<ProjectTree | null>("open_project");
       if (selected) {
+        latestFileRead.current += 1;
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
         setProjectSession((current) => current + 1);
@@ -58,11 +75,14 @@ function App() {
     setSelection(null);
     setEditorError("");
     setEditorStatus("loading");
+    const requestId = ++latestFileRead.current;
     try {
       const result = await invoke<FileReadResult>("read_project_file", { relativePath: node.path });
+      if (!isLatestFileRead(requestId, latestFileRead.current)) return;
       setOpenFile({ name: node.name, path: node.path, content: result.content, savedContent: result.content });
       setEditorStatus("ready");
     } catch (error) {
+      if (!isLatestFileRead(requestId, latestFileRead.current)) return;
       setEditorError(operationError(t("editor.read_error"), error));
       setEditorStatus("error");
     }
@@ -76,12 +96,13 @@ function App() {
     setEditorError("");
     try {
       await invoke("save_project_file", { relativePath: openFile.path, content, expectedContent });
-      setOpenFile((current) => current ? { ...current, savedContent: content } : current);
+      setOpenFile((current) => markFileSaved(current, openFile.path, expectedContent, content));
     } catch (error) { setEditorError(operationError(t("editor.save_error"), error)); }
     finally { setSaving(false); }
   };
 
   const handleRestored = (backup: BackupEntry, updated: ProjectTree) => {
+    latestFileRead.current += 1;
     setProject({ ...updated, children: transformProjectTree(updated.children) });
     setOpenFile({ name: backup.relativePath.split("/").pop() ?? backup.relativePath, path: backup.relativePath, content: backup.content, savedContent: backup.content });
     setSelection(null);
