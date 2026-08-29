@@ -48,6 +48,14 @@ Only propose create when the path is absent from the supplied project structure.
 Only propose delete for the currently open file, and only when its current content is identical to its saved content.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
+TERMINAL_PROPOSAL_PROMPT = """When the user explicitly asks you to run or suggest a project command, you may propose one command.
+Keep your explanation outside the block and emit exactly one block in this form:
+```autocoder-command
+{"command": "the complete command to run in the project root"}
+```
+Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
+Never claim that you ran the command or observed its output."""
+TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
@@ -152,6 +160,8 @@ def parse_request(payload: Any) -> list[Message]:
         raise ValueError("Context must contain an openFile, selection, or project object.")
     if project is not None and open_file is None:
         context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
+    if project is not None:
+        context_messages.append(Message(role="system", content=TERMINAL_PROPOSAL_PROMPT))
     return [*context_messages, *messages]
 
 
@@ -216,16 +226,44 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     return proposal
 
 
+def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
+    """Extract a command proposal only when a project is open."""
+    match = TERMINAL_PROPOSAL_PATTERN.search(answer.content)
+    if match is None:
+        return None
+    try:
+        proposal = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    context = (payload.get("context") or {}) if isinstance(payload, dict) else {}
+    command = proposal.get("command") if isinstance(proposal, dict) else None
+    if (
+        not isinstance(proposal, dict)
+        or set(proposal) != {"command"}
+        or not isinstance(command, str)
+        or not command.strip()
+        or "\0" in command
+        or not isinstance(context.get("project"), dict)
+        or FILE_PROPOSAL_PATTERN.search(answer.content) is not None
+    ):
+        return None
+    return {"command": command.strip()}
+
+
 def read_stdin_payload() -> Any:
     """Read the Tauri bridge contract without consulting the host text encoding."""
     raw = sys.stdin.buffer.read()
     return json.loads(raw.decode("utf-8"))
 
 
-def write_stdout_response(answer: Message, proposal: dict[str, str] | None = None) -> None:
+def write_stdout_response(
+    answer: Message,
+    proposal: dict[str, str] | None = None,
+    command_proposal: dict[str, str] | None = None,
+) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
-        {"message": answer.__dict__, "proposal": proposal},
+        {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal},
         ensure_ascii=False,
     ).encode("utf-8")
     sys.stdout.buffer.write(response)
@@ -236,7 +274,11 @@ def main() -> int:
     try:
         payload = read_stdin_payload()
         answer = OllamaProvider().chat(parse_request(payload))
-        write_stdout_response(answer, parse_file_proposal(answer, payload))
+        write_stdout_response(
+            answer,
+            parse_file_proposal(answer, payload),
+            parse_terminal_proposal(answer, payload),
+        )
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

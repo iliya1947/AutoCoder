@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
-from main import parse_file_proposal, parse_messages, parse_request
+from main import parse_file_proposal, parse_messages, parse_request, parse_terminal_proposal
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
@@ -79,8 +79,34 @@ class BackendTests(unittest.TestCase):
         self.assertNotIn("Р“РѕС‚РѕРІРѕ", decoded)
         self.assertEqual(
             json.loads(decoded),
-            {"message": {"role": "assistant", "content": "Готово: файл сохранён"}, "proposal": None},
+            {
+                "message": {"role": "assistant", "content": "Готово: файл сохранён"},
+                "proposal": None,
+                "commandProposal": None,
+            },
         )
+
+    def test_extracts_terminal_proposal_only_for_an_open_project(self):
+        answer = Message(
+            "assistant",
+            'Проверьте команду.\n```autocoder-command\n{"command":"npm test"}\n```',
+        )
+        payload = {"context": {"project": {"name": "demo", "entries": []}}}
+
+        self.assertEqual(parse_terminal_proposal(answer, payload), {"command": "npm test"})
+        self.assertIsNone(parse_terminal_proposal(answer, {"context": None}))
+
+    def test_rejects_invalid_or_combined_terminal_proposal(self):
+        payload = {"context": {"project": {"name": "demo", "entries": []}}}
+        invalid = Message("assistant", '```autocoder-command\n{"command":"   "}\n```')
+        combined = Message(
+            "assistant",
+            '```autocoder-command\n{"command":"npm test"}\n```\n'
+            '```autocoder-file\n{"operation":"create","path":"x","content":"x"}\n```',
+        )
+
+        self.assertIsNone(parse_terminal_proposal(invalid, payload))
+        self.assertIsNone(parse_terminal_proposal(combined, payload))
 
     def test_extracts_file_proposal_for_current_open_file(self):
         answer = Message(
@@ -229,7 +255,8 @@ class BackendTests(unittest.TestCase):
         self.assertIn("file: backend/main.py", messages[0].content)
         self.assertIn("Do not assume their contents", messages[0].content)
         self.assertIn("autocoder-file", messages[1].content)
-        self.assertEqual(messages[2], Message("user", "Where are the tests?"))
+        self.assertIn("autocoder-command", messages[2].content)
+        self.assertEqual(messages[3], Message("user", "Where are the tests?"))
 
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(
@@ -242,9 +269,10 @@ class BackendTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual([message.role for message in messages], ["system", "system", "system", "user"])
+        self.assertEqual([message.role for message in messages], ["system", "system", "system", "system", "user"])
         self.assertIn("Project: Empty project", messages[0].content)
         self.assertIn("Path: README", messages[1].content)
+        self.assertIn("autocoder-command", messages[3].content)
 
     def test_adds_editor_selection_as_prioritized_system_context(self):
         messages = parse_request(

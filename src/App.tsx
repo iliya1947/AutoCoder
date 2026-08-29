@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
-import { ChatPanel } from "./components/ChatPanel";
+import { ChatPanel, TerminalProposal } from "./components/ChatPanel";
 import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
@@ -21,6 +21,7 @@ function App() {
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
+  const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -31,6 +32,7 @@ function App() {
       if (selected) {
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
+        setProposedCommand(null);
         setOpenFile(null);
         setSelection(null);
         setEditorStatus("idle");
@@ -75,8 +77,8 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel projectOpen={project !== null} /></section>
-    <ChatPanel openFile={openFile} selection={selection} project={project} onApplyProposal={async (proposal) => {
+    <TerminalPanel projectOpen={project !== null} proposedCommand={proposedCommand} /></section>
+    <ChatPanel openFile={openFile} selection={selection} project={project} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (proposal.operation === "create") {
         try {
           const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });

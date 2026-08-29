@@ -9,7 +9,8 @@ export type FileProposal =
   | { operation: "create"; path: string; content: string }
   | { operation: "delete"; path: string; originalContent: string; expectedSavedContent: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null };
+export type TerminalProposal = { command: string };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -118,13 +119,14 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, selection, project, onApplyProposal }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; onApplyProposal: (proposal: FileProposal) => void }) {
+export function ChatPanel({ openFile, selection, project, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; onApplyProposal: (proposal: FileProposal) => void; onReviewCommand: (proposal: TerminalProposal) => void }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<FileProposal | null>(null);
+  const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const lastRequestContext = useRef<string | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -142,12 +144,14 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
     // starts, remove the old review action so it cannot be applied while a
     // different answer is pending.
     setProposal(null);
+    setCommandProposal(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
       setMessages((current) => [...current, response.message]);
       setProposal(response.proposal ?? null);
+      setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
       console.error("send_chat_message failed", error);
       setError(error instanceof Error ? error.message : String(error));
@@ -183,6 +187,15 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal }: { o
             <p className="proposal-stale">{t(proposal.operation === "delete" && openFile?.content !== openFile?.savedContent ? "chat.proposal_delete_dirty" : "chat.proposal_stale")}</p>
             <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
           </>}
+      </section>}
+      {commandProposal && <section className="file-proposal terminal-proposal">
+        <strong>{t("chat.command_proposal")}</strong>
+        <pre><code>{commandProposal.command}</code></pre>
+        <p>{t("chat.command_review_warning")}</p>
+        <div className="proposal-actions">
+          <button type="button" onClick={() => { onReviewCommand(commandProposal); setCommandProposal(null); }}>{t("chat.review_command")}</button>
+          <button type="button" className="secondary-button" onClick={() => setCommandProposal(null)}>{t("chat.dismiss_proposal")}</button>
+        </div>
       </section>}
     </div>
     <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending} /><button type="submit" disabled={!message.trim() || sending}>{t("chat.send")}</button></form>

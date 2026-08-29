@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 
@@ -8,12 +8,16 @@ export type TerminalResult = {
   stderr: string;
 };
 
-export function TerminalPanel({ projectOpen }: { projectOpen: boolean }) {
+export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: boolean; proposedCommand?: { command: string } | null }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
   const [result, setResult] = useState<TerminalResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (projectOpen && proposedCommand) setCommand(proposedCommand.command);
+  }, [projectOpen, proposedCommand]);
 
   const run = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
