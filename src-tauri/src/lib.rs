@@ -686,7 +686,10 @@ fn run_project_command(
     #[cfg(windows)]
     let mut process = {
         let mut process = Command::new("cmd.exe");
-        process.args(["/D", "/S", "/C", command]);
+        // /U makes cmd.exe's own redirected output UTF-16LE. External programs
+        // still write their own bytes to the inherited pipe handles, so output
+        // decoding also accepts UTF-8 below.
+        process.args(["/D", "/U", "/S", "/C", command]);
         process
     };
     #[cfg(not(windows))]
@@ -695,8 +698,12 @@ fn run_project_command(
         process.args(["-c", command]);
         process
     };
+    #[cfg(windows)]
+    let shell_root = windows_shell_directory(&root);
+    #[cfg(not(windows))]
+    let shell_root = root.clone();
     process
-        .current_dir(&root)
+        .current_dir(&shell_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -709,9 +716,70 @@ fn run_project_command(
         .map_err(|error| format!("Unable to collect command output: {error}"))?;
     Ok(TerminalResult {
         exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: decode_terminal_output(&output.stdout),
+        stderr: decode_terminal_output(&output.stderr),
     })
+}
+
+#[cfg(windows)]
+fn windows_shell_directory(canonical_root: &Path) -> PathBuf {
+    use std::path::Prefix;
+
+    let mut components = canonical_root.components();
+    match components.next() {
+        // std::fs::canonicalize uses an extended-length path. cmd.exe treats a
+        // local \\?\C:\... cwd like a UNC cwd, so remove only the VerbatimDisk
+        // marker. VerbatimUNC is deliberately left unchanged.
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::VerbatimDisk(_)) =>
+        {
+            let drive = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => drive as char,
+                _ => unreachable!(),
+            };
+            let remainder = components.as_path();
+            PathBuf::from(format!("{drive}:\\")).join(remainder)
+        }
+        _ => canonical_root.to_path_buf(),
+    }
+}
+
+#[cfg(windows)]
+fn decode_terminal_output(bytes: &[u8]) -> String {
+    let has_utf16le_bom = bytes.starts_with(&[0xff, 0xfe]);
+    let utf16_bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+    let has_utf16le_text_marker = utf16_bytes.len() % 2 == 0
+        && utf16_bytes.chunks_exact(2).any(|pair| {
+            pair[1] == 0
+                && (pair[0] == b'\t' || pair[0] == b'\r' || pair[0] == b'\n' || pair[0] >= b' ')
+        });
+
+    // External developer CLIs commonly emit ASCII/UTF-8 directly to inherited
+    // redirected handles. Prefer valid UTF-8 unless the byte layout contains an
+    // explicit UTF-16LE marker (BOM or an ASCII/control UTF-16 code unit).
+    if !has_utf16le_bom && !has_utf16le_text_marker {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return text.to_owned();
+        }
+    }
+
+    if has_utf16le_bom || has_utf16le_text_marker {
+        let units = utf16_bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16_lossy(&units);
+    }
+
+    // There is no encoding metadata on an anonymous pipe. Unknown legacy
+    // encodings cannot be selected deterministically; preserve the previous
+    // loss-tolerant behavior rather than misclassifying arbitrary bytes as UTF-16.
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(not(windows))]
+fn decode_terminal_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, String> {
@@ -1288,6 +1356,110 @@ mod tests {
     }
 
     #[test]
+    fn terminal_ascii_stdout_is_readable() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result =
+            run_project_command(directory.path(), "echo AUTOCODER_TERMINAL_OK", &lifecycle)
+                .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("AUTOCODER_TERMINAL_OK"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_uses_unicode_project_directory_without_verbatim_cwd() {
+        let parent = TempDir::new().expect("temporary parent");
+        let directory = parent.path().join("AutoCoder_Тест");
+        fs::create_dir(&directory).unwrap();
+        let canonical = fs::canonicalize(&directory).unwrap();
+        let shell_directory = windows_shell_directory(&canonical);
+
+        assert_eq!(shell_directory, directory);
+        assert!(!shell_directory.to_string_lossy().starts_with(r"\\?\"));
+
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(&directory, "cd", &lifecycle).unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout.trim(), directory.to_string_lossy());
+        assert!(!result.stderr.contains("UNC"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_preserves_real_unc_directory_representation() {
+        let unc = Path::new(r"\\?\UNC\server\share\AutoCoder_Тест");
+        assert_eq!(windows_shell_directory(unc), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_unicode_stdout_and_stderr() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "echo Русский stdout & echo Русский stderr 1>&2 & exit /b 9",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(9));
+        assert!(result.stdout.contains("Русский stdout"));
+        assert!(result.stderr.contains("Русский stderr"));
+        assert!(!result.stdout.contains('�'));
+        assert!(!result.stderr.contains('�'));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_external_ascii_stdout_and_stderr() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDOUT');$b=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDERR');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length)\"",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout, "EXTERNAL_ASCII_STDOUT");
+        assert_eq!(result.stderr, "EXTERNAL_ASCII_STDERR");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_external_utf8_stdout_stderr_and_exit_code() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::UTF8.GetBytes('Внешний stdout');$b=[Text.Encoding]::UTF8.GetBytes('Внешний stderr');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length);exit 13\"",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(13));
+        assert_eq!(result.stdout, "Внешний stdout");
+        assert_eq!(result.stderr, "Внешний stderr");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decoder_does_not_treat_even_utf8_as_utf16() {
+        assert_eq!(
+            decode_terminal_output(b"git --version\r\n"),
+            "git --version\r\n"
+        );
+        assert_eq!(
+            decode_terminal_output("UTF-8: Привет".as_bytes()),
+            "UTF-8: Привет"
+        );
+    }
+
+    #[test]
     fn terminal_rejects_empty_command() {
         let (directory, _) = project();
         let lifecycle = ProcessLifecycle::new().unwrap();
@@ -1308,7 +1480,12 @@ mod tests {
         let lifecycle = ProcessLifecycle::new().unwrap();
         let mut command = Command::new("cmd.exe");
         command
-            .args(["/D", "/S", "/C", "ping 127.0.0.1 -n 60 >nul"])
+            .args([
+                "/D",
+                "/S",
+                "/C",
+                "cmd.exe /D /S /C \"ping 127.0.0.1 -n 60 >nul\"",
+            ])
             .current_dir(directory.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
