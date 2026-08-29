@@ -39,6 +39,15 @@ struct TerminalState {
     active_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
+impl TerminalState {
+    fn has_active_command(&self) -> Result<bool, String> {
+        self.active_cancel
+            .lock()
+            .map(|active| active.is_some())
+            .map_err(|_| "Unable to access terminal command state.".to_string())
+    }
+}
+
 struct OllamaState {
     owned: Mutex<Option<OwnedChild>>,
     lifecycle: Arc<ProcessLifecycle>,
@@ -266,6 +275,7 @@ struct FileProposal {
 async fn open_project(
     app: tauri::AppHandle,
     project_state: State<'_, ProjectState>,
+    terminal_state: State<'_, TerminalState>,
 ) -> Result<Option<ProjectTree>, String> {
     let Some(root) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
@@ -278,6 +288,14 @@ async fn open_project(
         return Err("The selected path is not a directory.".to_string());
     }
     fs::read_dir(&root).map_err(|error| error.to_string())?;
+
+    // Do not detach the terminal UI from a process that still belongs to the
+    // current project. The user can cancel it explicitly and retry the switch.
+    if terminal_state.has_active_command()? {
+        return Err(
+            "Cancel or wait for the active terminal command before switching projects.".to_string(),
+        );
+    }
 
     let children = read_directory(&root, &root);
     let name = root
@@ -1440,6 +1458,18 @@ mod tests {
         let file = directory.path().join("notes.txt");
         fs::write(&file, "before").expect("fixture file");
         (directory, file)
+    }
+
+    #[test]
+    fn terminal_state_reports_an_active_command_before_project_switch() {
+        let state = TerminalState::default();
+        assert!(!state.has_active_command().unwrap());
+
+        *state.active_cancel.lock().unwrap() = Some(Arc::new(AtomicBool::new(false)));
+        assert!(state.has_active_command().unwrap());
+
+        *state.active_cancel.lock().unwrap() = None;
+        assert!(!state.has_active_command().unwrap());
     }
 
     #[test]

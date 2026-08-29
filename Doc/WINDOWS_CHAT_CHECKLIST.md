@@ -12,6 +12,9 @@
 - Отсутствующий `ollama.exe`: **PASS** — UI показал `Local Ollama was not found. Install Ollama; automatic downloads are disabled.`
 - Отсутствующая модель `qwen2.5-coder:7b`: **PASS** — UI показал `Required Ollama model 'qwen2.5-coder:7b' is not installed. Install it before using AutoCoder; automatic model downloads are disabled.`
 - HTTP 503 readiness: **PASS** — реальный listener на `127.0.0.1:11434` ответил 503, UI показал `Ollama readiness endpoint /api/version returned HTTP 503.`, второй `ollama.exe` не запускался.
+- Изоляция Chat при смене проекта: **PASS** — сообщения и pending proposal проекта A не
+  переносятся в B, при возврате в A старая история не восстанавливается; состояние остаётся
+  session-only.
 
 Все три негативных сценария фактически подтверждены пользователем в packaged Windows 29 августа
 2026. Во время HTTP 503 проверки `Get-Process ollama -ErrorAction SilentlyContinue` не вернул
@@ -33,8 +36,25 @@
 нажать **Send**. Статус: **PASS**.
 
 Checklist сохраняется для воспроизведения уже подтверждённого основного сценария и будущих
-диагностических прогонов. Непроверенные негативные сценарии не отменяют подтверждённый
-результат основного packaged Windows-сценария.
+диагностических прогонов.
+
+## Изоляция Chat и смена проекта
+
+Фактически выполненный packaged Windows regression имеет статус **PASS**:
+
+1. Создать сообщения и pending proposal в проекте A, затем открыть проект B.
+   - В B отсутствуют сообщения и proposal проекта A.
+2. Вернуться в проект A.
+   - Прежняя история не восстанавливается; постоянное хранение не включено.
+
+Следующий ещё не подтверждённый packaged Windows regression относится к Terminal lifecycle:
+
+1. Запустить долгую Terminal-команду в проекте A и выбрать проект B.
+   - Backend отклоняет смену, проект A и его terminal-панель остаются доступны.
+2. Отменить команду штатной кнопкой и дождаться статуса отмены, затем снова выбрать B.
+   - Проект B открывается, а Chat начинает новую пустую session-only сессию.
+3. Отменить системный dialog выбора папки без выбора.
+   - Текущий проект и его Chat-сессия не меняются.
 
 ## Дополнительная Windows-проверка atomic Save
 
