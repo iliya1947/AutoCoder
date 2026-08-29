@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
+import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
 import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
@@ -24,6 +24,14 @@ describe("panel states", () => {
   it("ignores asynchronous file completions from a previous project session", () => {
     expect(isCurrentProjectSession(3, 3)).toBe(true);
     expect(isCurrentProjectSession(3, 4)).toBe(false);
+  });
+
+  it("distinguishes file proposal completions from a changed editor context", () => {
+    const original = { name: "a.txt", path: "a.txt", content: "A", savedContent: "A" };
+    expect(editorContextKey(original)).toBe(editorContextKey({ ...original }));
+    expect(editorContextKey(original)).not.toBe(editorContextKey({ ...original, content: "edited" }));
+    expect(editorContextKey(original)).not.toBe(editorContextKey({ name: "b.txt", path: "b.txt", content: "B", savedContent: "B" }));
+    expect(editorContextKey(original)).not.toBe(editorContextKey(null));
   });
 
   it("maps a cleared Monaco selection to null", () => {
