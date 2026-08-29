@@ -4,20 +4,19 @@
 контекст редактора, предложение замены, построчный diff и lifecycle дочерних процессов.
 Проверку нужно выполнять на Windows 10/11 с установленной packaged-сборкой AutoCoder.
 
-## Фактический статус на 28 августа 2026
+## Фактический статус на 29 августа 2026
 
 - Основной сценарий контекста, proposal/diff, Reject, Apply, Save и backup: **PASS**.
 - Lifecycle owned Ollama, external Ollama и shutdown во время запроса: **PASS**.
 - Просмотр и восстановление backup-копий, включая stale-state и несохранённые изменения: **PASS**.
-- Отсутствующий `ollama.exe`: **не проверено отдельно**.
-- Отсутствующая модель: **не проверено отдельно**.
-- HTTP 503 readiness: **не проверено отдельно**.
+- Отсутствующий `ollama.exe`: **PASS** — UI показал `Local Ollama was not found. Install Ollama; automatic downloads are disabled.`
+- Отсутствующая модель `qwen2.5-coder:7b`: **PASS** — UI показал `Required Ollama model 'qwen2.5-coder:7b' is not installed. Install it before using AutoCoder; automatic model downloads are disabled.`
+- HTTP 503 readiness: **PASS** — реальный listener на `127.0.0.1:11434` ответил 503, UI показал `Ollama readiness endpoint /api/version returned HTTP 503.`, второй `ollama.exe` не запускался.
 
-Автоматизированная ревизия 29 августа 2026 подтвердила существующие отдельные ошибки для
-отсутствующего executable и модели. Для HTTP 503 исправлена потеря status: endpoint не считается
-готовым, второй Ollama не запускается, UI получает явную ошибку readiness с `HTTP 503`.
-Regression-тесты проходят в Linux; все три сценария по-прежнему требуют фактического packaged
-Windows-прогона перед изменением статусов выше.
+Все три негативных сценария фактически подтверждены пользователем в packaged Windows 29 августа
+2026. Во время HTTP 503 проверки `Get-Process ollama -ErrorAction SilentlyContinue` не вернул
+процессов, поэтому AutoCoder не запускал второй Ollama. После проверки временный listener был
+завершён, порт 11434 освобождён. Эти статусы дополняют, а не заменяют основной regression-сценарий.
 
 ## AI → Terminal review flow — 29 августа 2026
 
