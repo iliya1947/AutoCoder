@@ -121,7 +121,8 @@ function App() {
     }
   };
 
-  const handleRestored = (backup: BackupEntry, updated: ProjectTree) => {
+  const handleRestored = (backup: BackupEntry, updated: ProjectTree, requestSession: number) => {
+    if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
     latestFileRead.current += 1;
     latestFileSave.current += 1;
     setSaving(false);
@@ -172,7 +173,7 @@ function App() {
       }
       setSelection(null);
     }} />
-  </main><BackupDialog open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={handleRestored} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
+  </main><BackupDialog open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
 }
 
 export default App;
