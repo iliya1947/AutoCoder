@@ -25,6 +25,10 @@ export function completeTerminalRun(execution: TerminalExecution, result: Termin
     : execution;
 }
 
+export function isCurrentTerminalRun(requestRunId: number, activeRunId: number | null): boolean {
+  return requestRunId === activeRunId;
+}
+
 export function navigateTerminalHistory(
   history: string[],
   index: number,
@@ -50,6 +54,9 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
   const history = useRef<string[]>([]);
   const historyIndex = useRef(0);
   const historyDraft = useRef("");
+  const nextRunId = useRef(0);
+  const activeRunId = useRef<number | null>(null);
+  const cancelInFlight = useRef(false);
   const running = execution.status === "running";
   const transcript = execution.status === "completed" ? execution.transcript : null;
   const result = transcript?.result ?? null;
@@ -70,13 +77,22 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       history.current = [];
       historyIndex.current = 0;
       historyDraft.current = "";
+      activeRunId.current = null;
+      cancelInFlight.current = false;
     }
   }, [projectOpen]);
+
+  useEffect(() => () => {
+    activeRunId.current = null;
+    cancelInFlight.current = false;
+  }, []);
 
   const run = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = command.trim();
-    if (!projectOpen || !value || running) return;
+    if (!projectOpen || !value || activeRunId.current !== null) return;
+    const runId = ++nextRunId.current;
+    activeRunId.current = runId;
     if (history.current.at(-1) !== value) history.current.push(value);
     historyIndex.current = history.current.length;
     historyDraft.current = "";
@@ -85,25 +101,36 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
     setError("");
     try {
       const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
+      if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution((current) => completeTerminalRun(current, completedResult));
     } catch (reason) {
+      if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution({ status: "idle" });
       setError(String(reason));
     } finally {
-      setCancelling(false);
+      if (isCurrentTerminalRun(runId, activeRunId.current)) {
+        activeRunId.current = null;
+        cancelInFlight.current = false;
+        setCancelling(false);
+      }
     }
   };
 
   const cancel = async () => {
-    if (!running || cancelling) return;
+    const runId = activeRunId.current;
+    if (runId === null || cancelInFlight.current) return;
+    cancelInFlight.current = true;
     setCancelling(true);
     setError("");
     try {
       const accepted = await invoke<boolean>("cancel_project_command");
-      if (!accepted) setError(t("terminal.cancel_unavailable"));
+      if (isCurrentTerminalRun(runId, activeRunId.current) && !accepted) setError(t("terminal.cancel_unavailable"));
     } catch (reason) {
-      setError(String(reason));
-      setCancelling(false);
+      if (isCurrentTerminalRun(runId, activeRunId.current)) {
+        setError(String(reason));
+        cancelInFlight.current = false;
+        setCancelling(false);
+      }
     }
   };
 

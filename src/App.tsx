@@ -56,13 +56,16 @@ function App() {
   const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
   const latestFileRead = useRef(0);
   const latestFileSave = useRef(0);
+  const openingProject = useRef(false);
+  const applyingFileProposal = useRef(false);
   const currentProjectSession = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
   currentEditorContext.current = editorContextKey(openFile);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
-    if (isDirty && !window.confirm(t("editor.discard_confirm"))) return;
+    if (openingProject.current || (isDirty && !window.confirm(t("editor.discard_confirm")))) return;
+    openingProject.current = true;
     setProjectError("");
     setProjectStatus("loading");
     try {
@@ -85,6 +88,8 @@ function App() {
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : String(error));
       setProjectStatus("error");
+    } finally {
+      openingProject.current = false;
     }
   };
 
@@ -144,8 +149,11 @@ function App() {
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
+      if (applyingFileProposal.current) return;
+      applyingFileProposal.current = true;
       const requestSession = currentProjectSession.current;
       const requestEditorContext = currentEditorContext.current;
+      try {
       if (proposal.operation === "create") {
         try {
           const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });
@@ -182,6 +190,9 @@ function App() {
           ? { ...current, content: proposal.content }
           : current);
         setSelection(null);
+      }
+      } finally {
+        applyingFileProposal.current = false;
       }
     }} />
   </main><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
