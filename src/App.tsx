@@ -17,6 +17,10 @@ export function isLatestFileRead(requestId: number, latestRequestId: number): bo
   return requestId === latestRequestId;
 }
 
+export function isLatestFileSave(requestId: number, latestRequestId: number): boolean {
+  return requestId === latestRequestId;
+}
+
 export function markFileSaved(
   current: OpenedFile | null,
   path: string,
@@ -43,6 +47,7 @@ function App() {
   const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
   const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
   const latestFileRead = useRef(0);
+  const latestFileSave = useRef(0);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -53,6 +58,7 @@ function App() {
       const selected = await invoke<ProjectTree | null>("open_project");
       if (selected) {
         latestFileRead.current += 1;
+        latestFileSave.current += 1;
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
         setProjectSession((current) => current + 1);
@@ -61,6 +67,7 @@ function App() {
         setOpenFile(null);
         setSelection(null);
         setEditorStatus("idle");
+        setSaving(false);
         setProjectStatus("opened");
       } else setProjectStatus(project ? "opened" : "idle");
     } catch (error) {
@@ -92,17 +99,26 @@ function App() {
     if (!openFile || !isDirty) return;
     const content = openFile.content;
     const expectedContent = openFile.savedContent;
+    const requestId = ++latestFileSave.current;
     setSaving(true);
     setEditorError("");
     try {
       await invoke("save_project_file", { relativePath: openFile.path, content, expectedContent });
+      if (!isLatestFileSave(requestId, latestFileSave.current)) return;
       setOpenFile((current) => markFileSaved(current, openFile.path, expectedContent, content));
-    } catch (error) { setEditorError(operationError(t("editor.save_error"), error)); }
-    finally { setSaving(false); }
+    } catch (error) {
+      if (isLatestFileSave(requestId, latestFileSave.current)) {
+        setEditorError(operationError(t("editor.save_error"), error));
+      }
+    } finally {
+      if (isLatestFileSave(requestId, latestFileSave.current)) setSaving(false);
+    }
   };
 
   const handleRestored = (backup: BackupEntry, updated: ProjectTree) => {
     latestFileRead.current += 1;
+    latestFileSave.current += 1;
+    setSaving(false);
     setProject({ ...updated, children: transformProjectTree(updated.children) });
     setOpenFile({ name: backup.relativePath.split("/").pop() ?? backup.relativePath, path: backup.relativePath, content: backup.content, savedContent: backup.content });
     setSelection(null);
