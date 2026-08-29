@@ -71,10 +71,11 @@ function App() {
   const handleSave = async () => {
     if (!openFile || !isDirty) return;
     const content = openFile.content;
+    const expectedContent = openFile.savedContent;
     setSaving(true);
     setEditorError("");
     try {
-      await invoke("save_project_file", { relativePath: openFile.path, content });
+      await invoke("save_project_file", { relativePath: openFile.path, content, expectedContent });
       setOpenFile((current) => current ? { ...current, savedContent: content } : current);
     } catch (error) { setEditorError(operationError(t("editor.save_error"), error)); }
     finally { setSaving(false); }
