@@ -65,5 +65,9 @@
   "terminal.run": "Выполнить",
   "terminal.running": "Выполнение…",
   "terminal.exit_code": "Код завершения",
-  "terminal.unknown_exit": "неизвестен"
+  "terminal.unknown_exit": "неизвестен",
+  "terminal.cancel": "Отменить",
+  "terminal.cancelling": "Отмена…",
+  "terminal.cancelled": "Отменено",
+  "terminal.cancel_unavailable": "Команда уже завершилась, отмена недоступна."
 }

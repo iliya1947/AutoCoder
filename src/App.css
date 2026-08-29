@@ -146,6 +146,8 @@ button:disabled {
   background: #3978e8;
 }
 
+.terminal-form .terminal-cancel { background: #a84343; }
+
 .file-panel,
 .chat-panel {
   background: #151c2a;

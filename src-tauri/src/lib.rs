@@ -5,7 +5,10 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +32,11 @@ const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
 #[derive(Default)]
 struct ProjectState {
     root: Mutex<Option<PathBuf>>,
+}
+
+#[derive(Default)]
+struct TerminalState {
+    active_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 struct OllamaState {
@@ -157,6 +165,7 @@ struct TerminalResult {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+    cancelled: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -668,18 +677,51 @@ async fn execute_project_command(
     command: String,
     project_state: State<'_, ProjectState>,
     lifecycle: State<'_, Arc<ProcessLifecycle>>,
+    terminal_state: State<'_, TerminalState>,
 ) -> Result<TerminalResult, String> {
     let root = project_root(&project_state)?;
     let lifecycle = Arc::clone(lifecycle.inner());
-    tauri::async_runtime::spawn_blocking(move || run_project_command(&root, &command, &lifecycle))
-        .await
-        .map_err(|error| format!("Unable to join command task: {error}"))?
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = terminal_state
+            .active_cancel
+            .lock()
+            .map_err(|_| "Unable to access terminal command state.".to_string())?;
+        if active.is_some() {
+            return Err("Another terminal command is already running.".to_string());
+        }
+        *active = Some(Arc::clone(&cancel));
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_project_command(&root, &command, &lifecycle, &cancel)
+    })
+    .await
+    .map_err(|error| format!("Unable to join command task: {error}"));
+    if let Ok(mut active) = terminal_state.active_cancel.lock() {
+        *active = None;
+    }
+    result?
+}
+
+#[tauri::command]
+fn cancel_project_command(terminal_state: State<'_, TerminalState>) -> Result<bool, String> {
+    let active = terminal_state
+        .active_cancel
+        .lock()
+        .map_err(|_| "Unable to access terminal command state.".to_string())?;
+    if let Some(cancel) = active.as_ref() {
+        cancel.store(true, Ordering::Release);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 fn run_project_command(
     root: &Path,
     command: &str,
     lifecycle: &ProcessLifecycle,
+    cancel: &AtomicBool,
 ) -> Result<TerminalResult, String> {
     let command = command.trim();
     if command.is_empty() {
@@ -718,14 +760,40 @@ fn run_project_command(
     let child = lifecycle
         .spawn(&mut process, ChildIo::Terminal)
         .map_err(|error| format!("Unable to start owned command: {error}"))?;
-    let output = child
-        .wait_with_output()
+    let (output, cancelled) = wait_for_terminal_output(child, cancel)
         .map_err(|error| format!("Unable to collect command output: {error}"))?;
     Ok(TerminalResult {
         exit_code: output.status.code(),
         stdout: decode_terminal_output(&output.stdout),
         stderr: decode_terminal_output(&output.stderr),
+        cancelled,
     })
+}
+
+#[cfg(windows)]
+fn wait_for_terminal_output(
+    child: OwnedChild,
+    cancel: &AtomicBool,
+) -> std::io::Result<(std::process::Output, bool)> {
+    child.wait_with_output_cancelled(cancel)
+}
+
+#[cfg(not(windows))]
+fn wait_for_terminal_output(
+    mut child: OwnedChild,
+    cancel: &AtomicBool,
+) -> std::io::Result<(std::process::Output, bool)> {
+    let mut cancelled = false;
+    loop {
+        if cancel.load(Ordering::Acquire) && !cancelled {
+            child.kill()?;
+            cancelled = true;
+        }
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().map(|output| (output, cancelled));
+        }
+        thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 #[cfg(windows)]
@@ -1355,7 +1423,13 @@ mod tests {
         #[cfg(not(windows))]
         let command = "printf output; printf problem >&2; exit 7";
 
-        let result = run_project_command(directory.path(), command, &lifecycle).unwrap();
+        let result = run_project_command(
+            directory.path(),
+            command,
+            &lifecycle,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert_eq!(result.exit_code, Some(7));
         assert!(result.stdout.contains("output"));
@@ -1366,9 +1440,13 @@ mod tests {
     fn terminal_ascii_stdout_is_readable() {
         let (directory, _) = project();
         let lifecycle = ProcessLifecycle::new().unwrap();
-        let result =
-            run_project_command(directory.path(), "echo AUTOCODER_TERMINAL_OK", &lifecycle)
-                .unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "echo AUTOCODER_TERMINAL_OK",
+            &lifecycle,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert_eq!(result.exit_code, Some(0));
         assert!(result.stdout.contains("AUTOCODER_TERMINAL_OK"));
@@ -1387,7 +1465,8 @@ mod tests {
         assert!(!shell_directory.to_string_lossy().starts_with(r"\\?\"));
 
         let lifecycle = ProcessLifecycle::new().unwrap();
-        let result = run_project_command(&directory, "cd", &lifecycle).unwrap();
+        let result =
+            run_project_command(&directory, "cd", &lifecycle, &AtomicBool::new(false)).unwrap();
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.stdout.trim(), directory.to_string_lossy());
         assert!(!result.stderr.contains("UNC"));
@@ -1409,6 +1488,7 @@ mod tests {
             directory.path(),
             "echo Русский stdout & echo Русский stderr 1>&2 & exit /b 9",
             &lifecycle,
+            &AtomicBool::new(false),
         )
         .unwrap();
 
@@ -1428,6 +1508,7 @@ mod tests {
             directory.path(),
             "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDOUT');$b=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDERR');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length)\"",
             &lifecycle,
+            &AtomicBool::new(false),
         )
         .unwrap();
 
@@ -1445,6 +1526,7 @@ mod tests {
             directory.path(),
             "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::UTF8.GetBytes('Внешний stdout');$b=[Text.Encoding]::UTF8.GetBytes('Внешний stderr');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length);exit 13\"",
             &lifecycle,
+            &AtomicBool::new(false),
         )
         .unwrap();
 
@@ -1470,7 +1552,10 @@ mod tests {
     fn terminal_rejects_empty_command() {
         let (directory, _) = project();
         let lifecycle = ProcessLifecycle::new().unwrap();
-        assert!(run_project_command(directory.path(), "  ", &lifecycle).is_err());
+        assert!(
+            run_project_command(directory.path(), "  ", &lifecycle, &AtomicBool::new(false))
+                .is_err()
+        );
     }
 
     #[cfg(windows)]
@@ -2186,6 +2271,7 @@ pub fn run() {
         Arc::new(ProcessLifecycle::new().expect("unable to initialize owned process lifecycle"));
     let app = tauri::Builder::default()
         .manage(ProjectState::default())
+        .manage(TerminalState::default())
         .manage(OllamaState::new(Arc::clone(&lifecycle)))
         .manage(Arc::clone(&lifecycle))
         .plugin(tauri_plugin_dialog::init())
@@ -2198,6 +2284,7 @@ pub fn run() {
             list_project_backups,
             restore_project_backup,
             execute_project_command,
+            cancel_project_command,
             send_chat_message
         ])
         .setup(|app| {
