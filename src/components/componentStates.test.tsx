@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
+import { isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
 import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
@@ -19,6 +19,11 @@ describe("panel states", () => {
       ...current,
       savedContent: "changed B",
     });
+  });
+
+  it("ignores file proposal completions from a previous project session", () => {
+    expect(isCurrentProjectSession(3, 3)).toBe(true);
+    expect(isCurrentProjectSession(3, 4)).toBe(false);
   });
 
   it("maps a cleared Monaco selection to null", () => {
