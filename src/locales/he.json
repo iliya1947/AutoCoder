@@ -69,5 +69,6 @@
   "terminal.cancel": "ביטול",
   "terminal.cancelling": "מבטל…",
   "terminal.cancelled": "בוטל",
-  "terminal.cancel_unavailable": "הפקודה כבר הסתיימה ואי אפשר לבטל אותה."
+  "terminal.cancel_unavailable": "הפקודה כבר הסתיימה ואי אפשר לבטל אותה.",
+  "terminal.review_result": "העבר את התוצאה לצ'אט"
 }

@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, formatTerminalResultDraft, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
+
+  it("formats terminal output as an editable chat draft without sending it", () => {
+    expect(formatTerminalResultDraft({
+      command: "npm test",
+      result: { exitCode: 1, stdout: "one passed", stderr: "one failed", cancelled: false },
+    })).toBe("Command: npm test\n\nStatus: exit code: 1\n\nstdout:\none passed\n\nstderr:\none failed");
+    expect(formatTerminalResultDraft({
+      command: "long task",
+      result: { exitCode: null, stdout: "partial", stderr: "", cancelled: true },
+    })).toBe("Command: long task\n\nStatus: cancelled\n\nstdout:\npartial");
+  });
 
   it("includes the current unsaved open-file content", () => {
     const request = buildChatRequest(messages, {
