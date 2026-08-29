@@ -14,6 +14,8 @@ describe("panel states", () => {
     const props = { project: null, activePath: undefined, onOpenProject: () => undefined, onOpenFile: () => undefined };
     expect(renderToStaticMarkup(<ProjectExplorer {...props} status="loading" />)).toContain("Загрузка файлов");
     expect(renderToStaticMarkup(<ProjectExplorer {...props} status="error" />)).toContain('role="alert"');
+    const guarded = renderToStaticMarkup(<ProjectExplorer {...props} status="error" error="Cancel the active Terminal command before switching projects." />);
+    expect(guarded).toContain("Cancel the active Terminal command before switching projects.");
   });
 
   it("renders file loading and error states", () => {
