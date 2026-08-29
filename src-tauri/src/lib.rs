@@ -219,9 +219,16 @@ struct ProjectContext {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ChatResponse {
     message: ChatMessage,
     proposal: Option<FileProposal>,
+    command_proposal: Option<TerminalProposal>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct TerminalProposal {
+    command: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1722,6 +1729,35 @@ mod tests {
         let response: ChatResponse = serde_json::from_slice(bytes).unwrap();
         assert_eq!(response.message.role, "assistant");
         assert_eq!(response.message.content, "Готово: файл сохранён");
+    }
+
+    #[test]
+    fn chat_response_preserves_terminal_proposal_across_bridge_serialization() {
+        let backend_json = r#"{"message":{"role":"assistant","content":"Run this"},"proposal":null,"commandProposal":{"command":"pwd"}}"#;
+
+        let response: ChatResponse = serde_json::from_str(backend_json).unwrap();
+        assert_eq!(
+            response
+                .command_proposal
+                .as_ref()
+                .map(|proposal| proposal.command.as_str()),
+            Some("pwd")
+        );
+
+        let tauri_json = serde_json::to_value(response).unwrap();
+        assert_eq!(tauri_json["commandProposal"]["command"], "pwd");
+        assert!(tauri_json.get("command_proposal").is_none());
+    }
+
+    #[test]
+    fn chat_response_accepts_null_or_absent_terminal_proposal() {
+        for backend_json in [
+            r#"{"message":{"role":"assistant","content":"No command"},"proposal":null,"commandProposal":null}"#,
+            r#"{"message":{"role":"assistant","content":"No command"},"proposal":null}"#,
+        ] {
+            let response: ChatResponse = serde_json::from_str(backend_json).unwrap();
+            assert!(response.command_proposal.is_none());
+        }
     }
 
     #[test]
