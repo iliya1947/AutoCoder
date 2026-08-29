@@ -1,7 +1,8 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
+import type { TerminalTranscript } from "./TerminalPanel";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type FileProposal =
@@ -10,6 +11,7 @@ export type FileProposal =
   | { operation: "delete"; path: string; originalContent: string; expectedSavedContent: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string };
+export type TerminalResultDraft = TerminalTranscript & { id: number };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
@@ -39,6 +41,14 @@ export function messagesForCurrentContext(
 ): ChatMessage[] {
   const history = previousContextKey === currentContextKey ? messages : [];
   return [...history, { role: "user", content }];
+}
+
+export function formatTerminalResultDraft({ command, result }: TerminalTranscript): string {
+  const status = result.cancelled ? "cancelled" : `exit code: ${result.exitCode ?? "unknown"}`;
+  const sections = [`Command: ${command}`, `Status: ${status}`];
+  if (result.stdout) sections.push(`stdout:\n${result.stdout}`);
+  if (result.stderr) sections.push(`stderr:\n${result.stderr}`);
+  return sections.join("\n\n");
 }
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
@@ -119,7 +129,7 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, selection, project, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; onApplyProposal: (proposal: FileProposal) => void; onReviewCommand: (proposal: TerminalProposal) => void }) {
+export function ChatPanel({ openFile, selection, project, terminalResultDraft, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; terminalResultDraft?: TerminalResultDraft | null; onApplyProposal: (proposal: FileProposal) => void; onReviewCommand: (proposal: TerminalProposal) => void }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -128,6 +138,10 @@ export function ChatPanel({ openFile, selection, project, onApplyProposal, onRev
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const lastRequestContext = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (terminalResultDraft) setMessage(formatTerminalResultDraft(terminalResultDraft));
+  }, [terminalResultDraft]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

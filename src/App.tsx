@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
-import { ChatPanel, TerminalProposal } from "./components/ChatPanel";
+import { ChatPanel } from "./components/ChatPanel";
+import type { TerminalProposal, TerminalResultDraft } from "./components/ChatPanel";
 import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
@@ -23,6 +24,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
+  const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -35,6 +37,7 @@ function App() {
         setProject(transformed);
         setProjectSession((current) => current + 1);
         setProposedCommand(null);
+        setTerminalResultDraft(null);
         setOpenFile(null);
         setSelection(null);
         setEditorStatus("idle");
@@ -79,8 +82,8 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} /></section>
-    <ChatPanel openFile={openFile} selection={selection} project={project} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
+    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
+    <ChatPanel openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (proposal.operation === "create") {
         try {
           const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });

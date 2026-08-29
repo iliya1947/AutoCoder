@@ -9,6 +9,8 @@ export type TerminalResult = {
   cancelled: boolean;
 };
 
+export type TerminalTranscript = { command: string; result: TerminalResult };
+
 export function navigateTerminalHistory(
   history: string[],
   index: number,
@@ -25,10 +27,11 @@ export function navigateTerminalHistory(
   return { command: nextIndex === history.length ? draft : history[nextIndex], index: nextIndex, draft };
 }
 
-export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: boolean; proposedCommand?: { command: string } | null }) {
+export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: { projectOpen: boolean; proposedCommand?: { command: string } | null; onReviewResult?: (transcript: TerminalTranscript) => void }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
   const [result, setResult] = useState<TerminalResult | null>(null);
+  const [resultCommand, setResultCommand] = useState("");
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
@@ -48,6 +51,7 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
     if (!projectOpen) {
       setCommand("");
       setResult(null);
+      setResultCommand("");
       setError("");
       history.current = [];
       historyIndex.current = 0;
@@ -63,6 +67,7 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
     historyIndex.current = history.current.length;
     historyDraft.current = "";
     setRunning(true);
+    setResultCommand(value);
     setCancelling(false);
     setError("");
     try {
@@ -116,6 +121,9 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
       {result && <span className={!result.cancelled && result.exitCode === 0 ? "terminal-success" : "terminal-failure"}>
         {result.cancelled ? t("terminal.cancelled") : `${t("terminal.exit_code")}: ${result.exitCode ?? t("terminal.unknown_exit")}`}
       </span>}
+      {result && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult({ command: resultCommand, result })}>
+        {t("terminal.review_result")}
+      </button>}
     </div>
     <div className="terminal-output" aria-live="polite">
       {!projectOpen
