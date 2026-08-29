@@ -184,7 +184,7 @@ function App() {
         setSelection(null);
       }
     }} />
-  </main><BackupDialog open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
+  </main><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
 }
 
 export default App;
