@@ -149,7 +149,11 @@ mod windows {
         Globalization::{CompareStringOrdinal, CSTR_EQUAL, CSTR_LESS_THAN},
         Security::SECURITY_ATTRIBUTES,
         System::{
-            JobObjects::AssignProcessToJobObject,
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            },
             Pipes::CreatePipe,
             Threading::{
                 CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess,
@@ -161,6 +165,7 @@ mod windows {
 
     pub(crate) struct OwnedChild {
         process: HANDLE,
+        terminal_job: Option<HANDLE>,
         pub(crate) stdin: Option<File>,
         pub(crate) stdout: Option<File>,
         pub(crate) stderr: Option<File>,
@@ -254,10 +259,39 @@ mod windows {
             close_parents(&stdin, &stdout, &stderr);
             return Err(error);
         }
+        let terminal_job = if matches!(io, ChildIo::Terminal) {
+            let terminal_job = CreateJobObjectW(null(), null());
+            if terminal_job.is_null() {
+                let error = last_error("Unable to create the terminal command job");
+                terminate_failed_launch(info, &stdin, &stdout, &stderr);
+                return Err(error);
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                terminal_job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+                || AssignProcessToJobObject(terminal_job, info.hProcess) == 0
+            {
+                let error = last_error("Unable to isolate the terminal command in its own job");
+                CloseHandle(terminal_job);
+                terminate_failed_launch(info, &stdin, &stdout, &stderr);
+                return Err(error);
+            }
+            Some(terminal_job)
+        } else {
+            None
+        };
         if ResumeThread(info.hThread) == u32::MAX {
             let error = last_error("Unable to resume owned process after Job assignment");
             TerminateProcess(info.hProcess, 1);
             WaitForSingleObject(info.hProcess, INFINITE);
+            if let Some(job) = terminal_job {
+                CloseHandle(job);
+            }
             CloseHandle(info.hThread);
             CloseHandle(info.hProcess);
             close_parents(&stdin, &stdout, &stderr);
@@ -266,6 +300,7 @@ mod windows {
         CloseHandle(info.hThread);
         Ok(OwnedChild {
             process: info.hProcess,
+            terminal_job,
             stdin: stdin.map(|p| File::from_raw_handle(p.parent as _)),
             stdout: stdout.map(|p| File::from_raw_handle(p.parent as _)),
             stderr: stderr.map(|p| File::from_raw_handle(p.parent as _)),
@@ -273,6 +308,18 @@ mod windows {
     }
 
     impl OwnedChild {
+        pub(crate) fn cancel_tree(&mut self) -> std::io::Result<()> {
+            unsafe {
+                if let Some(job) = self.terminal_job {
+                    if TerminateJobObject(job, 1) == 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                } else {
+                    self.kill()
+                }
+            }
+        }
         pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
             unsafe {
                 let mut code = 0;
@@ -328,13 +375,77 @@ mod windows {
                 stderr,
             })
         }
+
+        pub(crate) fn wait_with_output_cancelled(
+            mut self,
+            cancel: &AtomicBool,
+        ) -> std::io::Result<(Output, bool)> {
+            drop(self.stdin.take());
+            let out = self.stdout.take().map(|mut file| {
+                std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).map(|_| bytes)
+                })
+            });
+            let err = self.stderr.take().map(|mut file| {
+                std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).map(|_| bytes)
+                })
+            });
+            let mut cancelled = false;
+            let status = loop {
+                if cancel.load(Ordering::Acquire) && !cancelled {
+                    self.cancel_tree()?;
+                    cancelled = true;
+                }
+                if let Some(status) = self.try_wait()? {
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            };
+            let stdout = out.map_or(Ok(Vec::new()), |handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err(std::io::Error::other("stdout reader panicked")))
+            })?;
+            let stderr = err.map_or(Ok(Vec::new()), |handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err(std::io::Error::other("stderr reader panicked")))
+            })?;
+            Ok((
+                Output {
+                    status,
+                    stdout,
+                    stderr,
+                },
+                cancelled,
+            ))
+        }
     }
     impl Drop for OwnedChild {
         fn drop(&mut self) {
             unsafe {
+                if let Some(job) = self.terminal_job {
+                    CloseHandle(job);
+                }
                 CloseHandle(self.process);
             }
         }
+    }
+
+    unsafe fn terminate_failed_launch(
+        info: PROCESS_INFORMATION,
+        stdin: &Option<RawPipe>,
+        stdout: &Option<RawPipe>,
+        stderr: &Option<RawPipe>,
+    ) {
+        TerminateProcess(info.hProcess, 1);
+        WaitForSingleObject(info.hProcess, INFINITE);
+        CloseHandle(info.hThread);
+        CloseHandle(info.hProcess);
+        close_parents(stdin, stdout, stderr);
     }
 
     unsafe fn close_parents(a: &Option<RawPipe>, b: &Option<RawPipe>, c: &Option<RawPipe>) {

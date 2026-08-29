@@ -6,6 +6,7 @@ export type TerminalResult = {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  cancelled: boolean;
 };
 
 export function navigateTerminalHistory(
@@ -29,6 +30,7 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
   const [command, setCommand] = useState("");
   const [result, setResult] = useState<TerminalResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
   const history = useRef<string[]>([]);
   const historyIndex = useRef(0);
@@ -61,6 +63,7 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
     historyIndex.current = history.current.length;
     historyDraft.current = "";
     setRunning(true);
+    setCancelling(false);
     setError("");
     try {
       setResult(await invoke<TerminalResult>("execute_project_command", { command: value }));
@@ -69,6 +72,20 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
       setError(String(reason));
     } finally {
       setRunning(false);
+      setCancelling(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (!running || cancelling) return;
+    setCancelling(true);
+    setError("");
+    try {
+      const accepted = await invoke<boolean>("cancel_project_command");
+      if (!accepted) setError(t("terminal.cancel_unavailable"));
+    } catch (reason) {
+      setError(String(reason));
+      setCancelling(false);
     }
   };
 
@@ -96,8 +113,8 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
   return <section className="terminal-panel" aria-label={t("terminal.title")}>
     <div className="panel-heading">
       <h2>{t("terminal.title")}</h2>
-      {result && <span className={result.exitCode === 0 ? "terminal-success" : "terminal-failure"}>
-        {t("terminal.exit_code")}: {result.exitCode ?? t("terminal.unknown_exit")}
+      {result && <span className={!result.cancelled && result.exitCode === 0 ? "terminal-success" : "terminal-failure"}>
+        {result.cancelled ? t("terminal.cancelled") : `${t("terminal.exit_code")}: ${result.exitCode ?? t("terminal.unknown_exit")}`}
       </span>}
     </div>
     <div className="terminal-output" aria-live="polite">
@@ -112,6 +129,9 @@ export function TerminalPanel({ projectOpen, proposedCommand }: { projectOpen: b
       <span aria-hidden="true">›</span>
       <input aria-label={t("terminal.command")} value={command} onChange={(event) => editCommand(event.target.value)} onKeyDown={navigateHistory} disabled={!projectOpen || running} placeholder={t("terminal.placeholder")} />
       <button type="submit" disabled={!projectOpen || !command.trim() || running}>{running ? t("terminal.running") : t("terminal.run")}</button>
+      {running && <button type="button" className="terminal-cancel" onClick={cancel} disabled={cancelling}>
+        {cancelling ? t("terminal.cancelling") : t("terminal.cancel")}
+      </button>}
     </form>
   </section>;
 }

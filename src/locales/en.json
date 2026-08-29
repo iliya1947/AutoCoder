@@ -65,5 +65,9 @@
   "terminal.run": "Run",
   "terminal.running": "Running…",
   "terminal.exit_code": "Exit",
-  "terminal.unknown_exit": "unknown"
+  "terminal.unknown_exit": "unknown",
+  "terminal.cancel": "Cancel",
+  "terminal.cancelling": "Cancelling…",
+  "terminal.cancelled": "Cancelled",
+  "terminal.cancel_unavailable": "The command already finished and cannot be cancelled."
 }
