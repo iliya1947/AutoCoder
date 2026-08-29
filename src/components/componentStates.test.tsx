@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { isLatestFileRead, markFileSaved } from "../App";
+import { isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
 import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
@@ -9,6 +9,8 @@ describe("panel states", () => {
   it("ignores stale file reads and save completions", () => {
     expect(isLatestFileRead(1, 2)).toBe(false);
     expect(isLatestFileRead(2, 2)).toBe(true);
+    expect(isLatestFileSave(1, 2)).toBe(false);
+    expect(isLatestFileSave(2, 2)).toBe(true);
 
     const current = { name: "b.txt", path: "b.txt", content: "B", savedContent: "B" };
     expect(markFileSaved(current, "a.txt", "A", "A changed")).toBe(current);
