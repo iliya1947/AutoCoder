@@ -47,6 +47,16 @@ export function isChatResponseCurrent(requestContextKey: string, currentContextK
   return requestContextKey === currentContextKey;
 }
 
+export function chatRequestError(
+  requestContextKey: string,
+  currentContextKey: string,
+  error: unknown,
+  contextChangedMessage: string,
+): string {
+  if (!isChatResponseCurrent(requestContextKey, currentContextKey)) return contextChangedMessage;
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function formatTerminalResultDraft({ command, result }: TerminalTranscript): string {
   const status = result.cancelled ? "cancelled" : `exit code: ${result.exitCode ?? "unknown"}`;
   const sections = [`Command: ${command}`, `Status: ${status}`];
@@ -177,8 +187,10 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
-      console.error("send_chat_message failed", error);
-      setError(error instanceof Error ? error.message : String(error));
+      if (isChatResponseCurrent(contextKey, currentContext.current)) {
+        console.error("send_chat_message failed", error);
+      }
+      setError(chatRequestError(contextKey, currentContext.current, error, t("chat.context_changed")));
     } finally {
       setSending(false);
     }
