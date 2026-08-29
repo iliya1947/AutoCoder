@@ -28,7 +28,7 @@ export type ChatRequest = {
 export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
   return JSON.stringify([
     project ? [project.name, projectEntries(project.children)] : null,
-    openFile ? [openFile.path, openFile.content] : null,
+    openFile ? [openFile.path, openFile.content, openFile.savedContent] : null,
     selection,
   ]);
 }
@@ -143,17 +143,35 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, selection, project, terminalResultDraft, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; terminalResultDraft?: TerminalResultDraft | null; onApplyProposal: (proposal: FileProposal) => void; onReviewCommand: (proposal: TerminalProposal) => void }) {
+export function ChatPanel({ openFile, selection, project, terminalResultDraft, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; terminalResultDraft?: TerminalResultDraft | null; onApplyProposal: (proposal: FileProposal) => void | Promise<void>; onReviewCommand: (proposal: TerminalProposal) => void }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const lastRequestContext = useRef<string | null>(null);
+  const requestInFlight = useRef(false);
+  const applyInFlight = useRef(false);
+  const latestRequest = useRef(0);
   const currentContext = useRef(chatContextKey(openFile, selection, project));
   currentContext.current = chatContextKey(openFile, selection, project);
+
+  useEffect(() => () => {
+    latestRequest.current += 1;
+    requestInFlight.current = false;
+    applyInFlight.current = false;
+  }, []);
+
+  useEffect(() => {
+    // Review actions are snapshots of the context which produced them. This is
+    // especially important for create and command proposals, which cannot be
+    // validated against the currently open file.
+    setProposal(null);
+    setCommandProposal(null);
+  }, [openFile?.path, openFile?.content, openFile?.savedContent, selection, project]);
 
   useEffect(() => {
     if (terminalResultDraft) setMessage(formatTerminalResultDraft(terminalResultDraft));
@@ -162,7 +180,9 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = message.trim();
-    if (!content || sending) return;
+    if (!content || requestInFlight.current) return;
+    requestInFlight.current = true;
+    const requestId = ++latestRequest.current;
     const contextKey = chatContextKey(openFile, selection, project);
     const requestMessages = messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
     lastRequestContext.current = contextKey;
@@ -179,6 +199,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
+      if (requestId !== latestRequest.current) return;
       if (!isChatResponseCurrent(contextKey, currentContext.current)) {
         setError(t("chat.context_changed"));
         return;
@@ -187,12 +208,16 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
+      if (requestId !== latestRequest.current) return;
       if (isChatResponseCurrent(contextKey, currentContext.current)) {
         console.error("send_chat_message failed", error);
       }
       setError(chatRequestError(contextKey, currentContext.current, error, t("chat.context_changed")));
     } finally {
-      setSending(false);
+      if (requestId === latestRequest.current) {
+        requestInFlight.current = false;
+        setSending(false);
+      }
     }
   };
 
@@ -216,8 +241,19 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
         </div>
         {canApplyProposal(openFile, proposal)
           ? <div className="proposal-actions">
-            <button type="button" onClick={() => { onApplyProposal(proposal); setProposal(null); }}>{t(proposal.operation === "create" ? "chat.create_proposal" : proposal.operation === "delete" ? "chat.delete_proposal" : "chat.apply_proposal")}</button>
-            <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
+            <button type="button" disabled={applying} onClick={async () => {
+              if (applyInFlight.current) return;
+              applyInFlight.current = true;
+              setApplying(true);
+              try {
+                await onApplyProposal(proposal);
+                setProposal(null);
+              } finally {
+                applyInFlight.current = false;
+                setApplying(false);
+              }
+            }}>{t(proposal.operation === "create" ? "chat.create_proposal" : proposal.operation === "delete" ? "chat.delete_proposal" : "chat.apply_proposal")}</button>
+            <button type="button" disabled={applying} className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
           </div>
           : <>
             <p className="proposal-stale">{t(proposal.operation === "delete" && openFile?.content !== openFile?.savedContent ? "chat.proposal_delete_dirty" : "chat.proposal_stale")}</p>

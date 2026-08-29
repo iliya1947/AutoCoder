@@ -4,7 +4,7 @@ import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFi
 import { Editor, selectedText } from "./Editor";
 import { isLatestBackupRequest } from "./BackupDialog";
 import { ProjectExplorer } from "./ProjectExplorer";
-import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
+import { beginTerminalRun, completeTerminalRun, isCurrentTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
 
 describe("panel states", () => {
   it("ignores stale file reads and save completions", () => {
@@ -102,5 +102,11 @@ describe("panel states", () => {
       status: "completed",
       transcript: { command: "ping 127.0.0.1 -t", result: cancelledB },
     });
+  });
+
+  it("rejects late terminal run and cancellation completions", () => {
+    expect(isCurrentTerminalRun(7, 7)).toBe(true);
+    expect(isCurrentTerminalRun(7, 8)).toBe(false);
+    expect(isCurrentTerminalRun(7, null)).toBe(false);
   });
 });

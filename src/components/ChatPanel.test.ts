@@ -4,6 +4,11 @@ import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chat
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
 
+  it("invalidates chat context when the saved disk baseline changes", () => {
+    const file = { name: "a.ts", path: "a.ts", content: "edited", savedContent: "old" };
+    expect(chatContextKey(file, null, null)).not.toBe(chatContextKey({ ...file, savedContent: "edited" }, null, null));
+  });
+
   it("formats terminal output as an editable chat draft without sending it", () => {
     expect(formatTerminalResultDraft({
       command: "npm test",

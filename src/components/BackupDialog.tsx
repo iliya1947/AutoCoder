@@ -31,11 +31,12 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
   const [error, setError] = useState("");
   const latestListRequest = useRef(0);
   const latestRestoreRequest = useRef(0);
+  const restoreInFlight = useRef(false);
 
-  useEffect(() => () => { latestRestoreRequest.current += 1; }, []);
+  useEffect(() => () => { latestRestoreRequest.current += 1; restoreInFlight.current = false; }, []);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || restoreInFlight.current) return;
     const requestId = ++latestListRequest.current;
     setStatus("loading");
     setError("");
@@ -59,10 +60,15 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
   const close = () => {
     latestListRequest.current += 1;
     latestRestoreRequest.current += 1;
+    restoreInFlight.current = false;
     onClose();
   };
   const restore = async () => {
-    if (!selected || !canRestore()) return;
+    if (!selected || restoreInFlight.current || !canRestore()) return;
+    restoreInFlight.current = true;
+    // A list completion must not turn the dialog back to idle while restore is
+    // still in flight (for example after a language change).
+    latestListRequest.current += 1;
     const requestId = ++latestRestoreRequest.current;
     setStatus("restoring");
     setError("");
@@ -78,6 +84,8 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
       if (!isLatestBackupRequest(requestId, latestRestoreRequest.current)) return;
       setError(operationError(t("backups.error"), reason));
       setStatus("error");
+    } finally {
+      if (isLatestBackupRequest(requestId, latestRestoreRequest.current)) restoreInFlight.current = false;
     }
   };
 
