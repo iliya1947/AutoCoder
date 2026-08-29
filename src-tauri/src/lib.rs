@@ -55,6 +55,15 @@ impl OllamaState {
 
 impl OllamaState {
     fn ensure_running(&self) -> Result<(), String> {
+        match ollama_api_readiness("127.0.0.1:11434", std::time::Duration::from_millis(750)) {
+            OllamaReadiness::Ready => return Ok(()),
+            OllamaReadiness::HttpStatus(status) => {
+                return Err(format!(
+                    "Ollama readiness endpoint /api/version returned HTTP {status}."
+                ));
+            }
+            OllamaReadiness::Unavailable => {}
+        }
         self.ensure_running_with(
             ollama_is_ready,
             || launch_ollama(&self.lifecycle),
@@ -330,15 +339,26 @@ fn ollama_is_ready() -> bool {
     ollama_api_is_ready("127.0.0.1:11434", std::time::Duration::from_millis(750))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OllamaReadiness {
+    Ready,
+    HttpStatus(u16),
+    Unavailable,
+}
+
 fn ollama_api_is_ready(address: &str, timeout: std::time::Duration) -> bool {
+    ollama_api_readiness(address, timeout) == OllamaReadiness::Ready
+}
+
+fn ollama_api_readiness(address: &str, timeout: std::time::Duration) -> OllamaReadiness {
     let Ok(mut stream) = TcpStream::connect_timeout(
         &match address.parse() {
             Ok(value) => value,
-            Err(_) => return false,
+            Err(_) => return OllamaReadiness::Unavailable,
         },
         timeout,
     ) else {
-        return false;
+        return OllamaReadiness::Unavailable;
     };
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
@@ -346,32 +366,40 @@ fn ollama_api_is_ready(address: &str, timeout: std::time::Duration) -> bool {
         .write_all(b"GET /api/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .is_err()
     {
-        return false;
+        return OllamaReadiness::Unavailable;
     }
     let mut response = Vec::new();
     if std::io::Read::read_to_end(&mut stream, &mut response).is_err() {
-        return false;
+        return OllamaReadiness::Unavailable;
     }
     let Some(split) = response.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
-        return false;
+        return OllamaReadiness::Unavailable;
     };
     let Ok(headers) = std::str::from_utf8(&response[..split]) else {
-        return false;
+        return OllamaReadiness::Unavailable;
     };
-    if !headers
+    let status = headers
         .lines()
         .next()
-        .is_some_and(|line| line.starts_with("HTTP/1.1 200 ") || line.starts_with("HTTP/1.0 200 "))
-    {
-        return false;
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok());
+    if status != Some(200) {
+        return status
+            .map(OllamaReadiness::HttpStatus)
+            .unwrap_or(OllamaReadiness::Unavailable);
     }
-    serde_json::from_slice::<serde_json::Value>(&response[split + 4..])
+    if serde_json::from_slice::<serde_json::Value>(&response[split + 4..])
         .ok()
         .is_some_and(|json| {
             json.get("version")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|version| !version.is_empty())
         })
+    {
+        OllamaReadiness::Ready
+    } else {
+        OllamaReadiness::Unavailable
+    }
 }
 
 fn ollama_executable() -> Option<PathBuf> {
@@ -1622,6 +1650,18 @@ mod tests {
             &address,
             std::time::Duration::from_secs(1)
         ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn http_503_readiness_preserves_status_for_diagnostics() {
+        let (address, server) = one_response_server(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(
+            ollama_api_readiness(&address, std::time::Duration::from_secs(1)),
+            OllamaReadiness::HttpStatus(503)
+        );
         server.join().unwrap();
     }
 

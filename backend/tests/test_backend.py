@@ -421,6 +421,21 @@ class BackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "Local Ollama was not found"):
             runtime.ensure_ready()
 
+    def test_http_503_readiness_is_not_reported_as_missing_executable(self):
+        unavailable = error.HTTPError(
+            "http://127.0.0.1:11434/api/version", 503, "Service Unavailable", {}, None
+        )
+        runtime = OllamaRuntime(
+            "http://127.0.0.1:11434",
+            opener=Mock(side_effect=unavailable),
+            executable_finder=Mock(),
+        )
+
+        with self.assertRaisesRegex(ProviderError, r"readiness endpoint.*HTTP 503"):
+            runtime.ensure_ready()
+
+        runtime.executable_finder.assert_not_called()
+
     def test_ollama_launch_error_reports_executable_and_system_reason(self):
         executable = Path("C:/Ollama/ollama.exe")
         runtime = OllamaRuntime(
