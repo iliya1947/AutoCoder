@@ -1,10 +1,24 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { isLatestFileRead, markFileSaved } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
 import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
 
 describe("panel states", () => {
+  it("ignores stale file reads and save completions", () => {
+    expect(isLatestFileRead(1, 2)).toBe(false);
+    expect(isLatestFileRead(2, 2)).toBe(true);
+
+    const current = { name: "b.txt", path: "b.txt", content: "B", savedContent: "B" };
+    expect(markFileSaved(current, "a.txt", "A", "A changed")).toBe(current);
+    expect(markFileSaved(current, "b.txt", "older B", "changed B")).toBe(current);
+    expect(markFileSaved(current, "b.txt", "B", "changed B")).toEqual({
+      ...current,
+      savedContent: "changed B",
+    });
+  });
+
   it("maps a cleared Monaco selection to null", () => {
     const model = { getValueInRange: (selection: string) => selection === "selected" ? "файл номер 2" : "" };
     expect(selectedText(model, "selected")).toBe("файл номер 2");
