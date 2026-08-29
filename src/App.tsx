@@ -21,6 +21,10 @@ export function isLatestFileSave(requestId: number, latestRequestId: number): bo
   return requestId === latestRequestId;
 }
 
+export function isCurrentProjectSession(requestSession: number, currentSession: number): boolean {
+  return requestSession === currentSession;
+}
+
 export function markFileSaved(
   current: OpenedFile | null,
   path: string,
@@ -48,6 +52,7 @@ function App() {
   const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
   const latestFileRead = useRef(0);
   const latestFileSave = useRef(0);
+  const currentProjectSession = useRef(0);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -61,7 +66,8 @@ function App() {
         latestFileSave.current += 1;
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
-        setProjectSession((current) => current + 1);
+        currentProjectSession.current += 1;
+        setProjectSession(currentProjectSession.current);
         setProposedCommand(null);
         setTerminalResultDraft(null);
         setOpenFile(null);
@@ -131,25 +137,34 @@ function App() {
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
+      const requestSession = currentProjectSession.current;
       if (proposal.operation === "create") {
         try {
           const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
           setProject({ ...updated, children: transformProjectTree(updated.children) });
           setOpenFile({ name: proposal.path.split(/[\\/]/).pop() ?? proposal.path, path: proposal.path, content: proposal.content, savedContent: proposal.content });
           setEditorStatus("ready");
           setEditorError("");
-        } catch (error) { setEditorError(operationError(t("editor.create_error"), error)); }
+        } catch (error) {
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+          setEditorError(operationError(t("editor.create_error"), error));
+        }
       } else if (proposal.operation === "delete") {
         try {
           const updated = await invoke<ProjectTree>("delete_project_file", {
             relativePath: proposal.path,
             expectedContent: proposal.expectedSavedContent,
           });
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
           setProject({ ...updated, children: transformProjectTree(updated.children) });
           setOpenFile(null);
           setEditorStatus("idle");
           setEditorError("");
-        } catch (error) { setEditorError(operationError(t("editor.delete_error"), error)); }
+        } catch (error) {
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+          setEditorError(operationError(t("editor.delete_error"), error));
+        }
       } else {
         setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
           ? { ...current, content: proposal.content }
