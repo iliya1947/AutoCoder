@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, formatTerminalResultDraft, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatTerminalResultDraft, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -162,6 +162,13 @@ describe("chat request", () => {
       chatContextKey(original, null, project),
       chatContextKey(original, null, { name: "demo", children: [{ name: "new.ts", path: "new.ts", kind: "file", children: [] }] }),
     )).toBe(false);
+  });
+
+  it("does not show an obsolete backend failure after the context changed", () => {
+    expect(chatRequestError("old", "new", "Ollama unavailable", "Context changed"))
+      .toBe("Context changed");
+    expect(chatRequestError("same", "same", new Error("Ollama unavailable"), "Context changed"))
+      .toBe("Ollama unavailable");
   });
 
   it("applies a proposal only to the unchanged source file", () => {
