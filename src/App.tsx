@@ -14,6 +14,7 @@ import { transformProjectTree } from "./utils/projectTree";
 function App() {
   const { t } = useTranslation();
   const [project, setProject] = useState<ProjectTree | null>(null);
+  const [projectSession, setProjectSession] = useState(0);
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("idle");
   const [openFile, setOpenFile] = useState<OpenedFile | null>(null);
   const [selection, setSelection] = useState<string | null>(null);
@@ -32,6 +33,7 @@ function App() {
       if (selected) {
         const transformed = { ...selected, children: transformProjectTree(selected.children) };
         setProject(transformed);
+        setProjectSession((current) => current + 1);
         setProposedCommand(null);
         setOpenFile(null);
         setSelection(null);
@@ -77,7 +79,7 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel projectOpen={project !== null} proposedCommand={proposedCommand} /></section>
+    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} /></section>
     <ChatPanel openFile={openFile} selection={selection} project={project} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (proposal.operation === "create") {
         try {

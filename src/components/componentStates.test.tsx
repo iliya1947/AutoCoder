@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
-import { TerminalPanel } from "./TerminalPanel";
+import { navigateTerminalHistory, TerminalPanel } from "./TerminalPanel";
 
 describe("panel states", () => {
   it("maps a cleared Monaco selection to null", () => {
@@ -30,5 +30,15 @@ describe("panel states", () => {
     expect(closed).toContain("disabled");
     const opened = renderToStaticMarkup(<TerminalPanel projectOpen />);
     expect(opened).toContain("Здесь появится вывод команды");
+  });
+
+  it("navigates terminal command history and restores the unfinished draft", () => {
+    const history = ["npm test", "npm run build"];
+    const previous = navigateTerminalHistory(history, history.length, "", "previous", "git status");
+    expect(previous).toEqual({ command: "npm run build", index: 1, draft: "git status" });
+    expect(navigateTerminalHistory(history, previous.index, previous.draft, "previous", previous.command))
+      .toEqual({ command: "npm test", index: 0, draft: "git status" });
+    expect(navigateTerminalHistory(history, previous.index, previous.draft, "next", previous.command))
+      .toEqual({ command: "git status", index: 2, draft: "git status" });
   });
 });
