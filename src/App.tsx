@@ -17,6 +17,7 @@ function App() {
   const [project, setProject] = useState<ProjectTree | null>(null);
   const [projectSession, setProjectSession] = useState(0);
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("idle");
+  const [projectError, setProjectError] = useState("");
   const [openFile, setOpenFile] = useState<OpenedFile | null>(null);
   const [selection, setSelection] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
@@ -29,6 +30,7 @@ function App() {
 
   const handleOpenProject = async () => {
     if (isDirty && !window.confirm(t("editor.discard_confirm"))) return;
+    setProjectError("");
     setProjectStatus("loading");
     try {
       const selected = await invoke<ProjectTree | null>("open_project");
@@ -43,7 +45,10 @@ function App() {
         setEditorStatus("idle");
         setProjectStatus("opened");
       } else setProjectStatus(project ? "opened" : "idle");
-    } catch { setProjectStatus("error"); }
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : String(error));
+      setProjectStatus("error");
+    }
   };
 
   const handleOpenFile = async (node: ProjectNode) => {
@@ -80,7 +85,7 @@ function App() {
   };
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
-    <ProjectExplorer project={project} status={projectStatus} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
+    <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
