@@ -67,11 +67,18 @@ impl TerminalState {
         Ok((root, cancel))
     }
 
-    fn switch_project(&self, project_state: &ProjectState, root: PathBuf) -> Result<(), String> {
+    fn switch_project(&self, project_state: &ProjectState, root: PathBuf) -> Result<bool, String> {
         let _transition = self
             .project_transition
             .lock()
             .map_err(|_| "Unable to access terminal command state.".to_string())?;
+        let mut current_root = project_state
+            .root
+            .lock()
+            .map_err(|_| "Unable to access the project state.".to_string())?;
+        if current_root.as_ref() == Some(&root) {
+            return Ok(false);
+        }
         if self
             .active_cancel
             .lock()
@@ -83,11 +90,8 @@ impl TerminalState {
                     .to_string(),
             );
         }
-        *project_state
-            .root
-            .lock()
-            .map_err(|_| "Unable to access the project state.".to_string())? = Some(root);
-        Ok(())
+        *current_root = Some(root);
+        Ok(true)
     }
 }
 
@@ -215,6 +219,13 @@ struct ProjectTree {
     children: Vec<FileTreeNode>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenProjectResult {
+    project: ProjectTree,
+    session_changed: bool,
+}
+
 #[derive(Serialize)]
 struct FileReadResult {
     content: String,
@@ -319,7 +330,7 @@ async fn open_project(
     app: tauri::AppHandle,
     project_state: State<'_, ProjectState>,
     terminal_state: State<'_, TerminalState>,
-) -> Result<Option<ProjectTree>, String> {
+) -> Result<Option<OpenProjectResult>, String> {
     let Some(root) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
     };
@@ -340,9 +351,12 @@ async fn open_project(
 
     // Starting a command and committing a project switch share one transition
     // lock, so neither can observe the other's half-completed state.
-    terminal_state.switch_project(&project_state, root)?;
+    let session_changed = terminal_state.switch_project(&project_state, root)?;
 
-    Ok(Some(ProjectTree { name, children }))
+    Ok(Some(OpenProjectResult {
+        project: ProjectTree { name, children },
+        session_changed,
+    }))
 }
 
 #[tauri::command]
@@ -1556,6 +1570,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn reopening_the_current_project_is_not_a_switch_and_is_allowed_during_a_command() {
+        let root = PathBuf::from("project-a");
+        let project_state = ProjectState {
+            root: Mutex::new(Some(root.clone())),
+        };
+        let terminal_state = TerminalState::default();
+        terminal_state
+            .begin_project_command(&project_state)
+            .unwrap();
+
+        assert!(!terminal_state.switch_project(&project_state, root).unwrap());
+        assert!(terminal_state.active_cancel.lock().unwrap().is_some());
     }
 
     #[test]

@@ -9,7 +9,7 @@ import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
-import { FileReadResult, OpenedFile, ProjectNode, ProjectTree } from "./types/project";
+import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
 import { operationError } from "./utils/invokeError";
 
@@ -23,6 +23,10 @@ export function isLatestFileSave(requestId: number, latestRequestId: number): bo
 
 export function isCurrentProjectSession(requestSession: number, currentSession: number): boolean {
   return requestSession === currentSession;
+}
+
+export function nextProjectSession(currentSession: number, sessionChanged: boolean): number {
+  return sessionChanged ? currentSession + 1 : currentSession;
 }
 
 export function editorContextKey(file: OpenedFile | null): string {
@@ -69,20 +73,22 @@ function App() {
     setProjectError("");
     setProjectStatus("loading");
     try {
-      const selected = await invoke<ProjectTree | null>("open_project");
+      const selected = await invoke<OpenProjectResult | null>("open_project");
       if (selected) {
-        latestFileRead.current += 1;
-        latestFileSave.current += 1;
-        const transformed = { ...selected, children: transformProjectTree(selected.children) };
+        const transformed = { ...selected.project, children: transformProjectTree(selected.project.children) };
         setProject(transformed);
-        currentProjectSession.current += 1;
-        setProjectSession(currentProjectSession.current);
-        setProposedCommand(null);
-        setTerminalResultDraft(null);
-        setOpenFile(null);
-        setSelection(null);
-        setEditorStatus("idle");
-        setSaving(false);
+        if (selected.sessionChanged) {
+          latestFileRead.current += 1;
+          latestFileSave.current += 1;
+          currentProjectSession.current = nextProjectSession(currentProjectSession.current, selected.sessionChanged);
+          setProjectSession(currentProjectSession.current);
+          setProposedCommand(null);
+          setTerminalResultDraft(null);
+          setOpenFile(null);
+          setSelection(null);
+          setEditorStatus("idle");
+          setSaving(false);
+        }
         setProjectStatus("opened");
       } else setProjectStatus(project ? "opened" : "idle");
     } catch (error) {

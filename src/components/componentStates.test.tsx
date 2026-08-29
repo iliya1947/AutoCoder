@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved } from "../App";
+import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved, nextProjectSession } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { isLatestBackupRequest } from "./BackupDialog";
 import { ProjectExplorer } from "./ProjectExplorer";
@@ -27,6 +27,11 @@ describe("panel states", () => {
     expect(isCurrentProjectSession(3, 4)).toBe(false);
   });
 
+  it("starts a session only when the backend committed a real project switch", () => {
+    expect(nextProjectSession(4, false)).toBe(4);
+    expect(nextProjectSession(4, true)).toBe(5);
+  });
+
   it("ignores stale backup list and restore completions", () => {
     expect(isLatestBackupRequest(4, 4)).toBe(true);
     expect(isLatestBackupRequest(3, 4)).toBe(false);
@@ -51,6 +56,15 @@ describe("panel states", () => {
     expect(renderToStaticMarkup(<ProjectExplorer {...props} status="error" />)).toContain('role="alert"');
     const guarded = renderToStaticMarkup(<ProjectExplorer {...props} status="error" error="Cancel the active Terminal command before switching projects." />);
     expect(guarded).toContain("Cancel the active Terminal command before switching projects.");
+  });
+
+  it("keeps the current project tree visible with a failed switch diagnostic", () => {
+    const project = { name: "project-a", children: [{ name: "keep.txt", path: "keep.txt", kind: "file" as const, children: [] }] };
+    const markup = renderToStaticMarkup(<ProjectExplorer project={project} activePath={undefined} onOpenProject={() => undefined} onOpenFile={() => undefined} status="error" error="Switch rejected." />);
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Switch rejected.");
+    expect(markup).toContain("project-a");
+    expect(markup).toContain("keep.txt");
   });
 
   it("renders file loading and error states", () => {

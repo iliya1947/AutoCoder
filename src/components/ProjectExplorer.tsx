@@ -18,8 +18,8 @@ export function ProjectExplorer({ project, status, error, activePath, onOpenProj
     <nav>
       {status === "loading" && <p className="project-state" role="status">{t("files.loading")}</p>}
       {status === "error" && <p className="project-state error" role="alert">{t("files.open_error")}{error && <> {error}</>}</p>}
-      {status === "idle" && <p className="project-state">{t("files.not_opened")}</p>}
-      {status === "opened" && project && <div className="project-tree"><p className="project-name">{project.name}</p>{project.children.length ? <FileTree nodes={project.children} activePath={activePath} onOpenFile={onOpenFile} /> : <p className="project-state">{t("files.no_supported_files")}</p>}</div>}
+      {status === "idle" && !project && <p className="project-state">{t("files.not_opened")}</p>}
+      {project && <div className="project-tree"><p className="project-name">{project.name}</p>{project.children.length ? <FileTree nodes={project.children} activePath={activePath} onOpenFile={onOpenFile} /> : <p className="project-state">{t("files.no_supported_files")}</p>}</div>}
     </nav>
   </aside>;
 }
