@@ -686,9 +686,9 @@ fn run_project_command(
     #[cfg(windows)]
     let mut process = {
         let mut process = Command::new("cmd.exe");
-        // cmd.exe normally writes redirected output using a console code page. /U
-        // makes its redirected output UTF-16LE, so it can be decoded without
-        // depending on the machine's locale or active console code page.
+        // /U makes cmd.exe's own redirected output UTF-16LE. External programs
+        // still write their own bytes to the inherited pipe handles, so output
+        // decoding also accepts UTF-8 below.
         process.args(["/D", "/U", "/S", "/C", command]);
         process
     };
@@ -746,15 +746,35 @@ fn windows_shell_directory(canonical_root: &Path) -> PathBuf {
 
 #[cfg(windows)]
 fn decode_terminal_output(bytes: &[u8]) -> String {
-    let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-    let mut units = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect::<Vec<_>>();
-    if let Some(remainder) = bytes.chunks_exact(2).remainder().first() {
-        units.push(u16::from(*remainder));
+    let has_utf16le_bom = bytes.starts_with(&[0xff, 0xfe]);
+    let utf16_bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+    let has_utf16le_text_marker = utf16_bytes.len() % 2 == 0
+        && utf16_bytes.chunks_exact(2).any(|pair| {
+            pair[1] == 0
+                && (pair[0] == b'\t' || pair[0] == b'\r' || pair[0] == b'\n' || pair[0] >= b' ')
+        });
+
+    // External developer CLIs commonly emit ASCII/UTF-8 directly to inherited
+    // redirected handles. Prefer valid UTF-8 unless the byte layout contains an
+    // explicit UTF-16LE marker (BOM or an ASCII/control UTF-16 code unit).
+    if !has_utf16le_bom && !has_utf16le_text_marker {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return text.to_owned();
+        }
     }
-    String::from_utf16_lossy(&units)
+
+    if has_utf16le_bom || has_utf16le_text_marker {
+        let units = utf16_bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16_lossy(&units);
+    }
+
+    // There is no encoding metadata on an anonymous pipe. Unknown legacy
+    // encodings cannot be selected deterministically; preserve the previous
+    // loss-tolerant behavior rather than misclassifying arbitrary bytes as UTF-16.
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[cfg(not(windows))]
@@ -1390,6 +1410,53 @@ mod tests {
         assert!(result.stderr.contains("Русский stderr"));
         assert!(!result.stdout.contains('�'));
         assert!(!result.stderr.contains('�'));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_external_ascii_stdout_and_stderr() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDOUT');$b=[Text.Encoding]::ASCII.GetBytes('EXTERNAL_ASCII_STDERR');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length)\"",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout, "EXTERNAL_ASCII_STDOUT");
+        assert_eq!(result.stderr, "EXTERNAL_ASCII_STDERR");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decodes_external_utf8_stdout_stderr_and_exit_code() {
+        let (directory, _) = project();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+        let result = run_project_command(
+            directory.path(),
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$a=[Text.Encoding]::UTF8.GetBytes('Внешний stdout');$b=[Text.Encoding]::UTF8.GetBytes('Внешний stderr');$o.Write($a,0,$a.Length);$e.Write($b,0,$b.Length);exit 13\"",
+            &lifecycle,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(13));
+        assert_eq!(result.stdout, "Внешний stdout");
+        assert_eq!(result.stderr, "Внешний stderr");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_decoder_does_not_treat_even_utf8_as_utf16() {
+        assert_eq!(
+            decode_terminal_output(b"git --version\r\n"),
+            "git --version\r\n"
+        );
+        assert_eq!(
+            decode_terminal_output("UTF-8: Привет".as_bytes()),
+            "UTF-8: Привет"
+        );
     }
 
     #[test]
