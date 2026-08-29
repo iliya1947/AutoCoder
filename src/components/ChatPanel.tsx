@@ -43,6 +43,10 @@ export function messagesForCurrentContext(
   return [...history, { role: "user", content }];
 }
 
+export function isChatResponseCurrent(requestContextKey: string, currentContextKey: string): boolean {
+  return requestContextKey === currentContextKey;
+}
+
 export function formatTerminalResultDraft({ command, result }: TerminalTranscript): string {
   const status = result.cancelled ? "cancelled" : `exit code: ${result.exitCode ?? "unknown"}`;
   const sections = [`Command: ${command}`, `Status: ${status}`];
@@ -138,6 +142,8 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const lastRequestContext = useRef<string | null>(null);
+  const currentContext = useRef(chatContextKey(openFile, selection, project));
+  currentContext.current = chatContextKey(openFile, selection, project);
 
   useEffect(() => {
     if (terminalResultDraft) setMessage(formatTerminalResultDraft(terminalResultDraft));
@@ -163,6 +169,10 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
+      if (!isChatResponseCurrent(contextKey, currentContext.current)) {
+        setError(t("chat.context_changed"));
+        return;
+      }
       setMessages((current) => [...current, response.message]);
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);

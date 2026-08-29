@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, formatTerminalResultDraft, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, ChatMessage, formatTerminalResultDraft, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -143,6 +143,25 @@ describe("chat request", () => {
       chatContextKey(null, null, originalProject),
       chatContextKey(null, null, updatedProject),
     )).toEqual([{ role: "user", content: "List the files now." }]);
+  });
+
+  it("rejects a response when its editor or project context changed in flight", () => {
+    const original = { name: "main.ts", path: "main.ts", content: "old", savedContent: "old" };
+    const edited = { ...original, content: "new" };
+    const project = { name: "demo", children: [] };
+
+    expect(isChatResponseCurrent(
+      chatContextKey(original, null, project),
+      chatContextKey(original, null, project),
+    )).toBe(true);
+    expect(isChatResponseCurrent(
+      chatContextKey(original, null, project),
+      chatContextKey(edited, null, project),
+    )).toBe(false);
+    expect(isChatResponseCurrent(
+      chatContextKey(original, null, project),
+      chatContextKey(original, null, { name: "demo", children: [{ name: "new.ts", path: "new.ts", kind: "file", children: [] }] }),
+    )).toBe(false);
   });
 
   it("applies a proposal only to the unchanged source file", () => {
