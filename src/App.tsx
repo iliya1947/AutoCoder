@@ -25,6 +25,10 @@ export function isCurrentProjectSession(requestSession: number, currentSession: 
   return requestSession === currentSession;
 }
 
+export function editorContextKey(file: OpenedFile | null): string {
+  return JSON.stringify(file ? [file.path, file.content, file.savedContent] : null);
+}
+
 export function markFileSaved(
   current: OpenedFile | null,
   path: string,
@@ -53,6 +57,8 @@ function App() {
   const latestFileRead = useRef(0);
   const latestFileSave = useRef(0);
   const currentProjectSession = useRef(0);
+  const currentEditorContext = useRef(editorContextKey(openFile));
+  currentEditorContext.current = editorContextKey(openFile);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
   const handleOpenProject = async () => {
@@ -139,16 +145,19 @@ function App() {
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       const requestSession = currentProjectSession.current;
+      const requestEditorContext = currentEditorContext.current;
       if (proposal.operation === "create") {
         try {
           const updated = await invoke<ProjectTree>("create_project_file", { relativePath: proposal.path, content: proposal.content });
           if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
           setProject({ ...updated, children: transformProjectTree(updated.children) });
+          if (requestEditorContext !== currentEditorContext.current) return;
           setOpenFile({ name: proposal.path.split(/[\\/]/).pop() ?? proposal.path, path: proposal.path, content: proposal.content, savedContent: proposal.content });
+          setSelection(null);
           setEditorStatus("ready");
           setEditorError("");
         } catch (error) {
-          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current) || requestEditorContext !== currentEditorContext.current) return;
           setEditorError(operationError(t("editor.create_error"), error));
         }
       } else if (proposal.operation === "delete") {
@@ -159,19 +168,21 @@ function App() {
           });
           if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
           setProject({ ...updated, children: transformProjectTree(updated.children) });
+          if (requestEditorContext !== currentEditorContext.current) return;
           setOpenFile(null);
+          setSelection(null);
           setEditorStatus("idle");
           setEditorError("");
         } catch (error) {
-          if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+          if (!isCurrentProjectSession(requestSession, currentProjectSession.current) || requestEditorContext !== currentEditorContext.current) return;
           setEditorError(operationError(t("editor.delete_error"), error));
         }
       } else {
         setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
           ? { ...current, content: proposal.content }
           : current);
+        setSelection(null);
       }
-      setSelection(null);
     }} />
   </main><BackupDialog open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
 }
