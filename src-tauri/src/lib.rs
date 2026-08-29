@@ -36,15 +36,58 @@ struct ProjectState {
 
 #[derive(Default)]
 struct TerminalState {
+    project_transition: Mutex<()>,
     active_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl TerminalState {
-    fn has_active_command(&self) -> Result<bool, String> {
-        self.active_cancel
+    fn begin_project_command(
+        &self,
+        project_state: &ProjectState,
+    ) -> Result<(PathBuf, Arc<AtomicBool>), String> {
+        let _transition = self
+            .project_transition
             .lock()
-            .map(|active| active.is_some())
-            .map_err(|_| "Unable to access terminal command state.".to_string())
+            .map_err(|_| "Unable to access terminal command state.".to_string())?;
+        let root = project_state
+            .root
+            .lock()
+            .map_err(|_| "Unable to access the project state.".to_string())?
+            .clone()
+            .ok_or_else(|| "Open a project before running a terminal command.".to_string())?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut active = self
+            .active_cancel
+            .lock()
+            .map_err(|_| "Unable to access terminal command state.".to_string())?;
+        if active.is_some() {
+            return Err("Another terminal command is already running.".to_string());
+        }
+        *active = Some(Arc::clone(&cancel));
+        Ok((root, cancel))
+    }
+
+    fn switch_project(&self, project_state: &ProjectState, root: PathBuf) -> Result<(), String> {
+        let _transition = self
+            .project_transition
+            .lock()
+            .map_err(|_| "Unable to access terminal command state.".to_string())?;
+        if self
+            .active_cancel
+            .lock()
+            .map_err(|_| "Unable to access terminal command state.".to_string())?
+            .is_some()
+        {
+            return Err(
+                "Cancel or wait for the active terminal command before switching projects."
+                    .to_string(),
+            );
+        }
+        *project_state
+            .root
+            .lock()
+            .map_err(|_| "Unable to access the project state.".to_string())? = Some(root);
+        Ok(())
     }
 }
 
@@ -289,24 +332,15 @@ async fn open_project(
     }
     fs::read_dir(&root).map_err(|error| error.to_string())?;
 
-    // Do not detach the terminal UI from a process that still belongs to the
-    // current project. The user can cancel it explicitly and retry the switch.
-    if terminal_state.has_active_command()? {
-        return Err(
-            "Cancel or wait for the active terminal command before switching projects.".to_string(),
-        );
-    }
-
     let children = read_directory(&root, &root);
     let name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Project".to_string());
 
-    *project_state
-        .root
-        .lock()
-        .map_err(|_| "Unable to access the project state.".to_string())? = Some(root);
+    // Starting a command and committing a project switch share one transition
+    // lock, so neither can observe the other's half-completed state.
+    terminal_state.switch_project(&project_state, root)?;
 
     Ok(Some(ProjectTree { name, children }))
 }
@@ -725,19 +759,8 @@ async fn execute_project_command(
     lifecycle: State<'_, Arc<ProcessLifecycle>>,
     terminal_state: State<'_, TerminalState>,
 ) -> Result<TerminalResult, String> {
-    let root = project_root(&project_state)?;
+    let (root, cancel) = terminal_state.begin_project_command(&project_state)?;
     let lifecycle = Arc::clone(lifecycle.inner());
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut active = terminal_state
-            .active_cancel
-            .lock()
-            .map_err(|_| "Unable to access terminal command state.".to_string())?;
-        if active.is_some() {
-            return Err("Another terminal command is already running.".to_string());
-        }
-        *active = Some(Arc::clone(&cancel));
-    }
     let result = tauri::async_runtime::spawn_blocking(move || {
         run_project_command(&root, &command, &lifecycle, &cancel)
     })
@@ -1451,6 +1474,7 @@ fn should_skip_entry(entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    use std::sync::Barrier;
     use tempfile::TempDir;
 
     fn project() -> (TempDir, PathBuf) {
@@ -1461,15 +1485,46 @@ mod tests {
     }
 
     #[test]
-    fn terminal_state_reports_an_active_command_before_project_switch() {
-        let state = TerminalState::default();
-        assert!(!state.has_active_command().unwrap());
+    fn terminal_start_and_project_switch_are_atomic() {
+        for _ in 0..100 {
+            let project_state = Arc::new(ProjectState {
+                root: Mutex::new(Some(PathBuf::from("project-a"))),
+            });
+            let terminal_state = Arc::new(TerminalState::default());
+            let barrier = Arc::new(Barrier::new(3));
 
-        *state.active_cancel.lock().unwrap() = Some(Arc::new(AtomicBool::new(false)));
-        assert!(state.has_active_command().unwrap());
+            let command_project = Arc::clone(&project_state);
+            let command_terminal = Arc::clone(&terminal_state);
+            let command_barrier = Arc::clone(&barrier);
+            let command = thread::spawn(move || {
+                command_barrier.wait();
+                command_terminal
+                    .begin_project_command(&command_project)
+                    .unwrap()
+                    .0
+            });
 
-        *state.active_cancel.lock().unwrap() = None;
-        assert!(!state.has_active_command().unwrap());
+            let switch_project = Arc::clone(&project_state);
+            let switch_terminal = Arc::clone(&terminal_state);
+            let switch_barrier = Arc::clone(&barrier);
+            let project_switch = thread::spawn(move || {
+                switch_barrier.wait();
+                switch_terminal.switch_project(&switch_project, PathBuf::from("project-b"))
+            });
+
+            barrier.wait();
+            let command_root = command.join().unwrap();
+            let switch_result = project_switch.join().unwrap();
+            if switch_result.is_ok() {
+                assert_eq!(command_root, PathBuf::from("project-b"));
+            } else {
+                assert_eq!(command_root, PathBuf::from("project-a"));
+                assert_eq!(
+                    project_state.root.lock().unwrap().as_deref(),
+                    Some(Path::new("project-a"))
+                );
+            }
+        }
     }
 
     #[test]
