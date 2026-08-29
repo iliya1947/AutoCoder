@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { ProjectTree } from "../types/project";
+import { operationError } from "../utils/invokeError";
 
 export type BackupEntry = {
   id: string;
@@ -23,20 +24,23 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [selected, setSelected] = useState<BackupEntry | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "restoring" | "error">("idle");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) return;
     setStatus("loading");
+    setError("");
     setSelected(null);
     invoke<BackupEntry[]>("list_project_backups")
       .then((items) => { setBackups(items); setSelected(items[0] ?? null); setStatus("idle"); })
-      .catch(() => setStatus("error"));
-  }, [open]);
+      .catch((reason) => { setError(operationError(t("backups.error"), reason)); setStatus("error"); });
+  }, [open, lang]);
 
   if (!open) return null;
   const restore = async () => {
     if (!selected || !canRestore()) return;
     setStatus("restoring");
+    setError("");
     try {
       const project = await invoke<ProjectTree>("restore_project_backup", {
         backupId: selected.id,
@@ -44,7 +48,10 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
       });
       onRestored(selected, project);
       onClose();
-    } catch { setStatus("error"); }
+    } catch (reason) {
+      setError(operationError(t("backups.error"), reason));
+      setStatus("error");
+    }
   };
 
   return <div className="dialog-backdrop" role="presentation">
@@ -54,7 +61,7 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
         <ul className="backup-list">{backups.map((backup) => <li key={backup.id}><button className={selected?.id === backup.id ? "active" : ""} onClick={() => setSelected(backup)}><strong>{backup.relativePath}</strong><span>{new Date(backup.createdAtUnixMs).toLocaleString(lang)}</span></button></li>)}</ul>
         <div className="backup-preview"><p>{selected?.relativePath}</p><pre>{selected?.content}</pre></div>
       </div>}
-      {status === "error" && <p className="editor-error" role="alert">{t("backups.error")}</p>}
+      {status === "error" && <p className="editor-error" role="alert">{error || t("backups.error")}</p>}
       <div className="proposal-actions backup-actions"><button className="secondary-button" onClick={onClose}>{t("common.cancel")}</button><button className="save-button" disabled={!selected || status === "loading" || status === "restoring"} onClick={restore}>{status === "restoring" ? t("backups.restoring") : t("backups.restore")}</button></div>
     </section>
   </div>;

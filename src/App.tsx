@@ -11,6 +11,7 @@ import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
 import { FileReadResult, OpenedFile, ProjectNode, ProjectTree } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
+import { operationError } from "./utils/invokeError";
 
 function App() {
   const { t } = useTranslation();
@@ -61,7 +62,10 @@ function App() {
       const result = await invoke<FileReadResult>("read_project_file", { relativePath: node.path });
       setOpenFile({ name: node.name, path: node.path, content: result.content, savedContent: result.content });
       setEditorStatus("ready");
-    } catch { setEditorError(t("editor.read_error")); setEditorStatus("error"); }
+    } catch (error) {
+      setEditorError(operationError(t("editor.read_error"), error));
+      setEditorStatus("error");
+    }
   };
 
   const handleSave = async () => {
@@ -72,7 +76,7 @@ function App() {
     try {
       await invoke("save_project_file", { relativePath: openFile.path, content });
       setOpenFile((current) => current ? { ...current, savedContent: content } : current);
-    } catch { setEditorError(t("editor.save_error")); }
+    } catch (error) { setEditorError(operationError(t("editor.save_error"), error)); }
     finally { setSaving(false); }
   };
 
@@ -96,7 +100,7 @@ function App() {
           setOpenFile({ name: proposal.path.split(/[\\/]/).pop() ?? proposal.path, path: proposal.path, content: proposal.content, savedContent: proposal.content });
           setEditorStatus("ready");
           setEditorError("");
-        } catch { setEditorError(t("editor.create_error")); }
+        } catch (error) { setEditorError(operationError(t("editor.create_error"), error)); }
       } else if (proposal.operation === "delete") {
         try {
           const updated = await invoke<ProjectTree>("delete_project_file", {
@@ -107,7 +111,7 @@ function App() {
           setOpenFile(null);
           setEditorStatus("idle");
           setEditorError("");
-        } catch { setEditorError(t("editor.delete_error")); }
+        } catch (error) { setEditorError(operationError(t("editor.delete_error"), error)); }
       } else {
         setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
           ? { ...current, content: proposal.content }
