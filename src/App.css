@@ -501,6 +501,13 @@ button.tree-node.active {
   flex-wrap: wrap;
 }
 
+.terminal-proposal pre {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .secondary-button {
   border-color: #506078;
   background: #26344a;
