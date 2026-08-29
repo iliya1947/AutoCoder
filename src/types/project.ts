@@ -10,6 +10,11 @@ export type ProjectTree = {
   children: ProjectNode[];
 };
 
+export type OpenProjectResult = {
+  project: ProjectTree;
+  sessionChanged: boolean;
+};
+
 export type OpenedFile = {
   name: string;
   path: string;
