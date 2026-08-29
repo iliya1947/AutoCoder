@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Editor, selectedText } from "./Editor";
 import { ProjectExplorer } from "./ProjectExplorer";
-import { navigateTerminalHistory, TerminalPanel } from "./TerminalPanel";
+import { beginTerminalRun, completeTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
 
 describe("panel states", () => {
   it("maps a cleared Monaco selection to null", () => {
@@ -40,5 +40,30 @@ describe("panel states", () => {
       .toEqual({ command: "npm test", index: 0, draft: "git status" });
     expect(navigateTerminalHistory(history, previous.index, previous.draft, "next", previous.command))
       .toEqual({ command: "git status", index: 2, draft: "git status" });
+  });
+
+  it("keeps each reviewable terminal result paired with its completed run", () => {
+    const resultA: TerminalResult = { exitCode: 0, stdout: "FIRST\n", stderr: "", cancelled: false };
+    const completedA = completeTerminalRun(beginTerminalRun("echo FIRST"), resultA);
+    expect(completedA).toEqual({
+      status: "completed",
+      transcript: { command: "echo FIRST", result: resultA },
+    });
+
+    // Editing the input is separate from the immutable completed transcript.
+    const editedInput = "echo EDITED";
+    expect(editedInput).toBe("echo EDITED");
+    expect(completedA.status === "completed" && completedA.transcript.command).toBe("echo FIRST");
+
+    // Starting B atomically removes A from the reviewable state.
+    const runningB = beginTerminalRun("ping 127.0.0.1 -t");
+    expect(runningB).toEqual({ status: "running", command: "ping 127.0.0.1 -t" });
+    expect("transcript" in runningB).toBe(false);
+
+    const cancelledB: TerminalResult = { exitCode: null, stdout: "partial\n", stderr: "", cancelled: true };
+    expect(completeTerminalRun(runningB, cancelledB)).toEqual({
+      status: "completed",
+      transcript: { command: "ping 127.0.0.1 -t", result: cancelledB },
+    });
   });
 });

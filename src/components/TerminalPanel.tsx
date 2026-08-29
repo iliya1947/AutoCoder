@@ -10,6 +10,20 @@ export type TerminalResult = {
 };
 
 export type TerminalTranscript = { command: string; result: TerminalResult };
+export type TerminalExecution =
+  | { status: "idle" }
+  | { status: "running"; command: string }
+  | { status: "completed"; transcript: TerminalTranscript };
+
+export function beginTerminalRun(command: string): TerminalExecution {
+  return { status: "running", command };
+}
+
+export function completeTerminalRun(execution: TerminalExecution, result: TerminalResult): TerminalExecution {
+  return execution.status === "running"
+    ? { status: "completed", transcript: { command: execution.command, result } }
+    : execution;
+}
 
 export function navigateTerminalHistory(
   history: string[],
@@ -30,14 +44,15 @@ export function navigateTerminalHistory(
 export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: { projectOpen: boolean; proposedCommand?: { command: string } | null; onReviewResult?: (transcript: TerminalTranscript) => void }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
-  const [result, setResult] = useState<TerminalResult | null>(null);
-  const [resultCommand, setResultCommand] = useState("");
-  const [running, setRunning] = useState(false);
+  const [execution, setExecution] = useState<TerminalExecution>({ status: "idle" });
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
   const history = useRef<string[]>([]);
   const historyIndex = useRef(0);
   const historyDraft = useRef("");
+  const running = execution.status === "running";
+  const transcript = execution.status === "completed" ? execution.transcript : null;
+  const result = transcript?.result ?? null;
 
   useEffect(() => {
     if (projectOpen && proposedCommand) {
@@ -50,8 +65,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
   useEffect(() => {
     if (!projectOpen) {
       setCommand("");
-      setResult(null);
-      setResultCommand("");
+      setExecution({ status: "idle" });
       setError("");
       history.current = [];
       historyIndex.current = 0;
@@ -66,17 +80,16 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
     if (history.current.at(-1) !== value) history.current.push(value);
     historyIndex.current = history.current.length;
     historyDraft.current = "";
-    setRunning(true);
-    setResultCommand(value);
+    setExecution(beginTerminalRun(value));
     setCancelling(false);
     setError("");
     try {
-      setResult(await invoke<TerminalResult>("execute_project_command", { command: value }));
+      const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
+      setExecution((current) => completeTerminalRun(current, completedResult));
     } catch (reason) {
-      setResult(null);
+      setExecution({ status: "idle" });
       setError(String(reason));
     } finally {
-      setRunning(false);
       setCancelling(false);
     }
   };
@@ -121,7 +134,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       {result && <span className={!result.cancelled && result.exitCode === 0 ? "terminal-success" : "terminal-failure"}>
         {result.cancelled ? t("terminal.cancelled") : `${t("terminal.exit_code")}: ${result.exitCode ?? t("terminal.unknown_exit")}`}
       </span>}
-      {result && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult({ command: resultCommand, result })}>
+      {transcript && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult(transcript)}>
         {t("terminal.review_result")}
       </button>}
     </div>
