@@ -49,6 +49,7 @@ class OllamaRuntime:
         self.process_launcher = process_launcher or self.launch
         self.monotonic = monotonic
         self.sleep = sleep
+        self.last_readiness_error: str | None = None
 
     @staticmethod
     def find_executable() -> Path | None:
@@ -80,15 +81,23 @@ class OllamaRuntime:
             return json.load(response)  # type: ignore[arg-type]
 
     def is_ready(self) -> bool:
+        self.last_readiness_error = None
         try:
             result = self._get_json("/api/version", min(1.0, self.timeout))
             return isinstance(result, dict) and isinstance(result.get("version"), str)
-        except (error.URLError, error.HTTPError, TimeoutError, OSError, json.JSONDecodeError):
+        except error.HTTPError as exc:
+            self.last_readiness_error = (
+                f"Ollama readiness endpoint at {self.api_root}/api/version returned HTTP {exc.code}."
+            )
+            return False
+        except (error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return False
 
     def ensure_ready(self) -> None:
         if self.is_ready():
             return
+        if self.last_readiness_error:
+            raise ProviderError(self.last_readiness_error)
         if os.environ.get("AUTOCODER_OLLAMA_MANAGED") == "1":
             raise ProviderError(
                 f"AutoCoder could not connect to its managed Ollama service at {self.api_root}."
