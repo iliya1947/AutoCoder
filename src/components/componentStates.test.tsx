@@ -21,7 +21,7 @@ describe("panel states", () => {
     });
   });
 
-  it("ignores file proposal completions from a previous project session", () => {
+  it("ignores asynchronous file completions from a previous project session", () => {
     expect(isCurrentProjectSession(3, 3)).toBe(true);
     expect(isCurrentProjectSession(3, 4)).toBe(false);
   });
