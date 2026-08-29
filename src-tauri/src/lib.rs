@@ -637,6 +637,7 @@ fn save_project_file(
     app: tauri::AppHandle,
     relative_path: String,
     content: String,
+    expected_content: String,
     project_state: State<'_, ProjectState>,
 ) -> Result<(), String> {
     let root = project_root(&project_state)?;
@@ -649,7 +650,14 @@ fn save_project_file(
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("backups");
-    save_file(&root, &relative_path, &content, &backup_root, timestamp)
+    save_open_file(
+        &root,
+        &relative_path,
+        &content,
+        expected_content.as_bytes(),
+        &backup_root,
+        timestamp,
+    )
 }
 
 #[tauri::command]
@@ -1130,6 +1138,27 @@ fn save_file(
         relative_path,
         content,
         None,
+        "",
+        backup_root,
+        timestamp,
+        || {},
+    )
+}
+
+fn save_open_file(
+    root: &Path,
+    relative_path: &str,
+    content: &str,
+    expected_disk_content: &[u8],
+    backup_root: &Path,
+    timestamp: u128,
+) -> Result<(), String> {
+    save_file_with_expected(
+        root,
+        relative_path,
+        content,
+        Some(expected_disk_content),
+        "The file changed on disk after it was opened.",
         backup_root,
         timestamp,
         || {},
@@ -1149,6 +1178,7 @@ fn save_file_checked(
         relative_path,
         content,
         Some(expected_disk_content),
+        "The file changed on disk after the backup list was opened.",
         backup_root,
         timestamp,
         || {},
@@ -1160,6 +1190,7 @@ fn save_file_with_expected<F>(
     relative_path: &str,
     content: &str,
     expected_disk_content: Option<&[u8]>,
+    expected_mismatch_error: &str,
     backup_root: &Path,
     timestamp: u128,
     before_recheck: F,
@@ -1172,7 +1203,7 @@ where
     let path = resolve_project_file(root, relative_path)?;
     let disk_content = fs::read(&path).map_err(|error| format!("Unable to read file: {error}"))?;
     if expected_disk_content.is_some_and(|expected| expected != disk_content) {
-        return Err("The file changed on disk after the backup list was opened.".to_string());
+        return Err(expected_mismatch_error.to_string());
     }
     let backup_dir = backup_root.join(timestamp.to_string());
     fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
@@ -2048,6 +2079,27 @@ mod tests {
     }
 
     #[test]
+    fn open_file_save_refuses_to_overwrite_an_external_change() {
+        let (directory, file) = project();
+        let backups = TempDir::new().expect("temporary backups");
+        fs::write(&file, "external version").unwrap();
+
+        let error = save_open_file(
+            directory.path(),
+            "notes.txt",
+            "editor version",
+            b"before",
+            backups.path(),
+            2_000_000,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "The file changed on disk after it was opened.");
+        assert_eq!(fs::read_to_string(file).unwrap(), "external version");
+        assert!(!backups.path().join("2000000").exists());
+    }
+
+    #[test]
     fn lists_only_backups_for_the_open_project_and_restores_safely() {
         let (directory, file) = project();
         let backups = TempDir::new().expect("temporary backups");
@@ -2169,6 +2221,7 @@ mod tests {
             "notes.txt",
             "restored version",
             Some(b"before"),
+            "The file changed on disk after the backup list was opened.",
             backups.path(),
             2_000_000,
             move || fs::write(file_during_recheck, "external version").unwrap(),
