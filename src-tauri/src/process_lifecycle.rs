@@ -133,7 +133,7 @@ unsafe impl Sync for ProcessLifecycle {}
 mod windows {
     use super::*;
     use std::{
-        cmp::Ordering,
+        cmp::Ordering as CmpOrdering,
         ffi::OsStr,
         fs::File,
         io::Read,
@@ -537,7 +537,7 @@ mod windows {
     ) {
         let existing = vars
             .iter()
-            .position(|entry| compare_environment_keys(&entry.0, &key) == Ordering::Equal);
+            .position(|entry| compare_environment_keys(&entry.0, &key) == CmpOrdering::Equal);
         match (existing, value) {
             (Some(index), Some(value)) => vars[index] = (key, value),
             (None, Some(value)) => vars.push((key, value)),
@@ -548,7 +548,7 @@ mod windows {
         }
     }
 
-    fn compare_environment_keys(left: &[u16], right: &[u16]) -> Ordering {
+    fn compare_environment_keys(left: &[u16], right: &[u16]) -> CmpOrdering {
         let result = unsafe {
             CompareStringOrdinal(
                 left.as_ptr(),
@@ -559,9 +559,9 @@ mod windows {
             )
         };
         match result {
-            CSTR_LESS_THAN => Ordering::Less,
-            CSTR_EQUAL => Ordering::Equal,
-            3 => Ordering::Greater,
+            CSTR_LESS_THAN => CmpOrdering::Less,
+            CSTR_EQUAL => CmpOrdering::Equal,
+            3 => CmpOrdering::Greater,
             _ => left.cmp(right),
         }
     }
