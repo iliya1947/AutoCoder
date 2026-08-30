@@ -5,7 +5,7 @@ use std::{
 };
 
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ChatMessage, TerminalResult};
 
@@ -13,6 +13,12 @@ const CHAT_LIMIT: i64 = 200;
 const TERMINAL_LIMIT: i64 = 100;
 
 pub struct HistoryStore(Mutex<Connection>);
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct WorkspaceState {
+    pub project_root: String,
+    pub open_file: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,13 +43,63 @@ impl HistoryStore {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS chat_messages(project TEXT NOT NULL, position INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(project, position));
             CREATE TABLE IF NOT EXISTS terminal_runs(id INTEGER PRIMARY KEY, project TEXT NOT NULL, command TEXT NOT NULL, exit_code INTEGER, stdout TEXT NOT NULL, stderr TEXT NOT NULL, cancelled INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT(unixepoch()));
-            CREATE INDEX IF NOT EXISTS terminal_project_id ON terminal_runs(project, id);")
+            CREATE INDEX IF NOT EXISTS terminal_project_id ON terminal_runs(project, id);
+            CREATE TABLE IF NOT EXISTS workspace_state(id INTEGER PRIMARY KEY CHECK(id=1), project_root TEXT NOT NULL, open_file TEXT);")
             .map_err(|e| e.to_string())?;
         Ok(Self(Mutex::new(connection)))
     }
 
     fn key(root: &Path) -> String {
         root.to_string_lossy().into_owned()
+    }
+
+    pub fn workspace(&self) -> Result<Option<WorkspaceState>, String> {
+        let connection = self
+            .0
+            .lock()
+            .map_err(|_| "Unable to access history database.".to_string())?;
+        let mut statement = connection
+            .prepare("SELECT project_root, open_file FROM workspace_state WHERE id=1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+        rows.next()
+            .map_err(|e| e.to_string())?
+            .map(|row| {
+                Ok(WorkspaceState {
+                    project_root: row.get(0).map_err(|e| e.to_string())?,
+                    open_file: row.get(1).map_err(|e| e.to_string())?,
+                })
+            })
+            .transpose()
+    }
+
+    pub fn remember_project(&self, root: &Path) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|_| "Unable to access history database.".to_string())?
+            .execute(
+                "INSERT INTO workspace_state(id, project_root, open_file) VALUES(1, ?1, NULL) ON CONFLICT(id) DO UPDATE SET open_file=CASE WHEN workspace_state.project_root=excluded.project_root THEN workspace_state.open_file ELSE NULL END, project_root=excluded.project_root",
+                [Self::key(root)],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn remember_file(&self, root: &Path, relative_path: &str) -> Result<(), String> {
+        let updated = self
+            .0
+            .lock()
+            .map_err(|_| "Unable to access history database.".to_string())?
+            .execute(
+                "UPDATE workspace_state SET open_file=?1 WHERE id=1 AND project_root=?2",
+                params![relative_path, Self::key(root)],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err("The file belongs to a previous project session.".into())
+        }
     }
 
     pub fn load(&self, root: &Path) -> Result<ProjectHistory, String> {
@@ -198,6 +254,37 @@ mod tests {
         reopened.clear(&first, "chat").unwrap();
         assert!(reopened.load(&first).unwrap().chat_messages.is_empty());
         assert_eq!(reopened.load(&first).unwrap().terminal_runs.len(), 1);
+    }
+
+    #[test]
+    fn persists_one_workspace_and_resets_file_when_project_changes() {
+        let directory = TempDir::new().unwrap();
+        let db = directory.path().join("history.db");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        let store = HistoryStore::open(db.clone()).unwrap();
+
+        assert_eq!(store.workspace().unwrap(), None);
+        store.remember_project(&first).unwrap();
+        store.remember_file(&first, "src/main.rs").unwrap();
+        store.remember_file(&second, "ignored.txt").unwrap();
+        store.remember_project(&first).unwrap();
+        assert_eq!(
+            store.workspace().unwrap(),
+            Some(WorkspaceState {
+                project_root: first.to_string_lossy().into_owned(),
+                open_file: Some("src/main.rs".into()),
+            })
+        );
+
+        drop(store);
+        let reopened = HistoryStore::open(db).unwrap();
+        assert_eq!(
+            reopened.workspace().unwrap().unwrap().open_file.as_deref(),
+            Some("src/main.rs")
+        );
+        reopened.remember_project(&second).unwrap();
+        assert_eq!(reopened.workspace().unwrap().unwrap().open_file, None);
     }
 
     #[test]
