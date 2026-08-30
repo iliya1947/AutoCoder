@@ -226,6 +226,13 @@ struct OpenProjectResult {
     session_changed: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshProjectResult {
+    project: ProjectTree,
+    open_file_content: Option<String>,
+}
+
 #[derive(Serialize)]
 struct FileReadResult {
     content: String,
@@ -356,9 +363,37 @@ async fn open_project(
 }
 
 #[tauri::command]
-fn refresh_project(project_state: State<'_, ProjectState>) -> Result<ProjectTree, String> {
+fn refresh_project(
+    open_file_path: Option<String>,
+    project_state: State<'_, ProjectState>,
+) -> Result<RefreshProjectResult, String> {
     let root = project_root(&project_state)?;
-    project_tree(&root)
+    refresh_project_state(&root, open_file_path.as_deref())
+}
+
+fn refresh_project_state(
+    root: &Path,
+    open_file_path: Option<&str>,
+) -> Result<RefreshProjectResult, String> {
+    let project = project_tree(root)?;
+    let open_file_content = match open_file_path {
+        Some(path) if project_contains_file(&project.children, path) => {
+            Some(read_file(root, path)?)
+        }
+        _ => None,
+    };
+    Ok(RefreshProjectResult {
+        project,
+        open_file_content,
+    })
+}
+
+fn project_contains_file(nodes: &[FileTreeNode], path: &str) -> bool {
+    nodes.iter().any(|node| {
+        (node.kind == FileTreeNodeKind::File && node.path == path)
+            || (node.kind == FileTreeNodeKind::Directory
+                && project_contains_file(&node.children, path))
+    })
 }
 
 #[tauri::command]
@@ -1622,6 +1657,27 @@ mod tests {
             refreshed.name,
             directory.path().file_name().unwrap().to_string_lossy()
         );
+    }
+
+    #[test]
+    fn refreshing_project_reloads_or_closes_the_open_file() {
+        let (directory, file) = project();
+        fs::write(&file, "changed externally").unwrap();
+
+        let refreshed = refresh_project_state(directory.path(), Some("notes.txt")).unwrap();
+        assert_eq!(
+            refreshed.open_file_content.as_deref(),
+            Some("changed externally")
+        );
+
+        fs::remove_file(file).unwrap();
+        let refreshed = refresh_project_state(directory.path(), Some("notes.txt")).unwrap();
+        assert!(refreshed.open_file_content.is_none());
+        assert!(!refreshed
+            .project
+            .children
+            .iter()
+            .any(|node| node.name == "notes.txt"));
     }
 
     #[test]
