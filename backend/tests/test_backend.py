@@ -2,6 +2,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from urllib import error
 from pathlib import Path
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
 from main import parse_file_proposal, parse_messages, parse_request, parse_terminal_proposal
+from comsol_knowledge import search_comsol_knowledge
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
@@ -39,6 +41,60 @@ def ready_ollama(request_or_url, **_kwargs):
 
 
 class BackendTests(unittest.TestCase):
+    def test_retrieves_bounded_versioned_comsol_knowledge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            knowledge = root / ".autocoder" / "comsol-knowledge"
+            knowledge.mkdir(parents=True)
+            (knowledge / "manifest.json").write_text(
+                json.dumps({"product": "COMSOL Multiphysics", "version": "6.4.429"}), encoding="utf-8"
+            )
+            (knowledge / "geometry.java").write_text(
+                "Documented geometry feature sequence example with create and run calls.", encoding="utf-8"
+            )
+            (knowledge / "irrelevant.md").write_text("Heat transfer notes.", encoding="utf-8")
+
+            matches = search_comsol_knowledge(root, "How does the geometry feature sequence run?")
+
+            self.assertEqual([match.source for match in matches], ["geometry.java"])
+            self.assertIn("geometry feature sequence", matches[0].content)
+
+    def test_rejects_unversioned_wrong_version_and_symlinked_knowledge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            knowledge = root / ".autocoder" / "comsol-knowledge"
+            knowledge.mkdir(parents=True)
+            (knowledge / "api.txt").write_text("model component documented call", encoding="utf-8")
+            self.assertEqual(search_comsol_knowledge(root, "model component"), [])
+            (knowledge / "manifest.json").write_text(
+                json.dumps({"product": "COMSOL Multiphysics", "version": "6.3"}), encoding="utf-8"
+            )
+            self.assertEqual(search_comsol_knowledge(root, "model component"), [])
+
+    def test_main_injects_and_reports_local_knowledge_sources(self):
+        from comsol_knowledge import KnowledgeMatch
+
+        stdin_bytes = b'{"messages":[{"role":"user","content":"geometry call"}]}'
+        binary_stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(stdin_bytes)})()
+        stdout_bytes = io.BytesIO()
+        binary_stdout = type("BinaryStdout", (), {"buffer": stdout_bytes})()
+
+        with patch("main.search_comsol_knowledge", return_value=[
+            KnowledgeMatch("api/geometry.txt", "Documented geometry call", 2)
+        ]), patch("main.OllamaProvider.chat", return_value=Message(
+            "assistant", "Use the cited example."
+        )) as chat, patch.dict(
+            backend_main.os.environ, {"AUTOCODER_PROJECT_ROOT": "/project"}
+        ), patch.object(backend_main.sys, "stdin", binary_stdin), patch.object(
+            backend_main.sys, "stdout", binary_stdout
+        ):
+            self.assertEqual(backend_main.main(), 0)
+
+        sent_messages = chat.call_args.args[0]
+        self.assertIn("COMSOL Multiphysics 6.4.429", sent_messages[0].content)
+        self.assertIn("api/geometry.txt", sent_messages[0].content)
+        self.assertEqual(json.loads(stdout_bytes.getvalue())["knowledgeSources"], ["api/geometry.txt"])
+
     @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
@@ -83,6 +139,7 @@ class BackendTests(unittest.TestCase):
                 "message": {"role": "assistant", "content": "Готово: файл сохранён"},
                 "proposal": None,
                 "commandProposal": None,
+                "knowledgeSources": [],
             },
         )
 

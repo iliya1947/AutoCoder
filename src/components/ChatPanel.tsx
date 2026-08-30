@@ -12,7 +12,7 @@ export type FileProposal =
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string };
 export type TerminalResultDraft = TerminalTranscript & { id: number };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; knowledgeSources?: string[] };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -152,6 +152,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
+  const [knowledgeSources, setKnowledgeSources] = useState<string[]>([]);
   const lastRequestContext = useRef<string | null>(null);
   const requestInFlight = useRef(false);
   const applyInFlight = useRef(false);
@@ -171,6 +172,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     // validated against the currently open file.
     setProposal(null);
     setCommandProposal(null);
+    setKnowledgeSources([]);
   }, [openFile?.path, openFile?.content, openFile?.savedContent, selection, project]);
 
   useEffect(() => {
@@ -195,6 +197,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     // different answer is pending.
     setProposal(null);
     setCommandProposal(null);
+    setKnowledgeSources([]);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
@@ -207,6 +210,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       setMessages((current) => [...current, response.message]);
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
+      setKnowledgeSources(response.knowledgeSources ?? []);
     } catch (error) {
       if (requestId !== latestRequest.current) return;
       if (isChatResponseCurrent(contextKey, currentContext.current)) {
@@ -229,6 +233,10 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
       {error && <p className="chat-error" role="alert">
         {t("chat.error")}<br /><code>{error}</code>
       </p>}
+      {knowledgeSources.length > 0 && <section className="knowledge-sources" aria-label={t("chat.knowledge_sources")}>
+        <strong>{t("chat.knowledge_sources")}</strong>
+        <ul>{knowledgeSources.map((source) => <li key={source}><code>{source}</code></li>)}</ul>
+      </section>}
       {proposal && <section className="file-proposal">
         <strong>{t(proposal.operation === "create" ? "chat.proposal_create" : proposal.operation === "delete" ? "chat.proposal_delete" : "chat.proposal")}: {proposal.path}</strong>
         <div className="proposal-diff" role="table" aria-label={t("chat.proposal_diff")}>

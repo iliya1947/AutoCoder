@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
+from comsol_knowledge import KnowledgeMatch, TARGET_VERSION, search_comsol_knowledge
 from provider import Message, OllamaProvider, ProviderError
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
@@ -56,6 +59,10 @@ Keep your explanation outside the block and emit exactly one block in this form:
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
 TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
+COMSOL_KNOWLEDGE_PROMPT = """The following excerpts come from the user's local, explicitly versioned COMSOL Multiphysics {version} knowledge corpus.
+Use them as authoritative grounding for this request. Cite the source paths in your answer. Do not invent COMSOL API methods that are not supported by these excerpts or the user's working code. If the excerpts are insufficient, state that clearly.
+
+{excerpts}"""
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
@@ -88,15 +95,21 @@ def parse_messages(payload: Any) -> list[Message]:
     return messages
 
 
-def parse_request(payload: Any) -> list[Message]:
+def parse_request(payload: Any, knowledge: list[KnowledgeMatch] | None = None) -> list[Message]:
     messages = parse_messages(payload)
+    context_messages: list[Message] = []
+    if knowledge:
+        excerpts = "\n\n".join(f"<source path={json.dumps(match.source)}>\n{match.content}\n</source>" for match in knowledge)
+        context_messages.append(Message(
+            role="system",
+            content=COMSOL_KNOWLEDGE_PROMPT.format(version=TARGET_VERSION, excerpts=excerpts),
+        ))
     context = payload.get("context")
     if context is None:
-        return messages
+        return [*context_messages, *messages]
     if not isinstance(context, dict):
         raise ValueError("Context must be an object.")
 
-    context_messages: list[Message] = []
     project = context.get("project")
     if project is not None:
         if not isinstance(project, dict):
@@ -260,10 +273,12 @@ def write_stdout_response(
     answer: Message,
     proposal: dict[str, str] | None = None,
     command_proposal: dict[str, str] | None = None,
+    knowledge_sources: list[str] | None = None,
 ) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
-        {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal},
+        {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal,
+         "knowledgeSources": knowledge_sources or []},
         ensure_ascii=False,
     ).encode("utf-8")
     sys.stdout.buffer.write(response)
@@ -273,11 +288,16 @@ def write_stdout_response(
 def main() -> int:
     try:
         payload = read_stdin_payload()
-        answer = OllamaProvider().chat(parse_request(payload))
+        messages = parse_messages(payload)
+        query = next((message.content for message in reversed(messages) if message.role == "user"), "")
+        project_root = os.environ.get("AUTOCODER_PROJECT_ROOT")
+        knowledge = search_comsol_knowledge(Path(project_root), query) if project_root else []
+        answer = OllamaProvider().chat(parse_request(payload, knowledge))
         write_stdout_response(
             answer,
             parse_file_proposal(answer, payload),
             parse_terminal_proposal(answer, payload),
+            list(dict.fromkeys(match.source for match in knowledge)),
         )
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:

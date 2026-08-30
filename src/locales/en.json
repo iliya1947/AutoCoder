@@ -38,6 +38,7 @@
   "chat.sending": "Ollama is responding…",
   "chat.error": "Unable to get an AI response:",
   "chat.context_changed": "The project or editor context changed while the request was running. The response was discarded; send the request again.",
+  "chat.knowledge_sources": "COMSOL 6.4 knowledge used",
   "chat.proposal": "Proposed replacement",
   "chat.proposal_diff": "Line-by-line proposed changes",
   "chat.apply_proposal": "Apply to editor",

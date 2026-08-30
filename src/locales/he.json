@@ -38,6 +38,7 @@
   "chat.sending": "Ollama משיב…",
   "chat.error": "לא ניתן לקבל תשובת AI:",
   "chat.context_changed": "הקשר הפרויקט או העורך השתנה בזמן הבקשה. התשובה נמחקה; יש לשלוח את הבקשה שוב.",
+  "chat.knowledge_sources": "מקורות COMSOL 6.4 שנעשה בהם שימוש",
   "chat.proposal": "החלפה מוצעת",
   "chat.proposal_diff": "שינויים מוצעים לפי שורה",
   "chat.apply_proposal": "החל בעורך",

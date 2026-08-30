@@ -312,6 +312,8 @@ struct ChatResponse {
     message: ChatMessage,
     proposal: Option<FileProposal>,
     command_proposal: Option<TerminalProposal>,
+    #[serde(default)]
+    knowledge_sources: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -400,6 +402,7 @@ fn project_contains_file(nodes: &[FileTreeNode], path: &str) -> bool {
 fn send_chat_message(
     app: tauri::AppHandle,
     ollama: State<'_, OllamaState>,
+    project_state: State<'_, ProjectState>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
     if request.messages.is_empty()
@@ -418,7 +421,13 @@ fn send_chat_message(
     if uses_managed_local_ollama() {
         ollama.ensure_running()?;
     }
-    run_chat_backend(&resource_dir, &request, &ollama.lifecycle)
+    let project_root = project_state.root.lock().unwrap().clone();
+    run_chat_backend(
+        &resource_dir,
+        &request,
+        &ollama.lifecycle,
+        project_root.as_deref(),
+    )
 }
 
 fn uses_managed_local_ollama() -> bool {
@@ -600,6 +609,7 @@ fn run_chat_backend(
     resource_dir: &Path,
     request: &ChatRequest,
     lifecycle: &ProcessLifecycle,
+    project_root: Option<&Path>,
 ) -> Result<ChatResponse, String> {
     let python_override = std::env::var_os("AUTOCODER_PYTHON")
         .filter(|value| !value.is_empty())
@@ -628,6 +638,9 @@ fn run_chat_backend(
         .stderr(Stdio::piped());
     if uses_managed_local_ollama() {
         command.env("AUTOCODER_OLLAMA_MANAGED", "1");
+    }
+    if let Some(project_root) = project_root {
+        command.env("AUTOCODER_PROJECT_ROOT", project_root);
     }
     let mut child = lifecycle
         .spawn(&mut command, ChildIo::PythonBridge)
@@ -2085,13 +2098,13 @@ mod tests {
 
     #[test]
     fn chat_response_accepts_bomless_utf8_cyrillic_from_backend() {
-        let bytes =
-            r#"{"message":{"role":"assistant","content":"Готово: файл сохранён"}}"#.as_bytes();
+        let bytes = r#"{"message":{"role":"assistant","content":"Готово: файл сохранён"},"knowledgeSources":["api/geometry.txt"]}"#.as_bytes();
 
         assert!(!bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let response: ChatResponse = serde_json::from_slice(bytes).unwrap();
         assert_eq!(response.message.role, "assistant");
         assert_eq!(response.message.content, "Готово: файл сохранён");
+        assert_eq!(response.knowledge_sources, ["api/geometry.txt"]);
     }
 
     #[test]

@@ -8,6 +8,21 @@ Defaults:
 
 Override them with `AUTOCODER_OLLAMA_URL` and `AUTOCODER_OLLAMA_MODEL`. If Python is not available as the platform default command, set `AUTOCODER_PYTHON` to its executable path.
 
+## Local COMSOL 6.4.429 knowledge
+
+For a COMSOL project, create `.autocoder/comsol-knowledge/manifest.json` in the opened project:
+
+```json
+{"product":"COMSOL Multiphysics","version":"6.4.429"}
+```
+
+Place user-provided official documentation excerpts, verified examples, and working project code
+under that directory as UTF-8 `.txt`, `.md`, or `.java` files. On each chat request AutoCoder performs
+a bounded local lexical search, sends at most four relevant excerpts to Ollama, and shows the source
+paths used below the response. A missing or differently versioned manifest disables retrieval so that
+material for another COMSOL release cannot silently ground 6.4.429 answers. The corpus is never
+downloaded and no index or request leaves the machine.
+
 ## Windows UTF-8 diagnostic
 
 With Ollama running, `python backend/diagnose_chat.py > chat-diagnostic.json`
