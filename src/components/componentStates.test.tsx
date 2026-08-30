@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved, nextProjectSession } from "../App";
+import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved, nextProjectSession, refreshedOpenFile } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { isLatestBackupRequest } from "./BackupDialog";
 import { ProjectExplorer } from "./ProjectExplorer";
@@ -30,6 +30,17 @@ describe("panel states", () => {
   it("starts a session only when the backend committed a real project switch", () => {
     expect(nextProjectSession(4, false)).toBe(4);
     expect(nextProjectSession(4, true)).toBe(5);
+  });
+
+  it("reconciles the editor with the refreshed on-disk file", () => {
+    const current = { name: "notes.txt", path: "notes.txt", content: "old", savedContent: "old" };
+    expect(refreshedOpenFile(current, "changed externally")).toEqual({
+      ...current,
+      content: "changed externally",
+      savedContent: "changed externally",
+    });
+    expect(refreshedOpenFile(current, null)).toBeNull();
+    expect(refreshedOpenFile(null, null)).toBeNull();
   });
 
   it("ignores stale backup list and restore completions", () => {

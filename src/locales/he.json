@@ -30,6 +30,7 @@
   "editor.read_error": "לא ניתן לקרוא את הקובץ כטקסט.",
   "editor.save_error": "לא ניתן לשמור את הקובץ.",
   "editor.discard_confirm": "לבטל שינויים שלא נשמרו?",
+  "editor.refresh_discard_confirm": "לרענן את הפרויקט ולבטל שינויים שלא נשמרו בקובץ הפתוח?",
   "files.no_supported_files": "אין קבצים בפרויקט.",
   "editor.loading": "טוען קובץ…",
   "editor.read_error_title": "לא ניתן לפתוח את הקובץ",

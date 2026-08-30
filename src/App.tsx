@@ -9,7 +9,7 @@ import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
-import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree } from "./types/project";
+import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree, RefreshProjectResult } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
 import { operationError } from "./utils/invokeError";
 
@@ -42,6 +42,10 @@ export function markFileSaved(
   return current?.path === path && current.savedContent === expectedContent
     ? { ...current, savedContent }
     : current;
+}
+
+export function refreshedOpenFile(current: OpenedFile | null, content: string | null): OpenedFile | null {
+  return current && content !== null ? { ...current, content, savedContent: content } : null;
 }
 
 function App() {
@@ -119,13 +123,22 @@ function App() {
   };
 
   const handleRefreshProject = async () => {
-    if (!project || openingProject.current) return;
+    if (!project || openingProject.current || saving || (isDirty && !window.confirm(t("editor.refresh_discard_confirm")))) return;
     openingProject.current = true;
+    const requestEditorContext = currentEditorContext.current;
+    latestFileRead.current += 1;
+    latestFileSave.current += 1;
     setProjectError("");
     setProjectStatus("loading");
     try {
-      const refreshed = await invoke<ProjectTree>("refresh_project");
-      setProject({ ...refreshed, children: transformProjectTree(refreshed.children) });
+      const refreshed = await invoke<RefreshProjectResult>("refresh_project", { openFilePath: openFile?.path ?? null });
+      setProject({ ...refreshed.project, children: transformProjectTree(refreshed.project.children) });
+      if (requestEditorContext === currentEditorContext.current) {
+        setOpenFile((current) => refreshedOpenFile(current, refreshed.openFileContent));
+        setSelection(null);
+        setEditorStatus(refreshed.openFileContent === null ? "idle" : "ready");
+        setEditorError("");
+      }
       setProjectStatus("opened");
     } catch (error) {
       setProjectError(operationError(t("files.refresh_error"), error));
