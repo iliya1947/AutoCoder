@@ -10,6 +10,7 @@ export type TerminalResult = {
 };
 
 export type TerminalTranscript = { command: string; result: TerminalResult };
+type ProjectHistory = { chatMessages: unknown[]; terminalRuns: TerminalTranscript[] };
 export type TerminalExecution =
   | { status: "idle" }
   | { status: "running"; command: string }
@@ -82,6 +83,19 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
     }
   }, [projectOpen]);
 
+  useEffect(() => {
+    if (!projectOpen) return;
+    let current = true;
+    invoke<ProjectHistory>("load_project_history").then((stored) => {
+      if (!current) return;
+      history.current = stored.terminalRuns.map((run) => run.command);
+      historyIndex.current = history.current.length;
+      const latest = stored.terminalRuns.at(-1);
+      if (latest) setExecution({ status: "completed", transcript: latest });
+    }).catch((reason) => { if (current) setError(String(reason)); });
+    return () => { current = false; };
+  }, [projectOpen]);
+
   useEffect(() => () => {
     activeRunId.current = null;
     cancelInFlight.current = false;
@@ -103,6 +117,11 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution((current) => completeTerminalRun(current, completedResult));
+      try {
+        await invoke("save_terminal_history", { command: value, result: completedResult });
+      } catch (reason) {
+        setError(String(reason));
+      }
     } catch (reason) {
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution({ status: "idle" });
@@ -164,6 +183,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       {transcript && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult(transcript)}>
         {t("terminal.review_result")}
       </button>}
+      {history.current.length > 0 && !running && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "terminal" }); history.current = []; historyIndex.current = 0; setExecution({ status: "idle" }); } catch (reason) { setError(String(reason)); } }}>{t("terminal.clear_history")}</button>}
     </div>
     <div className="terminal-output" aria-live="polite">
       {!projectOpen

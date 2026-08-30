@@ -5,6 +5,7 @@ import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
+type ProjectHistory = { chatMessages: ChatMessage[]; terminalRuns: TerminalTranscript[] };
 export type FileProposal =
   | { operation: "replace"; path: string; content: string; originalContent: string }
   | { operation: "create"; path: string; content: string }
@@ -166,6 +167,15 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   }, []);
 
   useEffect(() => {
+    if (!project) return;
+    let current = true;
+    invoke<ProjectHistory>("load_project_history")
+      .then((history) => { if (current) { setMessages(history.chatMessages); lastRequestContext.current = currentContext.current; } })
+      .catch((reason) => { if (current) setError(String(reason)); });
+    return () => { current = false; };
+  }, [project?.name]);
+
+  useEffect(() => {
     // Review actions are snapshots of the context which produced them. This is
     // especially important for create and command proposals, which cannot be
     // validated against the currently open file.
@@ -186,7 +196,8 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     const contextKey = chatContextKey(openFile, selection, project);
     const requestMessages = messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
     lastRequestContext.current = contextKey;
-    setMessages((current) => [...current, { role: "user", content }]);
+    const pendingMessages = [...messages, { role: "user" as const, content }];
+    setMessages(pendingMessages);
     setMessage("");
     setSending(true);
     setError(null);
@@ -196,6 +207,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     setProposal(null);
     setCommandProposal(null);
     try {
+      await invoke("save_chat_history", { messages: pendingMessages });
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
@@ -204,7 +216,9 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
         setError(t("chat.context_changed"));
         return;
       }
-      setMessages((current) => [...current, response.message]);
+      const completedMessages = [...pendingMessages, response.message];
+      setMessages(completedMessages);
+      await invoke("save_chat_history", { messages: completedMessages });
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
@@ -222,7 +236,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   };
 
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>
-    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span></div>
+    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>{messages.length > 0 && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "chat" }); setMessages([]); } catch (reason) { setError(String(reason)); } }}>{t("chat.clear_history")}</button>}</div>
     <div className="chat-messages" aria-live="polite">
       {messages.length === 0 && !sending ? <p className="empty-chat">{t("chat.empty")}</p> : messages.map((item, index) => <p className={`${item.role}-message`} key={`${item.role}-${index}`}>{item.content}</p>)}
       {sending && <p className="chat-status">{t("chat.sending")}</p>}

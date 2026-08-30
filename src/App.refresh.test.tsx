@@ -43,6 +43,7 @@ describe("refresh with a Monaco edit", () => {
         sessionChanged: true,
       });
       if (command === "read_project_file") return Promise.resolve({ content: "saved text" });
+      if (command === "load_project_history") return Promise.resolve({ chatMessages: [], terminalRuns: [] });
       if (command === "refresh_project") return Promise.resolve({
         project: { name: "project", children: [] },
         openFileContent: "disk text",
@@ -69,7 +70,7 @@ describe("refresh with a Monaco edit", () => {
       { title: "AutoCoder", kind: "warning" },
     ));
     expect(invoke).not.toHaveBeenCalledWith("refresh_project", expect.anything());
-    expect(operationOrder).toEqual(["open_project", "read_project_file", "confirm"]);
+    expect(operationOrder).toEqual(["open_project", "load_project_history", "load_project_history", "read_project_file", "confirm"]);
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Monaco editor" }) as HTMLTextAreaElement).value).toBe("unsaved Monaco text"));
     expect(screen.getByLabelText("Есть несохранённые изменения")).toBeTruthy();
   });

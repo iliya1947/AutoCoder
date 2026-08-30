@@ -35,6 +35,7 @@
   "editor.loading": "Loading file…",
   "editor.read_error_title": "Unable to open file",
   "chat.ollama": "Ollama",
+  "chat.clear_history": "Clear history",
   "chat.sending": "Ollama is responding…",
   "chat.error": "Unable to get an AI response:",
   "chat.context_changed": "The project or editor context changed while the request was running. The response was discarded; send the request again.",
@@ -74,5 +75,6 @@
   "terminal.cancelling": "Cancelling…",
   "terminal.cancelled": "Cancelled",
   "terminal.cancel_unavailable": "The command already finished and cannot be cancelled.",
-  "terminal.review_result": "Review result in chat"
+  "terminal.review_result": "Review result in chat",
+  "terminal.clear_history": "Clear history"
 }

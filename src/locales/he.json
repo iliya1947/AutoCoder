@@ -35,6 +35,7 @@
   "editor.loading": "טוען קובץ…",
   "editor.read_error_title": "לא ניתן לפתוח את הקובץ",
   "chat.ollama": "Ollama",
+  "chat.clear_history": "ניקוי היסטוריה",
   "chat.sending": "Ollama משיב…",
   "chat.error": "לא ניתן לקבל תשובת AI:",
   "chat.context_changed": "הקשר הפרויקט או העורך השתנה בזמן הבקשה. התשובה נמחקה; יש לשלוח את הבקשה שוב.",
@@ -74,5 +75,6 @@
   "terminal.cancelling": "מבטל…",
   "terminal.cancelled": "בוטל",
   "terminal.cancel_unavailable": "הפקודה כבר הסתיימה ואי אפשר לבטל אותה.",
-  "terminal.review_result": "העבר את התוצאה לצ'אט"
+  "terminal.review_result": "העבר את התוצאה לצ'אט",
+  "terminal.clear_history": "ניקוי היסטוריה"
 }
