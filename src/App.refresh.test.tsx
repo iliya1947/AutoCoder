@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const { confirm, invoke, monacoChangeCallbacks, operationOrder } = vi.hoisted(() => ({
@@ -27,12 +27,32 @@ vi.mock("@monaco-editor/react", async () => {
 });
 
 describe("refresh with a Monaco edit", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     localStorage.clear();
     invoke.mockReset();
     confirm.mockReset();
     monacoChangeCallbacks.length = 0;
     operationOrder.length = 0;
+  });
+
+  it("restores the persisted project and saved disk file without a folder dialog", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "restore_workspace") return Promise.resolve({
+        project: { name: "restored", children: [{ name: "saved.txt", path: "saved.txt", kind: "file", children: [] }] },
+        openFile: { path: "saved.txt", content: "disk content" },
+      });
+      if (command === "load_project_history") return Promise.resolve({ chatMessages: [], terminalRuns: [] });
+      return Promise.resolve(null);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "saved.txt" })).toBeTruthy();
+    expect((await screen.findByRole("textbox", { name: "Monaco editor" }) as HTMLTextAreaElement).value).toBe("disk content");
+    expect(screen.queryByLabelText("Есть несохранённые изменения")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("open_project", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("remember_project_file", expect.anything());
   });
 
   it("confirms and keeps Monaco text dirty when Refresh is cancelled", async () => {
@@ -56,7 +76,9 @@ describe("refresh with a Monaco edit", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Открыть проект" }));
+    const openProject = screen.getByRole("button", { name: "Открыть проект" });
+    await waitFor(() => expect((openProject as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(openProject);
     fireEvent.click(await screen.findByRole("button", { name: "notes.txt" }));
     const editor = await screen.findByRole("textbox", { name: "Monaco editor" });
 
@@ -70,7 +92,7 @@ describe("refresh with a Monaco edit", () => {
       { title: "AutoCoder", kind: "warning" },
     ));
     expect(invoke).not.toHaveBeenCalledWith("refresh_project", expect.anything());
-    expect(operationOrder).toEqual(["open_project", "load_project_history", "load_project_history", "read_project_file", "confirm"]);
+    expect(operationOrder).toEqual(["restore_workspace", "open_project", "load_project_history", "load_project_history", "read_project_file", "remember_project_file", "confirm"]);
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Monaco editor" }) as HTMLTextAreaElement).value).toBe("unsaved Monaco text"));
     expect(screen.getByLabelText("Есть несохранённые изменения")).toBeTruthy();
   });

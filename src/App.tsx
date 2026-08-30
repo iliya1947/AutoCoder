@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import "./App.css";
@@ -10,7 +10,7 @@ import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
-import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree, RefreshProjectResult } from "./types/project";
+import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree, RefreshProjectResult, RestoredWorkspace } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
 import { operationError } from "./utils/invokeError";
 
@@ -68,13 +68,46 @@ function App() {
   const openingProject = useRef(false);
   const refreshConfirmationPending = useRef(false);
   const applyingFileProposal = useRef(false);
+  const workspaceRestore = useRef(0);
   const currentProjectSession = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
   currentEditorContext.current = editorContextKey(openFile);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
 
+  useEffect(() => {
+    let active = true;
+    const requestId = ++workspaceRestore.current;
+    setProjectStatus("loading");
+    invoke<RestoredWorkspace | null>("restore_workspace")
+      .then((restored) => {
+        if (!active || requestId !== workspaceRestore.current || !restored) return;
+        setProject({ ...restored.project, children: transformProjectTree(restored.project.children) });
+        if (restored.openFile) {
+          const path = restored.openFile.path;
+          setOpenFile({
+            name: path.split(/[\\/]/).pop() ?? path,
+            path,
+            content: restored.openFile.content,
+            savedContent: restored.openFile.content,
+          });
+          setEditorStatus("ready");
+        }
+        currentProjectSession.current += 1;
+        setProjectSession(currentProjectSession.current);
+        setProjectStatus("opened");
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!active) return;
+        if (requestId !== workspaceRestore.current) return;
+        setProjectStatus((status) => status === "loading" ? "idle" : status);
+      });
+    return () => { active = false; };
+  }, []);
+
   const handleOpenProject = async () => {
     if (openingProject.current || (isDirty && !window.confirm(t("editor.discard_confirm")))) return;
+    workspaceRestore.current += 1;
     openingProject.current = true;
     setProjectError("");
     setProjectStatus("loading");
@@ -117,6 +150,7 @@ function App() {
       if (!isLatestFileRead(requestId, latestFileRead.current)) return;
       setOpenFile({ name: node.name, path: node.path, content: result.content, savedContent: result.content });
       setEditorStatus("ready");
+      void invoke("remember_project_file", { relativePath: node.path, requestId }).catch(() => {});
     } catch (error) {
       if (!isLatestFileRead(requestId, latestFileRead.current)) return;
       setEditorError(operationError(t("editor.read_error"), error));
@@ -195,6 +229,7 @@ function App() {
     setSelection(null);
     setEditorStatus("ready");
     setEditorError("");
+    void invoke("remember_project_file", { relativePath: backup.relativePath, requestId: latestFileRead.current }).catch(() => {});
   };
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
@@ -217,6 +252,8 @@ function App() {
           setSelection(null);
           setEditorStatus("ready");
           setEditorError("");
+          const requestId = ++latestFileRead.current;
+          void invoke("remember_project_file", { relativePath: proposal.path, requestId }).catch(() => {});
         } catch (error) {
           if (!isCurrentProjectSession(requestSession, currentProjectSession.current) || requestEditorContext !== currentEditorContext.current) return;
           setEditorError(operationError(t("editor.create_error"), error));

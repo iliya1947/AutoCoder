@@ -15,6 +15,11 @@ export type OpenProjectResult = {
   sessionChanged: boolean;
 };
 
+export type RestoredWorkspace = {
+  project: ProjectTree;
+  openFile: { path: string; content: string } | null;
+};
+
 export type RefreshProjectResult = {
   project: ProjectTree;
   openFileContent: string | null;

@@ -15,7 +15,7 @@ use std::{
 
 mod history;
 mod process_lifecycle;
-use history::{HistoryStore, ProjectHistory};
+use history::{HistoryStore, ProjectHistory, WorkspaceState};
 use process_lifecycle::{ChildIo, OwnedChild, ProcessLifecycle};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
 #[derive(Default)]
 struct ProjectState {
     root: Mutex<Option<PathBuf>>,
+    last_file_request: Mutex<u64>,
 }
 
 #[derive(Default)]
@@ -230,6 +231,19 @@ struct OpenProjectResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RestoredWorkspace {
+    project: ProjectTree,
+    open_file: Option<RestoredWorkspaceFile>,
+}
+
+#[derive(Debug, Serialize)]
+struct RestoredWorkspaceFile {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RefreshProjectResult {
     project: ProjectTree,
     open_file_content: Option<String>,
@@ -373,6 +387,7 @@ async fn open_project(
     app: tauri::AppHandle,
     project_state: State<'_, ProjectState>,
     terminal_state: State<'_, TerminalState>,
+    history: State<'_, HistoryStore>,
 ) -> Result<Option<OpenProjectResult>, String> {
     let Some(root) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
@@ -390,12 +405,93 @@ async fn open_project(
 
     // Starting a command and committing a project switch share one transition
     // lock, so neither can observe the other's half-completed state.
-    let session_changed = terminal_state.switch_project(&project_state, root)?;
+    let session_changed =
+        switch_project_and_remember(&project_state, &terminal_state, root.clone(), || {
+            history.remember_project(&root)
+        })?;
 
     Ok(Some(OpenProjectResult {
         project,
         session_changed,
     }))
+}
+
+fn switch_project_and_remember<F>(
+    project_state: &ProjectState,
+    terminal_state: &TerminalState,
+    root: PathBuf,
+    remember: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let session_changed = terminal_state.switch_project(project_state, root)?;
+    if let Err(error) = remember() {
+        eprintln!("Unable to persist workspace metadata after opening the project: {error}");
+    }
+    Ok(session_changed)
+}
+
+#[tauri::command]
+fn restore_workspace(
+    project_state: State<'_, ProjectState>,
+    terminal_state: State<'_, TerminalState>,
+    history: State<'_, HistoryStore>,
+) -> Option<RestoredWorkspace> {
+    let saved = history.workspace().ok().flatten()?;
+    restore_workspace_state(&saved, &project_state, &terminal_state).ok()
+}
+
+fn restore_workspace_state(
+    saved: &WorkspaceState,
+    project_state: &ProjectState,
+    terminal_state: &TerminalState,
+) -> Result<RestoredWorkspace, String> {
+    let stored_root = PathBuf::from(&saved.project_root);
+    let root = fs::canonicalize(&stored_root).map_err(|error| error.to_string())?;
+    if root != stored_root
+        || !fs::metadata(&root)
+            .map_err(|error| error.to_string())?
+            .is_dir()
+    {
+        return Err("The saved project root is no longer available.".into());
+    }
+    fs::read_dir(&root).map_err(|error| error.to_string())?;
+    let project = project_tree(&root)?;
+    let open_file = saved.open_file.as_deref().and_then(|path| {
+        if !project_contains_file(&project.children, path) {
+            return None;
+        }
+        read_file(&root, path)
+            .ok()
+            .map(|content| RestoredWorkspaceFile {
+                path: path.to_string(),
+                content,
+            })
+    });
+    terminal_state.switch_project(project_state, root)?;
+    Ok(RestoredWorkspace { project, open_file })
+}
+
+#[tauri::command]
+fn remember_project_file(
+    relative_path: String,
+    request_id: u64,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<(), String> {
+    let mut latest = project_state
+        .last_file_request
+        .lock()
+        .map_err(|_| "Unable to access the project state.".to_string())?;
+    if request_id < *latest {
+        return Ok(());
+    }
+    let root = project_root(&project_state)?;
+    read_file(&root, &relative_path)?;
+    history.remember_file(&root, &relative_path)?;
+    *latest = request_id;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1628,10 +1724,67 @@ mod tests {
     }
 
     #[test]
+    fn restores_saved_project_and_only_a_valid_saved_text_file() {
+        let (directory, _) = project();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = ProjectState::default();
+        let terminal = TerminalState::default();
+        let saved = WorkspaceState {
+            project_root: root.to_string_lossy().into_owned(),
+            open_file: Some("notes.txt".into()),
+        };
+
+        let restored = restore_workspace_state(&saved, &state, &terminal).unwrap();
+        assert_eq!(
+            restored.project.name,
+            root.file_name().unwrap().to_string_lossy()
+        );
+        let file = restored.open_file.unwrap();
+        assert_eq!(file.path, "notes.txt");
+        assert_eq!(file.content, "before");
+
+        fs::remove_file(root.join("notes.txt")).unwrap();
+        assert!(restore_workspace_state(
+            &saved,
+            &ProjectState::default(),
+            &TerminalState::default()
+        )
+        .unwrap()
+        .open_file
+        .is_none());
+    }
+
+    #[test]
+    fn unavailable_or_unsafe_saved_workspace_does_not_change_project_state() {
+        let directory = TempDir::new().unwrap();
+        let missing = directory.path().join("missing");
+        let state = ProjectState::default();
+        let terminal = TerminalState::default();
+        let saved = WorkspaceState {
+            project_root: missing.to_string_lossy().into_owned(),
+            open_file: Some("notes.txt".into()),
+        };
+        assert!(restore_workspace_state(&saved, &state, &terminal).is_err());
+        assert!(state.root.lock().unwrap().is_none());
+
+        let (project, _) = project();
+        let root = fs::canonicalize(project.path()).unwrap();
+        let unsafe_file = WorkspaceState {
+            project_root: root.to_string_lossy().into_owned(),
+            open_file: Some("../outside.txt".into()),
+        };
+        assert!(restore_workspace_state(&unsafe_file, &state, &terminal)
+            .unwrap()
+            .open_file
+            .is_none());
+    }
+
+    #[test]
     fn terminal_start_and_project_switch_are_atomic() {
         for _ in 0..100 {
             let project_state = Arc::new(ProjectState {
                 root: Mutex::new(Some(PathBuf::from("project-a"))),
+                ..ProjectState::default()
             });
             let terminal_state = Arc::new(TerminalState::default());
             let barrier = Arc::new(Barrier::new(3));
@@ -1671,10 +1824,27 @@ mod tests {
     }
 
     #[test]
+    fn workspace_persistence_failure_does_not_fail_a_committed_project_switch() {
+        let project_state = ProjectState::default();
+        let terminal_state = TerminalState::default();
+        let root = PathBuf::from("project-b");
+
+        let changed =
+            switch_project_and_remember(&project_state, &terminal_state, root.clone(), || {
+                Err("database unavailable".into())
+            })
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(*project_state.root.lock().unwrap(), Some(root));
+    }
+
+    #[test]
     fn reopening_the_current_project_is_not_a_switch_and_is_allowed_during_a_command() {
         let root = PathBuf::from("project-a");
         let project_state = ProjectState {
             root: Mutex::new(Some(root.clone())),
+            ..ProjectState::default()
         };
         let terminal_state = TerminalState::default();
         terminal_state
@@ -2622,8 +2792,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             open_project,
+            restore_workspace,
             refresh_project,
             read_project_file,
+            remember_project_file,
             save_project_file,
             create_project_file,
             delete_project_file,
