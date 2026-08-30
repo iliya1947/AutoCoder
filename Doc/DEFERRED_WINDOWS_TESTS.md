@@ -31,10 +31,10 @@ stale Backup Restore с точной backend-причиной, сохранно�
   преобразование editor-state; используются уже подтверждённые Tauri read/tree IPC без нового
   Windows-specific filesystem или process lifecycle кода. Остаточный риск ограничен интеграционным
   поведением установленного UI и не мешает дальнейшей разработке.
-- **Статус:** `FAIL — pending recheck`. Первый packaged Windows-прогон обнаружил потерю Monaco edit
-  из React dirty-state. После исправления стабильности Monaco `onChange` и добавления сквозного
-  frontend regression требуется повторить этот сценарий на новой packaged Windows-сборке; до
-  пользовательского подтверждения барьер не считать PASS.
+- **Статус:** `FAIL — pending recheck`. Повторная диагностика доказала, что dirty-state был `true`,
+  но браузерный `window.confirm` не показался в packaged Tauri WebView2. Refresh переведён на
+  нативный Tauri 2 dialog plugin; требуется повторить сценарий на новой packaged Windows-сборке,
+  и до пользовательского подтверждения барьер не считать PASS.
 
 ## Engineering diagnostics — Windows atomic replacement
 

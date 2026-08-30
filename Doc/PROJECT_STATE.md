@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-30 августа 2026 (исправлен выявленный на 60% Windows acceptance разрыв Monaco → React dirty-state; повторная packaged-проверка ожидается).
+30 августа 2026 (Refresh confirmation переведён на нативный Tauri dialog; повторная packaged-проверка ожидается).
 
 ## Текущий этап
 
@@ -12,14 +12,29 @@
 
 ## Что подтверждено как сделанное
 
+### Нативное подтверждение Refresh после повторного FAIL 60% acceptance (30 августа 2026)
+- Повторная диагностика подтвердила, что React dirty-state уже был `true`: Save становился активен,
+  а реальная кнопка Explorer была напрямую подключена к `handleRefreshProject`. Ошибочным оказался
+  браузерный `window.confirm`: regression в jsdom подменял его и потому не проверял поведение
+  packaged Tauri WebView2, где это подтверждение не показалось.
+- Refresh теперь до любого `refresh_project` IPC ожидает асинхронный нативный `confirm` официального
+  Tauri 2 dialog plugin. Отдельный guard не допускает параллельные Refresh во время открытого
+  диалога; Cancel завершает handler без IPC и без изменения editor-state.
+- Сквозной frontend regression нажимает реальную кнопку Explorer после подтверждённого dirty-state,
+  проверяет вызов native dialog и точный порядок `open_project → read_project_file → confirm`, а
+  также отсутствие `refresh_project` и сохранность Monaco-текста после Cancel.
+- **60% packaged Windows acceptance остаётся FAIL / pending recheck** до пользовательской проверки
+  новой packaged Windows-сборки.
+
 ### Исправление dirty-state Refresh после FAIL 60% acceptance (30 августа 2026)
 - Packaged Windows acceptance выявил, что после редактирования Monaco действие «Обновить» могло не
   увидеть dirty-state и без подтверждения заменить несохранённый текст дисковой версией.
-- Причина находилась на границе Monaco/React: `Editor` создавал новую inline-функцию `onChange` при
+- PR #77 исходил из гипотезы о границе Monaco/React: `Editor` создавал новую inline-функцию `onChange` при
   каждом render, а `@monaco-editor/react` использует идентичность этой функции как зависимость
   эффекта подписки `onDidChangeModelContent`. Повторные renders поэтому снимали и заново ставили
   listener; изменение Monaco в этом промежутке не попадало в `openFile.content`, и вычисляемый в
-  `App` `isDirty` оставался ложным.
+  `App` `isDirty` оставался ложным. Новый packaged-факт (активная Save до Refresh) доказал, что эта
+  гипотеза не объясняла наблюдаемый дефект подтверждения.
 - Callback Monaco теперь стабилен на весь lifecycle Editor и делегирует актуальному React callback
   через ref. Интеграционный frontend regression проходит реальный путь открытия файла, изменения
   Monaco, появления dirty-state, Refresh, confirmation/Cancel и сохранения текста; отдельно он
