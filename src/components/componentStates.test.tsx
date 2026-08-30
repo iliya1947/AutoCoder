@@ -67,6 +67,14 @@ describe("panel states", () => {
     expect(markup).toContain("keep.txt");
   });
 
+  it("offers an explicit project refresh without replacing the open-project action", () => {
+    const project = { name: "project-a", children: [{ name: "keep.txt", path: "keep.txt", kind: "file" as const, children: [] }] };
+    const markup = renderToStaticMarkup(<ProjectExplorer project={project} activePath="keep.txt" onOpenProject={() => undefined} onRefreshProject={() => undefined} onOpenFile={() => undefined} status="opened" />);
+    expect(markup).toContain("Обновить");
+    expect(markup).toContain("Открыть проект");
+    expect(markup).toContain("keep.txt");
+  });
+
   it("renders file loading and error states", () => {
     const props = { file: null, saving: false, onChange: () => undefined, onSelectionChange: () => undefined, onSave: () => undefined };
     expect(renderToStaticMarkup(<Editor {...props} status="loading" />)).toContain("Загрузка файла");
