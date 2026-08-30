@@ -74,5 +74,7 @@
   "terminal.cancelling": "Отмена…",
   "terminal.cancelled": "Отменено",
   "terminal.cancel_unavailable": "Команда уже завершилась, отмена недоступна.",
-  "terminal.review_result": "Перенести результат в чат"
+  "terminal.review_result": "Перенести результат в чат",
+  "chat.clear_history": "Очистить историю",
+  "terminal.clear_history": "Очистить историю"
 }

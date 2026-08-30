@@ -36,6 +36,18 @@ stale Backup Restore с точной backend-причиной, сохранно�
   нативный Tauri 2 dialog plugin; требуется повторить сценарий на новой packaged Windows-сборке,
   и до пользовательского подтверждения барьер не считать PASS.
 
+## 70% — project-scoped SQLite history
+
+- **Изменение:** Chat exchanges и Terminal command history сохраняются в app data и изолируются
+  по каноническому пути проекта; обе истории можно очистить независимо.
+- **Проверить на barrier:** в проекте A выполнить команду и успешный Chat exchange, перезапустить
+  packaged AutoCoder и открыть A — сообщения и навигация стрелкой вверх восстановлены; открыть
+  проект B — история A отсутствует; очистить обе истории A и после ещё одного перезапуска убедиться,
+  что они не вернулись.
+- **Почему не критично немедленно:** SQLite layer и IPC покрыты Rust/frontend тестами, а сбой новой
+  persistence не блокирует основной open/edit/save workflow и не создаёт риск потери файлов проекта.
+- **Статус:** `pending 70% barrier`.
+
 ## Engineering diagnostics — Windows atomic replacement
 
 ### Atomic Save — Windows replacement и recovery branches

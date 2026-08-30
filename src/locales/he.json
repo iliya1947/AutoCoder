@@ -74,5 +74,7 @@
   "terminal.cancelling": "מבטל…",
   "terminal.cancelled": "בוטל",
   "terminal.cancel_unavailable": "הפקודה כבר הסתיימה ואי אפשר לבטל אותה.",
-  "terminal.review_result": "העבר את התוצאה לצ'אט"
+  "terminal.review_result": "העבר את התוצאה לצ'אט",
+  "chat.clear_history": "ניקוי היסטוריה",
+  "terminal.clear_history": "ניקוי היסטוריה"
 }

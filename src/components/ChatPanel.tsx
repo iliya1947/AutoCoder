@@ -166,6 +166,18 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   }, []);
 
   useEffect(() => {
+    if (!project) return;
+    let active = true;
+    invoke<ChatMessage[]>("load_chat_history").then((stored) => {
+      if (!active) return;
+      setMessages(Array.isArray(stored) ? stored : []);
+      lastRequestContext.current = chatContextKey(openFile, selection, project);
+    }).catch((reason) => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+    // Successful project switches remount this component via App's session key.
+  }, [project?.name]);
+
+  useEffect(() => {
     // Review actions are snapshots of the context which produced them. This is
     // especially important for create and command proposals, which cannot be
     // validated against the currently open file.
@@ -222,7 +234,16 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   };
 
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>
-    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span></div>
+    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>
+      {project && messages.length > 0 && <button type="button" className="secondary-button" disabled={sending} onClick={async () => {
+        try {
+          await invoke("clear_project_history", { kind: "chat" });
+          setMessages([]);
+          lastRequestContext.current = null;
+          setError(null);
+        } catch (reason) { setError(String(reason)); }
+      }}>{t("chat.clear_history")}</button>}
+    </div>
     <div className="chat-messages" aria-live="polite">
       {messages.length === 0 && !sending ? <p className="empty-chat">{t("chat.empty")}</p> : messages.map((item, index) => <p className={`${item.role}-message`} key={`${item.role}-${index}`}>{item.content}</p>)}
       {sending && <p className="chat-status">{t("chat.sending")}</p>}

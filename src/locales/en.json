@@ -74,5 +74,7 @@
   "terminal.cancelling": "Cancelling…",
   "terminal.cancelled": "Cancelled",
   "terminal.cancel_unavailable": "The command already finished and cannot be cancelled.",
-  "terminal.review_result": "Review result in chat"
+  "terminal.review_result": "Review result in chat",
+  "chat.clear_history": "Clear history",
+  "terminal.clear_history": "Clear history"
 }

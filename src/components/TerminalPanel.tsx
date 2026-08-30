@@ -51,6 +51,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
   const [execution, setExecution] = useState<TerminalExecution>({ status: "idle" });
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
+  const [historySize, setHistorySize] = useState(0);
   const history = useRef<string[]>([]);
   const historyIndex = useRef(0);
   const historyDraft = useRef("");
@@ -75,10 +76,21 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       setExecution({ status: "idle" });
       setError("");
       history.current = [];
+      setHistorySize(0);
       historyIndex.current = 0;
       historyDraft.current = "";
       activeRunId.current = null;
       cancelInFlight.current = false;
+    } else {
+      let active = true;
+      invoke<string[]>("load_terminal_history").then((stored) => {
+        if (!active) return;
+        const commands = Array.isArray(stored) ? stored : [];
+        history.current = commands;
+        setHistorySize(commands.length);
+        historyIndex.current = commands.length;
+      }).catch((reason) => { if (active) setError(String(reason)); });
+      return () => { active = false; };
     }
   }, [projectOpen]);
 
@@ -93,7 +105,10 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
     if (!projectOpen || !value || activeRunId.current !== null) return;
     const runId = ++nextRunId.current;
     activeRunId.current = runId;
-    if (history.current.at(-1) !== value) history.current.push(value);
+    if (history.current.at(-1) !== value) {
+      history.current.push(value);
+      setHistorySize(history.current.length);
+    }
     historyIndex.current = history.current.length;
     historyDraft.current = "";
     setExecution(beginTerminalRun(value));
@@ -164,6 +179,16 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       {transcript && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult(transcript)}>
         {t("terminal.review_result")}
       </button>}
+      {projectOpen && historySize > 0 && !running && <button type="button" className="secondary-button" onClick={async () => {
+        try {
+          await invoke("clear_project_history", { kind: "terminal" });
+          history.current = [];
+          setHistorySize(0);
+          historyIndex.current = 0;
+          historyDraft.current = command;
+          setError("");
+        } catch (reason) { setError(String(reason)); }
+      }}>{t("terminal.clear_history")}</button>}
     </div>
     <div className="terminal-output" aria-live="polite">
       {!projectOpen

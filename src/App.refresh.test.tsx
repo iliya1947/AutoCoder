@@ -69,7 +69,13 @@ describe("refresh with a Monaco edit", () => {
       { title: "AutoCoder", kind: "warning" },
     ));
     expect(invoke).not.toHaveBeenCalledWith("refresh_project", expect.anything());
-    expect(operationOrder).toEqual(["open_project", "read_project_file", "confirm"]);
+    expect(operationOrder).toEqual([
+      "open_project",
+      "load_terminal_history",
+      "load_chat_history",
+      "read_project_file",
+      "confirm",
+    ]);
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Monaco editor" }) as HTMLTextAreaElement).value).toBe("unsaved Monaco text"));
     expect(screen.getByLabelText("Есть несохранённые изменения")).toBeTruthy();
   });

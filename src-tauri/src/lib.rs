@@ -13,7 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod history;
 mod process_lifecycle;
+use history::{HistoryState, StoredChatMessage};
 use process_lifecycle::{ChildIo, OwnedChild, ProcessLifecycle};
 
 use serde::{Deserialize, Serialize};
@@ -400,6 +402,8 @@ fn project_contains_file(nodes: &[FileTreeNode], path: &str) -> bool {
 fn send_chat_message(
     app: tauri::AppHandle,
     ollama: State<'_, OllamaState>,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryState>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
     if request.messages.is_empty()
@@ -418,7 +422,45 @@ fn send_chat_message(
     if uses_managed_local_ollama() {
         ollama.ensure_running()?;
     }
-    run_chat_backend(&resource_dir, &request, &ollama.lifecycle)
+    let response = run_chat_backend(&resource_dir, &request, &ollama.lifecycle)?;
+    let root = project_state
+        .root
+        .lock()
+        .map_err(|_| "Unable to access the project state.".to_string())?
+        .clone();
+    if let Some(root) = root {
+        let user = request
+            .messages
+            .last()
+            .expect("validated non-empty request");
+        history.append_chat_exchange(&root, &user.content, &response.message.content)?;
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+fn load_chat_history(
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryState>,
+) -> Result<Vec<StoredChatMessage>, String> {
+    history.chat_messages(&project_root(&project_state)?)
+}
+
+#[tauri::command]
+fn load_terminal_history(
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryState>,
+) -> Result<Vec<String>, String> {
+    history.terminal_commands(&project_root(&project_state)?)
+}
+
+#[tauri::command]
+fn clear_project_history(
+    kind: String,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryState>,
+) -> Result<(), String> {
+    history.clear(&project_root(&project_state)?, &kind)
 }
 
 fn uses_managed_local_ollama() -> bool {
@@ -817,8 +859,15 @@ async fn execute_project_command(
     project_state: State<'_, ProjectState>,
     lifecycle: State<'_, Arc<ProcessLifecycle>>,
     terminal_state: State<'_, TerminalState>,
+    history: State<'_, HistoryState>,
 ) -> Result<TerminalResult, String> {
     let (root, cancel) = terminal_state.begin_project_command(&project_state)?;
+    if let Err(error) = history.append_terminal_command(&root, &command) {
+        if let Ok(mut active) = terminal_state.active_cancel.lock() {
+            *active = None;
+        }
+        return Err(error);
+    }
     let lifecycle = Arc::clone(lifecycle.inner());
     let result = tauri::async_runtime::spawn_blocking(move || {
         run_project_command(&root, &command, &lifecycle, &cancel)
@@ -2586,9 +2635,14 @@ pub fn run() {
             restore_project_backup,
             execute_project_command,
             cancel_project_command,
-            send_chat_message
+            send_chat_message,
+            load_chat_history,
+            load_terminal_history,
+            clear_project_history
         ])
         .setup(|app| {
+            let database = app.path().app_data_dir()?.join("autocoder.sqlite3");
+            app.manage(HistoryState::open(database).map_err(std::io::Error::other)?);
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
