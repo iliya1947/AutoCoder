@@ -87,20 +87,32 @@ impl HistoryStore {
         })
     }
 
-    pub fn replace_chat(&self, root: &Path, messages: &[ChatMessage]) -> Result<(), String> {
+    pub fn append_chat_exchange(
+        &self,
+        root: &Path,
+        user: &ChatMessage,
+        assistant: &ChatMessage,
+    ) -> Result<(), String> {
         let mut connection = self
             .0
             .lock()
             .map_err(|_| "Unable to access history database.".to_string())?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
         let key = Self::key(root);
-        transaction
-            .execute("DELETE FROM chat_messages WHERE project=?1", [&key])
-            .map_err(|e| e.to_string())?;
-        let start = messages.len().saturating_sub(CHAT_LIMIT as usize);
-        for (position, message) in messages[start..].iter().enumerate() {
-            transaction.execute("INSERT INTO chat_messages(project, position, role, content) VALUES(?1, ?2, ?3, ?4)", params![key, position, message.role, message.content]).map_err(|e| e.to_string())?;
+        if user.role != "user" || assistant.role != "assistant" {
+            return Err("A chat exchange must contain a user and assistant message.".into());
         }
+        let next_position: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(position) + 1, 0) FROM chat_messages WHERE project=?1",
+                [&key],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        for (offset, message) in [user, assistant].into_iter().enumerate() {
+            transaction.execute("INSERT INTO chat_messages(project, position, role, content) VALUES(?1, ?2, ?3, ?4)", params![key, next_position + offset as i64, message.role, message.content]).map_err(|e| e.to_string())?;
+        }
+        transaction.execute("DELETE FROM chat_messages WHERE project=?1 AND position NOT IN (SELECT position FROM chat_messages WHERE project=?1 ORDER BY position DESC LIMIT ?2)", params![key, CHAT_LIMIT]).map_err(|e| e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())
     }
 
@@ -110,14 +122,15 @@ impl HistoryStore {
         command: &str,
         result: &TerminalResult,
     ) -> Result<(), String> {
-        let connection = self
+        let mut connection = self
             .0
             .lock()
             .map_err(|_| "Unable to access history database.".to_string())?;
         let key = Self::key(root);
-        connection.execute("INSERT INTO terminal_runs(project, command, exit_code, stdout, stderr, cancelled) VALUES(?1, ?2, ?3, ?4, ?5, ?6)", params![key, command, result.exit_code, result.stdout, result.stderr, result.cancelled]).map_err(|e| e.to_string())?;
-        connection.execute("DELETE FROM terminal_runs WHERE project=?1 AND id NOT IN (SELECT id FROM terminal_runs WHERE project=?1 ORDER BY id DESC LIMIT ?2)", params![key, TERMINAL_LIMIT]).map_err(|e| e.to_string())?;
-        Ok(())
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO terminal_runs(project, command, exit_code, stdout, stderr, cancelled) VALUES(?1, ?2, ?3, ?4, ?5, ?6)", params![key, command, result.exit_code, result.stdout, result.stderr, result.cancelled]).map_err(|e| e.to_string())?;
+        transaction.execute("DELETE FROM terminal_runs WHERE project=?1 AND id NOT IN (SELECT id FROM terminal_runs WHERE project=?1 ORDER BY id DESC LIMIT ?2)", params![key, TERMINAL_LIMIT]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
     }
 
     pub fn clear(&self, root: &Path, kind: &str) -> Result<(), String> {
@@ -151,12 +164,16 @@ mod tests {
         let second = directory.path().join("second");
         let store = HistoryStore::open(db.clone()).unwrap();
         store
-            .replace_chat(
+            .append_chat_exchange(
                 &first,
-                &[ChatMessage {
+                &ChatMessage {
                     role: "user".into(),
                     content: "hello".into(),
-                }],
+                },
+                &ChatMessage {
+                    role: "assistant".into(),
+                    content: "hi".into(),
+                },
             )
             .unwrap();
         store
@@ -176,9 +193,81 @@ mod tests {
         let reopened = HistoryStore::open(db).unwrap();
         let loaded = reopened.load(&first).unwrap();
         assert_eq!(loaded.chat_messages[0].content, "hello");
+        assert_eq!(loaded.chat_messages[1].content, "hi");
         assert_eq!(loaded.terminal_runs[0].command, "cargo test");
         reopened.clear(&first, "chat").unwrap();
         assert!(reopened.load(&first).unwrap().chat_messages.is_empty());
         assert_eq!(reopened.load(&first).unwrap().terminal_runs.len(), 1);
+    }
+
+    #[test]
+    fn appends_chat_as_an_atomic_pair_and_enforces_message_limit() {
+        let directory = TempDir::new().unwrap();
+        let store = HistoryStore::open(directory.path().join("history.db")).unwrap();
+        let project = directory.path().join("project");
+
+        for index in 0..101 {
+            store
+                .append_chat_exchange(
+                    &project,
+                    &ChatMessage {
+                        role: "user".into(),
+                        content: format!("question {index}"),
+                    },
+                    &ChatMessage {
+                        role: "assistant".into(),
+                        content: format!("answer {index}"),
+                    },
+                )
+                .unwrap();
+        }
+
+        let messages = store.load(&project).unwrap().chat_messages;
+        assert_eq!(messages.len(), CHAT_LIMIT as usize);
+        assert_eq!(messages.first().unwrap().content, "question 1");
+        assert_eq!(messages.last().unwrap().content, "answer 100");
+        assert!(store
+            .append_chat_exchange(
+                &project,
+                &ChatMessage {
+                    role: "assistant".into(),
+                    content: "wrong".into(),
+                },
+                &ChatMessage {
+                    role: "assistant".into(),
+                    content: "answer".into(),
+                },
+            )
+            .is_err());
+        assert_eq!(store.load(&project).unwrap().chat_messages.len(), 200);
+    }
+
+    #[test]
+    fn terminal_limit_keeps_complete_transcripts() {
+        let directory = TempDir::new().unwrap();
+        let store = HistoryStore::open(directory.path().join("history.db")).unwrap();
+        let project = directory.path().join("project");
+        for index in 0..101 {
+            store
+                .append_terminal(
+                    &project,
+                    &format!("command {index}"),
+                    &TerminalResult {
+                        exit_code: Some(index),
+                        stdout: format!("stdout {index}"),
+                        stderr: format!("stderr {index}"),
+                        cancelled: index == 100,
+                    },
+                )
+                .unwrap();
+        }
+        let runs = store.load(&project).unwrap().terminal_runs;
+        assert_eq!(runs.len(), TERMINAL_LIMIT as usize);
+        assert_eq!(runs.first().unwrap().command, "command 1");
+        let latest = runs.last().unwrap();
+        assert_eq!(latest.result.exit_code, Some(100));
+        assert_eq!(latest.result.stdout, "stdout 100");
+        assert_eq!(latest.result.stderr, "stderr 100");
+        assert!(latest.result.cancelled);
     }
 }

@@ -13,7 +13,7 @@ export type FileProposal =
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string };
 export type TerminalResultDraft = TerminalTranscript & { id: number };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -207,7 +207,6 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     setProposal(null);
     setCommandProposal(null);
     try {
-      await invoke("save_chat_history", { messages: pendingMessages });
       const response = await invoke<ChatResponse>("send_chat_message", {
         request: buildChatRequest(requestMessages, openFile, selection, project),
       });
@@ -217,8 +216,12 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
         return;
       }
       const completedMessages = [...pendingMessages, response.message];
+      await invoke("save_chat_exchange", {
+        projectKey: response.projectKey,
+        userMessage: { role: "user", content },
+        assistantMessage: response.message,
+      });
       setMessages(completedMessages);
-      await invoke("save_chat_history", { messages: completedMessages });
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
