@@ -12,6 +12,8 @@
   "editor.placeholder_description": "Редактирование файлов будет доступно после открытия проекта.",
   "files.add": "Добавить файл",
   "files.open_project": "Открыть проект",
+  "files.refresh_project": "Обновить",
+  "files.refresh_error": "Не удалось обновить проект.",
   "files.not_opened": "Проект не открыт.",
   "files.loading": "Загрузка файлов...",
   "files.open_error": "Не удалось открыть проект.",
