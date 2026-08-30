@@ -12,6 +12,8 @@
   "editor.placeholder_description": "עריכת קבצים תהיה זמינה לאחר פתיחת פרויקט.",
   "files.add": "הוסף קובץ",
   "files.open_project": "פתח פרויקט",
+  "files.refresh_project": "רענון",
+  "files.refresh_error": "לא ניתן לרענן את הפרויקט.",
   "files.not_opened": "לא נפתח פרויקט.",
   "files.loading": "טוען קבצים...",
   "files.open_error": "לא ניתן לפתוח את הפרויקט.",
