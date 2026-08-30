@@ -405,13 +405,31 @@ async fn open_project(
 
     // Starting a command and committing a project switch share one transition
     // lock, so neither can observe the other's half-completed state.
-    let session_changed = terminal_state.switch_project(&project_state, root.clone())?;
-    history.remember_project(&root)?;
+    let session_changed =
+        switch_project_and_remember(&project_state, &terminal_state, root.clone(), || {
+            history.remember_project(&root)
+        })?;
 
     Ok(Some(OpenProjectResult {
         project,
         session_changed,
     }))
+}
+
+fn switch_project_and_remember<F>(
+    project_state: &ProjectState,
+    terminal_state: &TerminalState,
+    root: PathBuf,
+    remember: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let session_changed = terminal_state.switch_project(project_state, root)?;
+    if let Err(error) = remember() {
+        eprintln!("Unable to persist workspace metadata after opening the project: {error}");
+    }
+    Ok(session_changed)
 }
 
 #[tauri::command]
@@ -1803,6 +1821,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn workspace_persistence_failure_does_not_fail_a_committed_project_switch() {
+        let project_state = ProjectState::default();
+        let terminal_state = TerminalState::default();
+        let root = PathBuf::from("project-b");
+
+        let changed =
+            switch_project_and_remember(&project_state, &terminal_state, root.clone(), || {
+                Err("database unavailable".into())
+            })
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(*project_state.root.lock().unwrap(), Some(root));
     }
 
     #[test]

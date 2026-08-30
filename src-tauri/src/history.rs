@@ -267,7 +267,10 @@ mod tests {
         assert_eq!(store.workspace().unwrap(), None);
         store.remember_project(&first).unwrap();
         store.remember_file(&first, "src/main.rs").unwrap();
-        store.remember_file(&second, "ignored.txt").unwrap();
+        assert_eq!(
+            store.remember_file(&second, "ignored.txt").unwrap_err(),
+            "The file belongs to a previous project session."
+        );
         store.remember_project(&first).unwrap();
         assert_eq!(
             store.workspace().unwrap(),
