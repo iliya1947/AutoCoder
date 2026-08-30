@@ -866,6 +866,47 @@ fn create_project_file(
 }
 
 #[tauri::command]
+fn create_project_directory(
+    relative_path: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    create_directory(&root, &relative_path)?;
+    project_tree(&root)
+}
+
+#[tauri::command]
+fn rename_project_entry(
+    relative_path: String,
+    new_relative_path: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    rename_entry(&root, &relative_path, &new_relative_path)?;
+    project_tree(&root)
+}
+
+#[tauri::command]
+fn delete_project_entry(
+    app: tauri::AppHandle,
+    relative_path: String,
+    project_state: State<'_, ProjectState>,
+) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let backup_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("backups");
+    delete_entry_with_backup(&root, &relative_path, &backup_root, timestamp)?;
+    project_tree(&root)
+}
+
+#[tauri::command]
 fn delete_project_file(
     app: tauri::AppHandle,
     relative_path: String,
@@ -1169,14 +1210,8 @@ fn resolve_project_file(root: &Path, relative_path: &str) -> Result<PathBuf, Str
 }
 
 fn create_file(root: &Path, relative_path: &str, content: &str) -> Result<(), String> {
-    let relative = Path::new(relative_path);
-    if relative.as_os_str().is_empty()
-        || relative.is_absolute()
-        || relative.components().any(|component| match component {
-            std::path::Component::Normal(name) => !is_safe_windows_path_component(name),
-            _ => true,
-        })
-    {
+    let relative = safe_relative_path(relative_path)?;
+    if relative.as_os_str().is_empty() {
         return Err(
             "The new file path must use normalized, Windows-safe relative names.".to_string(),
         );
@@ -1205,6 +1240,123 @@ fn create_file(root: &Path, relative_path: &str, content: &str) -> Result<(), St
         drop(file);
         let _ = fs::remove_file(&destination);
         return Err(format!("Unable to create file: {error}"));
+    }
+    Ok(())
+}
+
+fn safe_relative_path(relative_path: &str) -> Result<&Path, String> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty() || relative.is_absolute() || relative.components().any(|component| {
+        !matches!(component, std::path::Component::Normal(name) if is_safe_windows_path_component(name))
+    }) {
+        return Err("The path must use normalized, Windows-safe relative names.".into());
+    }
+    Ok(relative)
+}
+
+fn canonical_project_parent(root: &Path, relative: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let canonical_root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let canonical_parent = fs::canonicalize(canonical_root.join(parent))
+        .map_err(|error| format!("The destination directory does not exist: {error}"))?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err("The path must remain inside the project directory.".into());
+    }
+    Ok((canonical_root, canonical_parent))
+}
+
+fn create_directory(root: &Path, relative_path: &str) -> Result<(), String> {
+    let relative = safe_relative_path(relative_path)?;
+    let (_, parent) = canonical_project_parent(root, relative)?;
+    let name = relative
+        .file_name()
+        .ok_or("The new directory needs a name.")?;
+    fs::create_dir(parent.join(name))
+        .map_err(|error| format!("Unable to create directory: {error}"))
+}
+
+fn resolve_project_entry(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    safe_relative_path(relative_path)?;
+    let canonical_root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let candidate = canonical_root.join(relative_path);
+    let metadata = fs::symlink_metadata(&candidate).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("Symbolic links cannot be changed from Project Explorer.".into());
+    }
+    let canonical = fs::canonicalize(candidate).map_err(|error| error.to_string())?;
+    if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
+        return Err("The entry must be strictly inside the project directory.".into());
+    }
+    Ok(canonical)
+}
+
+fn rename_entry(root: &Path, relative_path: &str, new_relative_path: &str) -> Result<(), String> {
+    let source = resolve_project_entry(root, relative_path)?;
+    let new_relative = safe_relative_path(new_relative_path)?;
+    let (_, parent) = canonical_project_parent(root, new_relative)?;
+    let destination = parent.join(new_relative.file_name().ok_or("The entry needs a name.")?);
+    if destination.exists() {
+        return Err("An entry with the new name already exists.".into());
+    }
+    if source.is_dir() && destination.starts_with(&source) {
+        return Err("A directory cannot be moved inside itself.".into());
+    }
+    fs::rename(source, destination).map_err(|error| format!("Unable to rename entry: {error}"))
+}
+
+fn delete_entry_with_backup(
+    root: &Path,
+    relative_path: &str,
+    backup_root: &Path,
+    timestamp: u128,
+) -> Result<(), String> {
+    let source = resolve_project_entry(root, relative_path)?;
+    let backup_dir = backup_root.join(timestamp.to_string());
+    fs::create_dir_all(&backup_dir).map_err(|error| format!("Unable to create backup: {error}"))?;
+    let metadata = BackupMetadata {
+        created_at_unix_ms: timestamp / 1_000_000,
+        original_path: source.to_string_lossy().into_owned(),
+    };
+    fs::write(
+        backup_dir.join("metadata.json"),
+        serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Unable to save backup metadata: {error}"))?;
+    if source.is_file() {
+        fs::copy(&source, backup_dir.join("content.bak"))
+            .map_err(|error| format!("Unable to create backup: {error}"))?;
+        fs::remove_file(source).map_err(|error| format!("Unable to delete file: {error}"))
+    } else if source.is_dir() {
+        copy_directory_safely(&source, &backup_dir.join("content.dir"))?;
+        fs::remove_dir_all(source).map_err(|error| format!("Unable to delete directory: {error}"))
+    } else {
+        Err("Only files and directories can be deleted.".into())
+    }
+}
+
+fn copy_directory_safely(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir(destination)
+        .map_err(|error| format!("Unable to create directory backup: {error}"))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("Unable to read directory for backup: {error}"))?
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            return Err("Directories containing symbolic links cannot be deleted safely.".into());
+        }
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory_safely(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), target)
+                .map_err(|error| format!("Unable to create directory backup: {error}"))?;
+        } else {
+            return Err(
+                "Directories containing special filesystem entries cannot be deleted safely."
+                    .into(),
+            );
+        }
     }
     Ok(())
 }
@@ -2737,6 +2889,50 @@ mod tests {
     }
 
     #[test]
+    fn manually_creates_and_renames_files_and_directories_without_overwriting() {
+        let (directory, _) = project();
+        create_directory(directory.path(), "new-folder").unwrap();
+        create_file(directory.path(), "new-folder/new.txt", "manual").unwrap();
+        rename_entry(
+            directory.path(),
+            "new-folder/new.txt",
+            "new-folder/renamed.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("new-folder/renamed.txt")).unwrap(),
+            "manual"
+        );
+        fs::write(directory.path().join("occupied.txt"), "keep").unwrap();
+        assert!(rename_entry(directory.path(), "new-folder/renamed.txt", "occupied.txt").is_err());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("occupied.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn manual_recursive_delete_preserves_the_complete_directory_backup() {
+        let (directory, _) = project();
+        let backups = TempDir::new().unwrap();
+        fs::create_dir_all(directory.path().join("nested/deeper")).unwrap();
+        fs::write(directory.path().join("nested/text.txt"), "text").unwrap();
+        fs::write(directory.path().join("nested/deeper/binary.bin"), [0, 1, 2]).unwrap();
+
+        delete_entry_with_backup(directory.path(), "nested", backups.path(), 123).unwrap();
+
+        assert!(!directory.path().join("nested").exists());
+        assert_eq!(
+            fs::read_to_string(backups.path().join("123/content.dir/text.txt")).unwrap(),
+            "text"
+        );
+        assert_eq!(
+            fs::read(backups.path().join("123/content.dir/deeper/binary.bin")).unwrap(),
+            [0, 1, 2]
+        );
+    }
+
+    #[test]
     fn reads_text_with_known_unknown_and_absent_extensions() {
         let (directory, _) = project();
         fs::write(directory.path().join("message.custom"), "custom text").unwrap();
@@ -2798,6 +2994,9 @@ pub fn run() {
             remember_project_file,
             save_project_file,
             create_project_file,
+            create_project_directory,
+            rename_project_entry,
+            delete_project_entry,
             delete_project_file,
             list_project_backups,
             restore_project_backup,

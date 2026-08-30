@@ -76,5 +76,16 @@
   "terminal.cancelled": "בוטל",
   "terminal.cancel_unavailable": "הפקודה כבר הסתיימה ואי אפשר לבטל אותה.",
   "terminal.review_result": "העבר את התוצאה לצ'אט",
-  "terminal.clear_history": "ניקוי היסטוריה"
+  "terminal.clear_history": "ניקוי היסטוריה",
+  "files.actions": "פעולות קבצים ותיקיות",
+  "files.new_file": "קובץ חדש",
+  "files.new_folder": "תיקייה חדשה",
+  "files.rename": "שינוי שם",
+  "files.delete": "מחיקה",
+  "files.new_file_prompt": "הזן שם לקובץ החדש",
+  "files.new_folder_prompt": "הזן שם לתיקייה החדשה",
+  "files.rename_prompt": "הזן שם חדש",
+  "files.delete_file_confirm": "למחוק את {name}? ייווצר גיבוי בטיחות.",
+  "files.delete_folder_confirm": "למחוק את {name} ואת כל תוכנו? ייווצר גיבוי בטיחות.",
+  "files.operation_error": "לא ניתן לשנות את פריט הפרויקט."
 }

@@ -204,6 +204,25 @@ button:disabled {
   gap: 6px;
 }
 
+.explorer-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.explorer-actions button {
+  padding: 6px;
+  border: 1px solid #34445f;
+  border-radius: 4px;
+  color: #c8d3e8;
+  background: #1c283b;
+  font-size: 0.72rem;
+}
+
+.explorer-actions button:disabled { opacity: 0.45; }
+.explorer-actions button.danger:not(:disabled) { color: #ffb1b1; }
+
 .file-tree {
   margin: 0;
   padding: 0;
@@ -233,7 +252,8 @@ button:disabled {
 }
 
 button.tree-node:hover,
-button.tree-node.active {
+button.tree-node.active,
+button.tree-node.selected {
   color: #fff;
   background: #273752;
 }

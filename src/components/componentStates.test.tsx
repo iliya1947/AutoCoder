@@ -84,6 +84,10 @@ describe("panel states", () => {
     expect(markup).toContain("Обновить");
     expect(markup).toContain("Открыть проект");
     expect(markup).toContain("keep.txt");
+    expect(markup).toContain("Новый файл");
+    expect(markup).toContain("Новая папка");
+    expect(markup).toContain("Переименовать");
+    expect(markup).toContain("Удалить");
   });
 
   it("renders file loading and error states", () => {

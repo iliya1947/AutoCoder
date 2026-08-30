@@ -76,5 +76,16 @@
   "terminal.cancelled": "Cancelled",
   "terminal.cancel_unavailable": "The command already finished and cannot be cancelled.",
   "terminal.review_result": "Review result in chat",
-  "terminal.clear_history": "Clear history"
+  "terminal.clear_history": "Clear history",
+  "files.actions": "File and folder actions",
+  "files.new_file": "New file",
+  "files.new_folder": "New folder",
+  "files.rename": "Rename",
+  "files.delete": "Delete",
+  "files.new_file_prompt": "Enter a new file name",
+  "files.new_folder_prompt": "Enter a new folder name",
+  "files.rename_prompt": "Enter a new name",
+  "files.delete_file_confirm": "Delete {name}? A safety backup will be created.",
+  "files.delete_folder_confirm": "Delete {name} and everything inside it? A safety backup will be created.",
+  "files.operation_error": "Unable to change the project entry."
 }
