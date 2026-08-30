@@ -282,22 +282,18 @@ fn load_project_history(
 }
 
 #[tauri::command]
-fn save_chat_history(
-    messages: Vec<ChatMessage>,
+fn save_chat_exchange(
+    project_key: String,
+    user_message: ChatMessage,
+    assistant_message: ChatMessage,
     project_state: State<'_, ProjectState>,
     history: State<'_, HistoryStore>,
 ) -> Result<(), String> {
-    history.replace_chat(&project_root(&project_state)?, &messages)
-}
-
-#[tauri::command]
-fn save_terminal_history(
-    command: String,
-    result: TerminalResult,
-    project_state: State<'_, ProjectState>,
-    history: State<'_, HistoryStore>,
-) -> Result<(), String> {
-    history.append_terminal(&project_root(&project_state)?, &command, &result)
+    let current_root = project_root(&project_state)?;
+    if current_root.to_string_lossy() != project_key {
+        return Err("The chat response belongs to a previous project session.".into());
+    }
+    history.append_chat_exchange(&current_root, &user_message, &assistant_message)
 }
 
 #[tauri::command]
@@ -350,6 +346,8 @@ struct ChatResponse {
     message: ChatMessage,
     proposal: Option<FileProposal>,
     command_proposal: Option<TerminalProposal>,
+    #[serde(default)]
+    project_key: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -438,6 +436,7 @@ fn project_contains_file(nodes: &[FileTreeNode], path: &str) -> bool {
 fn send_chat_message(
     app: tauri::AppHandle,
     ollama: State<'_, OllamaState>,
+    project_state: State<'_, ProjectState>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
     if request.messages.is_empty()
@@ -456,7 +455,10 @@ fn send_chat_message(
     if uses_managed_local_ollama() {
         ollama.ensure_running()?;
     }
-    run_chat_backend(&resource_dir, &request, &ollama.lifecycle)
+    let root = project_root(&project_state)?;
+    let mut response = run_chat_backend(&resource_dir, &request, &ollama.lifecycle)?;
+    response.project_key = root.to_string_lossy().into_owned();
+    Ok(response)
 }
 
 fn uses_managed_local_ollama() -> bool {
@@ -855,18 +857,23 @@ async fn execute_project_command(
     project_state: State<'_, ProjectState>,
     lifecycle: State<'_, Arc<ProcessLifecycle>>,
     terminal_state: State<'_, TerminalState>,
+    history: State<'_, HistoryStore>,
 ) -> Result<TerminalResult, String> {
     let (root, cancel) = terminal_state.begin_project_command(&project_state)?;
     let lifecycle = Arc::clone(lifecycle.inner());
+    let task_root = root.clone();
+    let task_command = command.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        run_project_command(&root, &command, &lifecycle, &cancel)
+        run_project_command(&task_root, &task_command, &lifecycle, &cancel)
     })
     .await
     .map_err(|error| format!("Unable to join command task: {error}"));
     if let Ok(mut active) = terminal_state.active_cancel.lock() {
         *active = None;
     }
-    result?
+    let completed = result??;
+    history.append_terminal(&root, &command, &completed)?;
+    Ok(completed)
 }
 
 #[tauri::command]
@@ -2626,8 +2633,7 @@ pub fn run() {
             cancel_project_command,
             send_chat_message,
             load_project_history,
-            save_chat_history,
-            save_terminal_history,
+            save_chat_exchange,
             clear_project_history
         ])
         .setup(|app| {

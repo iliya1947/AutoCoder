@@ -117,11 +117,6 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution((current) => completeTerminalRun(current, completedResult));
-      try {
-        await invoke("save_terminal_history", { command: value, result: completedResult });
-      } catch (reason) {
-        setError(String(reason));
-      }
     } catch (reason) {
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution({ status: "idle" });
