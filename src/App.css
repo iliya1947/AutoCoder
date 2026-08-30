@@ -199,6 +199,11 @@ button:disabled {
   font-size: 0.75rem;
 }
 
+.project-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .file-tree {
   margin: 0;
   padding: 0;

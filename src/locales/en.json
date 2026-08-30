@@ -12,6 +12,8 @@
   "editor.placeholder_description": "File editing will be available after opening a project.",
   "files.add": "Add file",
   "files.open_project": "Open project",
+  "files.refresh_project": "Refresh",
+  "files.refresh_error": "Unable to refresh the project.",
   "files.not_opened": "No project is open.",
   "files.loading": "Loading files...",
   "files.open_error": "Unable to open the project.",
