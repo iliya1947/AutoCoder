@@ -92,7 +92,7 @@ function App() {
         setProjectStatus("opened");
       } else setProjectStatus(project ? "opened" : "idle");
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : String(error));
+      setProjectError(operationError(t("files.open_error"), error));
       setProjectStatus("error");
     } finally {
       openingProject.current = false;
@@ -115,6 +115,23 @@ function App() {
       if (!isLatestFileRead(requestId, latestFileRead.current)) return;
       setEditorError(operationError(t("editor.read_error"), error));
       setEditorStatus("error");
+    }
+  };
+
+  const handleRefreshProject = async () => {
+    if (!project || openingProject.current) return;
+    openingProject.current = true;
+    setProjectError("");
+    setProjectStatus("loading");
+    try {
+      const refreshed = await invoke<ProjectTree>("refresh_project");
+      setProject({ ...refreshed, children: transformProjectTree(refreshed.children) });
+      setProjectStatus("opened");
+    } catch (error) {
+      setProjectError(operationError(t("files.refresh_error"), error));
+      setProjectStatus("error");
+    } finally {
+      openingProject.current = false;
     }
   };
 
@@ -151,7 +168,7 @@ function App() {
   };
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
-    <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onOpenFile={handleOpenFile} />
+    <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {

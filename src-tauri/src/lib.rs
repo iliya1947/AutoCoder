@@ -343,20 +343,22 @@ async fn open_project(
     }
     fs::read_dir(&root).map_err(|error| error.to_string())?;
 
-    let children = read_directory(&root, &root);
-    let name = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Project".to_string());
+    let project = project_tree(&root)?;
 
     // Starting a command and committing a project switch share one transition
     // lock, so neither can observe the other's half-completed state.
     let session_changed = terminal_state.switch_project(&project_state, root)?;
 
     Ok(Some(OpenProjectResult {
-        project: ProjectTree { name, children },
+        project,
         session_changed,
     }))
+}
+
+#[tauri::command]
+fn refresh_project(project_state: State<'_, ProjectState>) -> Result<ProjectTree, String> {
+    let root = project_root(&project_state)?;
+    project_tree(&root)
 }
 
 #[tauri::command]
@@ -955,6 +957,22 @@ fn project_root(project_state: &State<'_, ProjectState>) -> Result<PathBuf, Stri
         .map_err(|_| "Unable to access the project state.".to_string())?
         .clone()
         .ok_or_else(|| "Open a project first.".to_string())
+}
+
+fn project_tree(root: &Path) -> Result<ProjectTree, String> {
+    let metadata = fs::metadata(root).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Err("The open project path is no longer a directory.".to_string());
+    }
+    fs::read_dir(root).map_err(|error| error.to_string())?;
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Project".to_string());
+    Ok(ProjectTree {
+        name,
+        children: read_directory(root, root),
+    })
 }
 
 fn resolve_project_file(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
@@ -1585,6 +1603,25 @@ mod tests {
 
         assert!(!terminal_state.switch_project(&project_state, root).unwrap());
         assert!(terminal_state.active_cancel.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn rebuilding_project_tree_discovers_external_file_changes() {
+        let (directory, _) = project();
+        let initial = project_tree(directory.path()).unwrap();
+        assert!(initial.children.iter().any(|node| node.name == "notes.txt"));
+        assert!(!initial.children.iter().any(|node| node.name == "added.rs"));
+
+        fs::write(directory.path().join("added.rs"), "fn main() {}\n").unwrap();
+        let refreshed = project_tree(directory.path()).unwrap();
+        assert!(refreshed
+            .children
+            .iter()
+            .any(|node| node.name == "added.rs"));
+        assert_eq!(
+            refreshed.name,
+            directory.path().file_name().unwrap().to_string_lossy()
+        );
     }
 
     #[test]
@@ -2484,6 +2521,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             open_project,
+            refresh_project,
             read_project_file,
             save_project_file,
             create_project_file,
