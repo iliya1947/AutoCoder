@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import { ChatPanel } from "./components/ChatPanel";
 import type { TerminalProposal, TerminalResultDraft } from "./components/ChatPanel";
@@ -65,6 +66,7 @@ function App() {
   const latestFileRead = useRef(0);
   const latestFileSave = useRef(0);
   const openingProject = useRef(false);
+  const refreshConfirmationPending = useRef(false);
   const applyingFileProposal = useRef(false);
   const currentProjectSession = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
@@ -123,7 +125,22 @@ function App() {
   };
 
   const handleRefreshProject = async () => {
-    if (!project || openingProject.current || saving || (isDirty && !window.confirm(t("editor.refresh_discard_confirm")))) return;
+    if (!project || openingProject.current || saving || refreshConfirmationPending.current) return;
+    if (isDirty) {
+      refreshConfirmationPending.current = true;
+      let shouldDiscard = false;
+      try {
+        shouldDiscard = await confirm(t("editor.refresh_discard_confirm"), {
+          title: "AutoCoder",
+          kind: "warning",
+        });
+      } catch (error) {
+        setProjectError(operationError(t("files.refresh_error"), error));
+      } finally {
+        refreshConfirmationPending.current = false;
+      }
+      if (!shouldDiscard) return;
+    }
     openingProject.current = true;
     const requestEditorContext = currentEditorContext.current;
     latestFileRead.current += 1;
