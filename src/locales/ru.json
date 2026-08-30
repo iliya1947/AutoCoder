@@ -76,5 +76,16 @@
   "terminal.cancelled": "Отменено",
   "terminal.cancel_unavailable": "Команда уже завершилась, отмена недоступна.",
   "terminal.review_result": "Перенести результат в чат",
-  "terminal.clear_history": "Очистить историю"
+  "terminal.clear_history": "Очистить историю",
+  "files.actions": "Действия с файлами и папками",
+  "files.new_file": "Новый файл",
+  "files.new_folder": "Новая папка",
+  "files.rename": "Переименовать",
+  "files.delete": "Удалить",
+  "files.new_file_prompt": "Введите имя нового файла",
+  "files.new_folder_prompt": "Введите имя новой папки",
+  "files.rename_prompt": "Введите новое имя",
+  "files.delete_file_confirm": "Удалить {name}? Будет создана резервная копия.",
+  "files.delete_folder_confirm": "Удалить {name} и всё содержимое? Будет создана резервная копия.",
+  "files.operation_error": "Не удалось изменить файл или папку проекта."
 }

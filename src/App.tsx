@@ -6,7 +6,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import type { TerminalProposal, TerminalResultDraft } from "./components/ChatPanel";
 import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
-import { ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
+import { ExplorerCreateKind, ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
@@ -68,6 +68,7 @@ function App() {
   const openingProject = useRef(false);
   const refreshConfirmationPending = useRef(false);
   const applyingFileProposal = useRef(false);
+  const manualFileOperation = useRef(false);
   const workspaceRestore = useRef(0);
   const currentProjectSession = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
@@ -199,6 +200,93 @@ function App() {
     }
   };
 
+  const updateTreeAfterManualOperation = (updated: ProjectTree) => {
+    setProject({ ...updated, children: transformProjectTree(updated.children) });
+    setProjectStatus("opened");
+    setProjectError("");
+  };
+
+  const handleCreateEntry = async (parentPath: string, kind: ExplorerCreateKind) => {
+    if (manualFileOperation.current) return;
+    if (kind === "file" && isDirty && !window.confirm(t("editor.discard_confirm"))) return;
+    const name = window.prompt(t(kind === "file" ? "files.new_file_prompt" : "files.new_folder_prompt"));
+    if (!name) return;
+    manualFileOperation.current = true;
+    const requestSession = currentProjectSession.current;
+    const relativePath = parentPath ? `${parentPath}/${name}` : name;
+    setProjectError("");
+    try {
+      const updated = await invoke<ProjectTree>(kind === "file" ? "create_project_file" : "create_project_directory", kind === "file" ? { relativePath, content: "" } : { relativePath });
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      updateTreeAfterManualOperation(updated);
+      if (kind === "file") {
+        latestFileRead.current += 1;
+        latestFileSave.current += 1;
+        setOpenFile({ name, path: relativePath, content: "", savedContent: "" });
+        setSelection(null); setEditorStatus("ready"); setEditorError(""); setSaving(false);
+        void invoke("remember_project_file", { relativePath, requestId: latestFileRead.current }).catch(() => {});
+      }
+    } catch (error) {
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      setProjectError(operationError(t("files.operation_error"), error));
+      setProjectStatus("error");
+    } finally {
+      manualFileOperation.current = false;
+    }
+  };
+
+  const handleRenameEntry = async (node: ProjectNode) => {
+    if (manualFileOperation.current) return;
+    const name = window.prompt(t("files.rename_prompt"), node.name);
+    if (!name || name === node.name) return;
+    manualFileOperation.current = true;
+    const requestSession = currentProjectSession.current;
+    const parent = node.path.split(/[\\/]/).slice(0, -1).join("/");
+    const newPath = parent ? `${parent}/${name}` : name;
+    try {
+      const updated = await invoke<ProjectTree>("rename_project_entry", { relativePath: node.path, newRelativePath: newPath });
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      updateTreeAfterManualOperation(updated);
+      if (openFile && (openFile.path === node.path || openFile.path.startsWith(`${node.path}/`))) {
+        const renamedPath = `${newPath}${openFile.path.slice(node.path.length)}`;
+        setOpenFile({ ...openFile, name: renamedPath.split("/").pop() ?? renamedPath, path: renamedPath });
+        setSelection(null);
+        void invoke("remember_project_file", { relativePath: renamedPath, requestId: ++latestFileRead.current }).catch(() => {});
+      }
+    } catch (error) {
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      setProjectError(operationError(t("files.operation_error"), error));
+      setProjectStatus("error");
+    } finally {
+      manualFileOperation.current = false;
+    }
+  };
+
+  const handleDeleteEntry = async (node: ProjectNode) => {
+    if (manualFileOperation.current) return;
+    const affectsOpenFile = !!openFile && (openFile.path === node.path || openFile.path.startsWith(`${node.path}/`));
+    if (affectsOpenFile && isDirty && !window.confirm(t("editor.discard_confirm"))) return;
+    if (!window.confirm(t(node.kind === "directory" ? "files.delete_folder_confirm" : "files.delete_file_confirm").replace("{name}", node.name))) return;
+    manualFileOperation.current = true;
+    const requestSession = currentProjectSession.current;
+    try {
+      const updated = await invoke<ProjectTree>("delete_project_entry", { relativePath: node.path });
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      updateTreeAfterManualOperation(updated);
+      if (affectsOpenFile) {
+        latestFileRead.current += 1;
+        latestFileSave.current += 1;
+        setOpenFile(null); setSelection(null); setEditorStatus("idle"); setEditorError(""); setSaving(false);
+      }
+    } catch (error) {
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      setProjectError(operationError(t("files.operation_error"), error));
+      setProjectStatus("error");
+    } finally {
+      manualFileOperation.current = false;
+    }
+  };
+
   const handleSave = async () => {
     if (!openFile || !isDirty) return;
     const content = openFile.content;
@@ -233,7 +321,7 @@ function App() {
   };
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
-    <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} />
+    <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
     <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
