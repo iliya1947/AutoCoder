@@ -1,5 +1,5 @@
 import MonacoEditor, { OnMount } from "@monaco-editor/react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile } from "../types/project";
 import { editorLanguage } from "../utils/projectTree";
@@ -14,9 +14,20 @@ export function selectedText<T>(model: { getValueInRange: (selection: T) => stri
 export function Editor({ file, status, error, saving, onChange, onSelectionChange, onSave }: { file: OpenedFile | null; status: EditorStatus; error?: string; saving: boolean; onChange: (content: string) => void; onSelectionChange: (content: string | null) => void; onSave: () => void }) {
   const { t } = useTranslation();
   const isDirty = file !== null && file.content !== file.savedContent;
+  const changeCallback = useRef(onChange);
   const selectionCallback = useRef(onSelectionChange);
   const listenerDisposer = useRef<(() => void) | null>(null);
+  changeCallback.current = onChange;
   selectionCallback.current = onSelectionChange;
+
+  // @monaco-editor/react subscribes to model changes in an effect keyed by the
+  // onChange function. Keep that function stable so ordinary React renders do
+  // not repeatedly dispose and recreate the Monaco model listener. Otherwise a
+  // model edit during that subscription gap exists only inside Monaco and the
+  // parent never becomes dirty.
+  const handleChange = useCallback((value: string | undefined) => {
+    changeCallback.current(value ?? "");
+  }, []);
 
   useEffect(() => {
     // A Monaco model can change without remounting this component. Clear the
@@ -42,7 +53,7 @@ export function Editor({ file, status, error, saving, onChange, onSelectionChang
     {error && status !== "error" && <p className="editor-error" role="alert">{error}</p>}
     {status === "loading" && <div className="editor-placeholder" role="status"><p>{t("editor.loading")}</p></div>}
     {status === "error" && <div className="editor-placeholder error-state" role="alert"><h2>{t("editor.read_error_title")}</h2><p>{error || t("editor.read_error")}</p></div>}
-    {status !== "loading" && status !== "error" && file && <div className="monaco-container"><MonacoEditor path={file.path} language={editorLanguage(file.name)} value={file.content} theme="vs-dark" onMount={handleMount} onChange={(value) => onChange(value ?? "")} options={{ automaticLayout: true, minimap: { enabled: false }, wordWrap: "on" }} /></div>}
+    {status !== "loading" && status !== "error" && file && <div className="monaco-container"><MonacoEditor path={file.path} language={editorLanguage(file.name)} value={file.content} theme="vs-dark" onMount={handleMount} onChange={handleChange} options={{ automaticLayout: true, minimap: { enabled: false }, wordWrap: "on" }} /></div>}
     {status === "idle" && !file && <div className="editor-placeholder"><p className="eyebrow">{t("editor.placeholder_label")}</p><h2>{t("editor.no_file")}</h2><p>{t("editor.placeholder_description")}</p></div>}
   </section>;
 }
