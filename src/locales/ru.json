@@ -35,6 +35,7 @@
   "editor.loading": "Загрузка файла…",
   "editor.read_error_title": "Не удалось открыть файл",
   "chat.ollama": "Ollama",
+  "chat.clear_history": "Очистить историю",
   "chat.sending": "Ollama отвечает…",
   "chat.error": "Не удалось получить ответ AI:",
   "chat.context_changed": "Контекст проекта или редактора изменился во время запроса. Ответ отброшен; отправьте запрос ещё раз.",
@@ -74,5 +75,6 @@
   "terminal.cancelling": "Отмена…",
   "terminal.cancelled": "Отменено",
   "terminal.cancel_unavailable": "Команда уже завершилась, отмена недоступна.",
-  "terminal.review_result": "Перенести результат в чат"
+  "terminal.review_result": "Перенести результат в чат",
+  "terminal.clear_history": "Очистить историю"
 }

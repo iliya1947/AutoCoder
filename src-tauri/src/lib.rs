@@ -13,7 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod history;
 mod process_lifecycle;
+use history::{HistoryStore, ProjectHistory};
 use process_lifecycle::{ChildIo, OwnedChild, ProcessLifecycle};
 
 use serde::{Deserialize, Serialize};
@@ -238,7 +240,7 @@ struct FileReadResult {
     content: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalResult {
     exit_code: Option<i32>,
@@ -264,11 +266,47 @@ struct BackupEntry {
     current_content: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
     role: String,
     content: String,
+}
+
+#[tauri::command]
+fn load_project_history(
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<ProjectHistory, String> {
+    history.load(&project_root(&project_state)?)
+}
+
+#[tauri::command]
+fn save_chat_history(
+    messages: Vec<ChatMessage>,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<(), String> {
+    history.replace_chat(&project_root(&project_state)?, &messages)
+}
+
+#[tauri::command]
+fn save_terminal_history(
+    command: String,
+    result: TerminalResult,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<(), String> {
+    history.append_terminal(&project_root(&project_state)?, &command, &result)
+}
+
+#[tauri::command]
+fn clear_project_history(
+    kind: String,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<(), String> {
+    history.clear(&project_root(&project_state)?, &kind)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2586,9 +2624,15 @@ pub fn run() {
             restore_project_backup,
             execute_project_command,
             cancel_project_command,
-            send_chat_message
+            send_chat_message,
+            load_project_history,
+            save_chat_history,
+            save_terminal_history,
+            clear_project_history
         ])
         .setup(|app| {
+            let history_path = app.path().app_data_dir()?.join("history.sqlite3");
+            app.manage(HistoryStore::open(history_path).map_err(std::io::Error::other)?);
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

@@ -38,6 +38,16 @@ stale Backup Restore с точной backend-причиной, сохранно�
 
 ## Engineering diagnostics — Windows atomic replacement
 
+## Критическая проверка — SQLite persistence общего ядра
+
+- Собрать и запустить packaged приложение; открыть проект A, выполнить Chat turn и Terminal command,
+  полностью перезапустить AutoCoder и подтвердить восстановление обоих разделов.
+- Открыть проект B и подтвердить отсутствие истории A; вернуться в A и независимо очистить Chat и
+  Terminal, проверив сохранение второго раздела после каждой очистки.
+- Проверка критическая, а не отложенная до очередного барьера: база открывается в Tauri setup, и
+  Windows-specific ошибка bundled SQLite или app-data path способна полностью заблокировать запуск
+  и дальнейшую разработку на целевой ОС.
+
 ### Atomic Save — Windows replacement и recovery branches
 
 - **Изменение / PR:** ранее реализованный Windows atomic replacement path.
