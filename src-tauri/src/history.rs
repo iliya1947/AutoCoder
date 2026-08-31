@@ -174,6 +174,9 @@ impl HistoryStore {
                 let transaction = connection
                     .unchecked_transaction()
                     .map_err(|e| e.to_string())?;
+                if stopped_task_would_be_replaced(&transaction, &key, value)? {
+                    return Ok(());
+                }
                 transaction.execute("INSERT INTO orchestration_task_history(project, task_id, task, updated_at) VALUES(?1, ?2, ?3, unixepoch()) ON CONFLICT(project, task_id) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, task_id, json]).map_err(|e| e.to_string())?;
                 transaction.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
@@ -222,6 +225,11 @@ impl HistoryStore {
         let key = Self::key(root);
         if user.role != "user" || assistant.role != "assistant" {
             return Err("A chat exchange must contain a user and assistant message.".into());
+        }
+        if let Some(value) = task {
+            if stopped_task_would_be_replaced(&transaction, &key, value)? {
+                return Ok(());
+            }
         }
         let next_position: i64 = transaction
             .query_row(
@@ -302,6 +310,31 @@ impl HistoryStore {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+fn stopped_task_would_be_replaced(
+    connection: &Connection,
+    project: &str,
+    incoming: &serde_json::Value,
+) -> Result<bool, String> {
+    let incoming_id = task_id(incoming)?;
+    if incoming.get("status").and_then(serde_json::Value::as_str) == Some("stopped") {
+        return Ok(false);
+    }
+    let archived = connection
+        .query_row(
+            "SELECT task FROM orchestration_task_history WHERE project=?1 AND task_id=?2",
+            params![project, incoming_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(archived) = archived else {
+        return Ok(false);
+    };
+    let archived: serde_json::Value =
+        serde_json::from_str(&archived).map_err(|error| error.to_string())?;
+    Ok(archived.get("status").and_then(serde_json::Value::as_str) == Some("stopped"))
 }
 
 fn task_id(task: &serde_json::Value) -> Result<&str, String> {
@@ -466,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_the_task_state_machine_per_project() {
+    fn persists_tasks_and_rejects_late_writes_to_an_archived_stopped_task() {
         let directory = TempDir::new().unwrap();
         let db = directory.path().join("history.db");
         let first = directory.path().join("first");
@@ -499,6 +532,27 @@ mod tests {
         store
             .save_orchestration_task(&first, Some(&replacement))
             .unwrap();
+        let late = serde_json::json!({"id":"task-1","status":"awaiting_approval","goal":"fix it","nextSequence":3,"actions":[]});
+        store.save_orchestration_task(&first, Some(&late)).unwrap();
+        store
+            .append_chat_exchange_and_task(
+                &first,
+                &ChatMessage {
+                    role: "user".into(),
+                    content: "late result".into(),
+                },
+                &ChatMessage {
+                    role: "assistant".into(),
+                    content: "must be discarded".into(),
+                },
+                Some(&late),
+            )
+            .unwrap();
+        assert_eq!(
+            store.load(&first).unwrap().orchestration_task,
+            Some(replacement.clone())
+        );
+        assert_eq!(store.load(&first).unwrap().chat_messages.len(), 2);
         let archived: String = store
             .0
             .lock()
