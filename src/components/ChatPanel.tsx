@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
+import { completeTask, continueTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
+import type { OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 type ProjectHistory = { chatMessages: ChatMessage[]; terminalRuns: TerminalTranscript[] };
@@ -24,6 +26,7 @@ export type ChatRequest = {
     selection?: SelectionContext;
     project?: { name: string; entries: string[] };
   } | null;
+  orchestration?: OrchestrationSnapshot;
 };
 
 export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
@@ -152,6 +155,7 @@ export function buildChatRequest(
   openFile: OpenedFile | null,
   selection: string | null,
   project: ProjectTree | null,
+  orchestration?: OrchestrationSnapshot,
 ): ChatRequest {
   const context: NonNullable<ChatRequest["context"]> = {};
   if (openFile) context.openFile = { path: openFile.path, content: openFile.content, savedContent: openFile.savedContent };
@@ -164,6 +168,7 @@ export function buildChatRequest(
   return {
     messages,
     context: Object.keys(context).length > 0 ? context : null,
+    ...(orchestration ? { orchestration } : {}),
   };
 }
 
@@ -182,6 +187,8 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const latestRequest = useRef(0);
   const consumedToolResult = useRef<number | null>(null);
   const currentContext = useRef(chatContextKey(openFile, selection, project));
+  const currentTask = useRef<OrchestrationTask | null>(null);
+  const taskCounter = useRef(0);
   currentContext.current = chatContextKey(openFile, selection, project);
 
   useEffect(() => () => {
@@ -207,12 +214,20 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     setCommandProposal(null);
   }, [openFile?.path, openFile?.content, openFile?.savedContent, selection, project]);
 
-  const sendContent = async (rawContent: string, preserveHistory = false) => {
+  const updateTask = (next: OrchestrationTask | null) => {
+    currentTask.current = next;
+  };
+
+  const sendContent = async (rawContent: string, preserveHistory = false, continuedTask?: OrchestrationTask) => {
     const content = rawContent.trim();
     if (!content || requestInFlight.current) return;
     requestInFlight.current = true;
     const requestId = ++latestRequest.current;
     const contextKey = chatContextKey(openFile, selection, project);
+    const requestTask = continuedTask
+      ? continueTask(continuedTask)
+      : startTask(`task-${Date.now()}-${++taskCounter.current}`, content);
+    updateTask(requestTask);
     const requestMessages = preserveHistory
       ? [...messages, { role: "user" as const, content }]
       : messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
@@ -229,7 +244,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     setCommandProposal(null);
     try {
       const response = await invoke<ChatResponse>("send_chat_message", {
-        request: buildChatRequest(requestMessages, openFile, selection, project),
+        request: buildChatRequest(requestMessages, openFile, selection, project, taskSnapshot(requestTask)),
       });
       if (requestId !== latestRequest.current) return;
       if (!isChatResponseCurrent(contextKey, currentContext.current)) {
@@ -245,6 +260,13 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
       setMessages(completedMessages);
       setProposal(response.proposal ?? null);
       setCommandProposal(response.commandProposal ?? null);
+      const responseAction = response.proposal
+        ? { tool: "file" as ToolKind, payload: response.proposal }
+        : response.commandProposal
+          ? { tool: "terminal" as ToolKind, payload: response.commandProposal }
+          : null;
+      if (responseAction) updateTask(proposeAction(requestTask, responseAction.tool, responseAction.payload).task);
+      else updateTask(completeTask(requestTask));
     } catch (error) {
       if (requestId !== latestRequest.current) return;
       if (isChatResponseCurrent(contextKey, currentContext.current)) {
@@ -262,7 +284,15 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   useEffect(() => {
     if (!toolResult || sending || consumedToolResult.current === toolResult.id) return;
     consumedToolResult.current = toolResult.id;
-    void sendContent(toolResult.content, true);
+    const activeTask = currentTask.current;
+    const activeAction = activeTask?.actions.at(-1);
+    if (!activeTask || !activeAction || !["proposed", "running"].includes(activeAction.status)) return;
+    const outcome = toolResult.content.includes("Status: failed") ? "failed" : toolResult.content.includes("Status: cancelled") ? "cancelled" : "completed";
+    const withResult = recordResult(markActionRunning(activeTask, activeAction.id), {
+      id: `${activeAction.id}:result`, actionId: activeAction.id, tool: activeAction.tool, outcome, content: toolResult.content,
+    });
+    updateTask(withResult);
+    void sendContent(toolResult.content, true, withResult);
   }, [toolResult, sending]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -295,6 +325,8 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
               applyInFlight.current = true;
               setApplying(true);
               try {
+                const active = currentTask.current?.actions.at(-1);
+                if (active) updateTask(markActionRunning(currentTask.current!, active.id));
                 await onApplyProposal(proposal);
                 setProposal(null);
               } finally {
@@ -314,7 +346,9 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         <pre><code>{commandProposal.command}</code></pre>
         <p>{t("chat.command_review_warning")}</p>
         <div className="proposal-actions">
-          <button type="button" onClick={() => { onReviewCommand(commandProposal); setCommandProposal(null); }}>{t("chat.review_command")}</button>
+          <button type="button" onClick={() => {
+            onReviewCommand(commandProposal); setCommandProposal(null);
+          }}>{t("chat.review_command")}</button>
           <button type="button" className="secondary-button" onClick={() => setCommandProposal(null)}>{t("chat.dismiss_proposal")}</button>
         </div>
       </section>}

@@ -274,6 +274,34 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(messages[-4], Message("system", TOOL_RESULT_PROMPT))
         self.assertEqual(messages[-1], Message("user", tool_result))
 
+    def test_adds_explicit_multi_step_task_state_as_control_context(self):
+        messages = parse_request({
+            "messages": [{"role": "user", "content": "tests passed"}],
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {
+                "id": "task-1", "goal": "Fix and test", "status": "awaiting_ai",
+                "actions": [{
+                    "id": "task-1:action:1", "tool": "terminal", "status": "completed",
+                    "result": {"outcome": "completed"},
+                }],
+            },
+        })
+
+        self.assertIn("Task id: task-1", messages[0].content)
+        self.assertIn("task-1:action:1: terminal / completed / result completed", messages[0].content)
+        self.assertIn("Either propose exactly one next", messages[0].content)
+
+    def test_rejects_invalid_orchestration_action_state(self):
+        with self.assertRaisesRegex(ValueError, "Orchestration action"):
+            parse_request({
+                "messages": [{"role": "user", "content": "continue"}],
+                "context": {"project": {"name": "demo", "entries": []}},
+                "orchestration": {
+                    "id": "task-1", "goal": "Fix", "status": "awaiting_ai",
+                    "actions": [{"id": "action-1", "tool": "browser", "status": "completed"}],
+                },
+            })
+
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(
             {
