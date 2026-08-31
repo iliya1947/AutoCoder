@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completeTask, continueTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
+import { completeTask, continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
 
 describe("orchestration task state", () => {
   it("links every proposal and factual result across multiple approved steps", () => {
@@ -29,5 +29,17 @@ describe("orchestration task state", () => {
 
     expect(task.status).toBe("awaiting_ai");
     expect(task.actions[0]).toMatchObject({ status: "cancelled", contextKey: "context-1", result: { outcome: "declined" } });
+  });
+
+  it("persists an explicit blocked conclusion separately from an action failure", () => {
+    const proposed = proposeAction(startTask("task-3", "Build the project"), "terminal", { command: "npm test" });
+    const withFailure = recordResult(markActionRunning(proposed.task, proposed.action.id), {
+      id: "failed-1", actionId: proposed.action.id, tool: "terminal", outcome: "failed", content: "SDK missing",
+    });
+    const task = finishTask(continueTask(withFailure), { outcome: "blocked", reason: "The required SDK is unavailable." });
+
+    expect(task.status).toBe("blocked");
+    expect(task.actions[0].status).toBe("failed");
+    expect(taskSnapshot(task).conclusion).toEqual({ outcome: "blocked", reason: "The required SDK is unavailable." });
   });
 });

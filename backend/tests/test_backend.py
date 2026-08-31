@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
-from main import TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_terminal_proposal
+from main import TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_task_decision, parse_terminal_proposal
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
@@ -83,8 +83,24 @@ class BackendTests(unittest.TestCase):
                 "message": {"role": "assistant", "content": "Готово: файл сохранён"},
                 "proposal": None,
                 "commandProposal": None,
+                "taskDecision": {
+                    "outcome": "blocked",
+                    "reason": "The model returned no valid next action or explicit task conclusion.",
+                },
             },
         )
+
+    def test_parses_explicit_terminal_task_outcomes(self):
+        completed = Message("assistant", 'Done.\n```autocoder-task\n{"state":"completed","reason":"All tests pass."}\n```')
+        blocked = Message("assistant", 'Cannot continue.\n```autocoder-task\n{"state":"blocked","reason":"Required SDK is missing."}\n```')
+
+        self.assertEqual(parse_task_decision(completed, False), {"outcome": "completed", "reason": "All tests pass."})
+        self.assertEqual(parse_task_decision(blocked, False), {"outcome": "blocked", "reason": "Required SDK is missing."})
+
+    def test_action_takes_precedence_over_conflicting_or_missing_conclusion(self):
+        answer = Message("assistant", '```autocoder-task\n{"state":"completed","reason":"Incorrect conflict"}\n```')
+        self.assertEqual(parse_task_decision(answer, True)["outcome"], "next_action")
+        self.assertEqual(parse_task_decision(Message("assistant", "ambiguous"), False)["outcome"], "blocked")
 
     def test_extracts_terminal_proposal_only_for_an_open_project(self):
         answer = Message(
@@ -289,7 +305,8 @@ class BackendTests(unittest.TestCase):
 
         self.assertIn("Task id: task-1", messages[0].content)
         self.assertIn("task-1:action:1: terminal / completed / result completed", messages[0].content)
-        self.assertIn("Either propose exactly one next", messages[0].content)
+        self.assertIn("Choose exactly one outcome", messages[0].content)
+        self.assertIn('state "blocked"', messages[0].content)
 
     def test_rejects_invalid_orchestration_action_state(self):
         with self.assertRaisesRegex(ValueError, "Orchestration action"):

@@ -1,5 +1,6 @@
 export type ToolKind = "file" | "terminal";
-export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "running" | "awaiting_ai" | "completed" | "failed";
+export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "running" | "awaiting_ai" | "completed" | "blocked" | "failed";
+export type TaskConclusion = { outcome: "completed" | "blocked"; reason: string };
 
 export type OrchestrationResult = {
   id: string;
@@ -24,9 +25,10 @@ export type OrchestrationTask = {
   goal: string;
   nextSequence: number;
   actions: OrchestrationAction[];
+  conclusion?: TaskConclusion;
 };
 
-export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal"> & {
+export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion"> & {
   actions: Array<Pick<OrchestrationAction, "id" | "tool" | "status"> & { result?: Pick<OrchestrationResult, "outcome"> }>;
 };
 
@@ -57,7 +59,11 @@ export function recordResult(task: OrchestrationTask, result: OrchestrationResul
 }
 
 export function completeTask(task: OrchestrationTask): OrchestrationTask {
-  return { ...task, status: "completed" };
+  return finishTask(task, { outcome: "completed", reason: "The model reported that the goal was completed." });
+}
+
+export function finishTask(task: OrchestrationTask, conclusion: TaskConclusion): OrchestrationTask {
+  return { ...task, status: conclusion.outcome, conclusion };
 }
 
 export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
@@ -65,6 +71,7 @@ export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
     id: task.id,
     status: task.status,
     goal: task.goal,
+    ...(task.conclusion ? { conclusion: task.conclusion } : {}),
     actions: task.actions.map(({ id, tool, status, result }) => ({ id, tool, status, ...(result ? { result: { outcome: result.outcome } } : {}) })),
   };
 }

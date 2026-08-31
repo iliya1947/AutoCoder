@@ -339,6 +339,7 @@ fn clear_project_history(
 struct ChatRequest {
     messages: Vec<ChatMessage>,
     context: Option<ChatContext>,
+    orchestration: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -376,8 +377,15 @@ struct ChatResponse {
     message: ChatMessage,
     proposal: Option<FileProposal>,
     command_proposal: Option<TerminalProposal>,
+    task_decision: Option<TaskDecision>,
     #[serde(default)]
     project_key: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct TaskDecision {
+    outcome: String,
+    reason: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2546,7 +2554,7 @@ mod tests {
 
     #[test]
     fn chat_response_preserves_terminal_proposal_across_bridge_serialization() {
-        let backend_json = r#"{"message":{"role":"assistant","content":"Run this"},"proposal":null,"commandProposal":{"command":"pwd"}}"#;
+        let backend_json = r#"{"message":{"role":"assistant","content":"Run this"},"proposal":null,"commandProposal":{"command":"pwd"},"taskDecision":{"outcome":"next_action","reason":"Command proposed."}}"#;
 
         let response: ChatResponse = serde_json::from_str(backend_json).unwrap();
         assert_eq!(
@@ -2560,6 +2568,7 @@ mod tests {
         let tauri_json = serde_json::to_value(response).unwrap();
         assert_eq!(tauri_json["commandProposal"]["command"], "pwd");
         assert!(tauri_json.get("command_proposal").is_none());
+        assert_eq!(tauri_json["taskDecision"]["outcome"], "next_action");
     }
 
     #[test]
@@ -2593,6 +2602,18 @@ mod tests {
             none.context.unwrap().selection,
             Some(SelectionContext::None)
         ));
+    }
+
+    #[test]
+    fn chat_request_preserves_orchestration_control_data() {
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"continue"}],"context":null,"orchestration":{"id":"task-1","status":"awaiting_ai"}}"#,
+        )
+        .unwrap();
+
+        let backend_json = serde_json::to_value(request).unwrap();
+        assert_eq!(backend_json["orchestration"]["id"], "task-1");
+        assert_eq!(backend_json["orchestration"]["status"], "awaiting_ai");
     }
 
     #[test]
