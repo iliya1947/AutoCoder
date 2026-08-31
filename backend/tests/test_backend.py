@@ -358,6 +358,7 @@ class BackendTests(unittest.TestCase):
                 }],
             },
         })
+        self.assertIn("Autonomy mode: supervised", messages[0].content)
         self.assertIn("result declined", messages[0].content)
 
     def test_accepts_project_with_no_entries_and_open_file_together(self):
