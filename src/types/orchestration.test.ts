@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autonomyMode, canProposeAction, completeTask, continueTask, continuesAfterToolResult, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
+import { autonomyMode, canProposeAction, completeTask, continueTask, continuesAfterToolResult, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, stopTask, taskSnapshot } from "./orchestration";
 
 describe("orchestration task state", () => {
   it("persists the selected autonomy mode and safely normalizes older tasks", () => {
@@ -12,6 +12,19 @@ describe("orchestration task state", () => {
     expect(continuesAfterToolResult(stepByStep)).toBe(false);
     expect(autonomyMode({ ...supervised, autonomy: undefined })).toBe("supervised");
   });
+  it("stops an unfinished task without conflating it with completion or action refusal", () => {
+    const proposed = proposeAction(startTask("stop-me", "Wait for review"), "terminal", { command: "npm test" });
+    const stopped = stopTask(proposed.task);
+
+    expect(stopped).toMatchObject({
+      status: "stopped",
+      conclusion: { outcome: "stopped", reason: "The task was stopped by the user." },
+    });
+    expect(stopped.actions[0].status).toBe("proposed");
+    expect(stopped.actions[0].result).toBeUndefined();
+    expect(taskSnapshot(stopped).conclusion?.outcome).toBe("stopped");
+  });
+
   it("links every proposal and factual result across multiple approved steps", () => {
     let task = startTask("task-1", "Fix and test the project");
     const first = proposeAction(task, "file", { path: "main.ts" });

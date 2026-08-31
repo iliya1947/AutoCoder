@@ -125,5 +125,8 @@
   "task.autonomy_supervised_help": "AutoCoder continues after each result, but every File and Terminal action still requires your approval.",
   "task.autonomy_step_by_step_help": "AutoCoder pauses after every tool result until you explicitly resume the task.",
   "chat.task_paused": "Task paused between steps",
-  "chat.step_ready": "The tool result is recorded. Review it, then resume when you are ready."
+  "chat.step_ready": "The tool result is recorded. Review it, then resume when you are ready.",
+  "task.status_stopped": "Stopped by user",
+  "task.next_new": "Choose a mode and start a new task",
+  "task.stop": "Stop task"
 }

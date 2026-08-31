@@ -555,6 +555,9 @@ button.tree-node.selected {
 .task-progress.waiting { border-inline-start-color: #e0b65b; }
 .task-progress.completed { border-inline-start-color: #66d49a; }
 .task-progress.blocked { border-inline-start-color: #ef7d88; }
+.task-progress.stopped { border-inline-start-color: #a891c7; }
+
+.task-stop { margin-top: 10px; }
 
 .autonomy-picker {
   display: grid;

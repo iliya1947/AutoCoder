@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress } from "./ChatPanel";
-import { startTask, taskSnapshot } from "../types/orchestration";
+import { startTask, stopTask, taskSnapshot } from "../types/orchestration";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
+
+  it("renders a user-stopped task as its own terminal progress state", () => {
+    const progress = taskProgress(stopTask(startTask("stopped", "Stop safely")), false);
+
+    expect(progress).toMatchObject({ tone: "stopped", statusKey: "task.status_stopped", nextKey: "task.next_new" });
+  });
 
   it("includes the persisted autonomy policy in the Tauri chat request", () => {
     const request = buildChatRequest(messages, null, null, null, taskSnapshot(
