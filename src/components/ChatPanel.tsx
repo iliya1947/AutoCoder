@@ -426,6 +426,12 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     setError(null);
     try {
       await persistTask(stopTask(activeTask));
+      const cancellations: Promise<unknown>[] = [invoke("cancel_chat_message", { taskId: activeTask.id })];
+      const activeAction = activeTask.actions.at(-1);
+      if (activeAction?.tool === "terminal" && activeAction.status === "running") {
+        cancellations.push(invoke("cancel_project_command"));
+      }
+      await Promise.all(cancellations);
     } catch (reason) {
       setError(String(reason));
     }

@@ -43,6 +43,52 @@ struct TerminalState {
     active_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
+#[derive(Default)]
+struct ChatState {
+    active: Mutex<Option<(String, Arc<AtomicBool>)>>,
+}
+
+impl ChatState {
+    fn begin(&self, task_id: String) -> Result<Arc<AtomicBool>, String> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Unable to access chat request state.".to_string())?;
+        if active.is_some() {
+            return Err("Another model turn is already running.".to_string());
+        }
+        *active = Some((task_id, Arc::clone(&cancel)));
+        Ok(cancel)
+    }
+
+    fn finish(&self, cancel: &Arc<AtomicBool>) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .as_ref()
+                .is_some_and(|(_, current)| Arc::ptr_eq(current, cancel))
+            {
+                *active = None;
+            }
+        }
+    }
+
+    fn cancel(&self, task_id: &str) -> Result<bool, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Unable to access chat request state.".to_string())?;
+        let Some((active_task_id, cancel)) = active.as_ref() else {
+            return Ok(false);
+        };
+        if active_task_id != task_id {
+            return Ok(false);
+        }
+        cancel.store(true, Ordering::Release);
+        Ok(true)
+    }
+}
+
 impl TerminalState {
     fn begin_project_command(
         &self,
@@ -553,9 +599,10 @@ fn project_contains_file(nodes: &[FileTreeNode], path: &str) -> bool {
 }
 
 #[tauri::command]
-fn send_chat_message(
+async fn send_chat_message(
     app: tauri::AppHandle,
     ollama: State<'_, OllamaState>,
+    chat_state: State<'_, ChatState>,
     project_state: State<'_, ProjectState>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
@@ -568,6 +615,13 @@ fn send_chat_message(
         return Err("Chat messages cannot be empty.".to_string());
     }
 
+    let task_id = request
+        .orchestration
+        .as_ref()
+        .and_then(|task| task.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "An orchestration model turn must have a task id.".to_string())?
+        .to_owned();
     let resource_dir = app
         .path()
         .resource_dir()
@@ -576,9 +630,25 @@ fn send_chat_message(
         ollama.ensure_running()?;
     }
     let root = project_root(&project_state)?;
-    let mut response = run_chat_backend(&resource_dir, &request, &ollama.lifecycle)?;
+    let cancel = chat_state.begin(task_id)?;
+    let worker_cancel = Arc::clone(&cancel);
+    let lifecycle = Arc::clone(&ollama.lifecycle);
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        run_chat_backend(&resource_dir, &request, &lifecycle, &worker_cancel)
+    });
+    let completed = response
+        .await
+        .map_err(|error| format!("Unable to join chat task: {error}"))
+        .and_then(|response| response.map(|response| (root, response)));
+    chat_state.finish(&cancel);
+    let (root, mut response) = completed?;
     response.project_key = root.to_string_lossy().into_owned();
     Ok(response)
+}
+
+#[tauri::command]
+fn cancel_chat_message(task_id: String, chat_state: State<'_, ChatState>) -> Result<bool, String> {
+    chat_state.cancel(&task_id)
 }
 
 fn uses_managed_local_ollama() -> bool {
@@ -760,6 +830,7 @@ fn run_chat_backend(
     resource_dir: &Path,
     request: &ChatRequest,
     lifecycle: &ProcessLifecycle,
+    cancel: &AtomicBool,
 ) -> Result<ChatResponse, String> {
     let python_override = std::env::var_os("AUTOCODER_PYTHON")
         .filter(|value| !value.is_empty())
@@ -813,9 +884,12 @@ fn run_chat_backend(
         .map_err(|error| error.to_string())?;
     drop(child.stdin.take());
 
-    let output = child
-        .wait_with_output()
+    let (output, cancelled) = child
+        .wait_with_output_cancelled(cancel)
         .map_err(|error| error.to_string())?;
+    if cancelled {
+        return Err("The model turn was cancelled.".to_string());
+    }
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let error = if error.is_empty() {
@@ -2067,6 +2141,20 @@ mod tests {
     }
 
     #[test]
+    fn chat_cancellation_is_scoped_to_the_active_orchestration_task() {
+        let state = ChatState::default();
+        let cancel = state.begin("task-1".into()).unwrap();
+
+        assert!(!state.cancel("task-2").unwrap());
+        assert!(!cancel.load(Ordering::Acquire));
+        assert!(state.cancel("task-1").unwrap());
+        assert!(cancel.load(Ordering::Acquire));
+
+        state.finish(&cancel);
+        assert!(!state.cancel("task-1").unwrap());
+    }
+
+    #[test]
     fn workspace_persistence_failure_does_not_fail_a_committed_project_switch() {
         let project_state = ProjectState::default();
         let terminal_state = TerminalState::default();
@@ -3124,6 +3212,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(ProjectState::default())
         .manage(TerminalState::default())
+        .manage(ChatState::default())
         .manage(OllamaState::new(Arc::clone(&lifecycle)))
         .manage(Arc::clone(&lifecycle))
         .plugin(tauri_plugin_dialog::init())
@@ -3144,6 +3233,7 @@ pub fn run() {
             execute_project_command,
             cancel_project_command,
             send_chat_message,
+            cancel_chat_message,
             load_project_history,
             save_chat_exchange,
             save_orchestration_task,
