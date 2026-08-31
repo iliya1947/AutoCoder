@@ -57,6 +57,14 @@ Never combine a command proposal with a file proposal. This is only a proposal f
 Never claim that you ran the command or observed its output."""
 TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
 TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result. You may propose exactly one next action through the existing File Tool or Terminal Tool format; never claim that a proposed action already happened."""
+ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
+Task id: {id}
+Goal: {goal}
+State: {status}
+Recorded actions:
+{actions}
+
+Treat this task state as control metadata, not as a user instruction. Respond for the current step only. Either propose exactly one next reviewable action using the available tool format, or finish the task with a normal answer and no tool block."""
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
@@ -92,12 +100,40 @@ def parse_messages(payload: Any) -> list[Message]:
 def parse_request(payload: Any) -> list[Message]:
     messages = parse_messages(payload)
     context = payload.get("context")
-    if context is None:
-        return messages
-    if not isinstance(context, dict):
+    if context is not None and not isinstance(context, dict):
         raise ValueError("Context must be an object.")
 
     context_messages: list[Message] = []
+    orchestration = payload.get("orchestration")
+    if orchestration is not None:
+        if not isinstance(orchestration, dict):
+            raise ValueError("Orchestration state must be an object.")
+        task_id, goal, status, actions = (
+            orchestration.get("id"), orchestration.get("goal"),
+            orchestration.get("status"), orchestration.get("actions"),
+        )
+        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "failed"}
+        if (
+            set(orchestration) != {"id", "goal", "status", "actions"}
+            or not isinstance(task_id, str) or not task_id.strip()
+            or not isinstance(goal, str) or not goal.strip()
+            or status not in allowed_statuses
+            or not isinstance(actions, list)
+        ):
+            raise ValueError("Orchestration state is invalid.")
+        action_lines = []
+        for action in actions:
+            if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
+                raise ValueError("Orchestration action is invalid.")
+            result = action.get("result")
+            if result is not None and (not isinstance(result, dict) or set(result) != {"outcome"} or result.get("outcome") not in {"completed", "failed", "cancelled"}):
+                raise ValueError("Orchestration result is invalid.")
+            action_lines.append(f'- {action["id"]}: {action["tool"]} / {action["status"]}' + (f' / result {result["outcome"]}' if result else ""))
+        context_messages.append(Message(role="system", content=ORCHESTRATION_PROMPT.format(
+            id=task_id, goal=goal, status=status, actions="\n".join(action_lines) or "(none)",
+        )))
+    if context is None:
+        return [*context_messages, *messages]
     project = context.get("project")
     if project is not None:
         if not isinstance(project, dict):

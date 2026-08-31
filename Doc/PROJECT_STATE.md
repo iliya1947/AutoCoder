@@ -2,11 +2,36 @@
 
 ## Дата состояния
 
-31 августа 2026 (packaged Windows barrier 70% пройден; реализован первый orchestration feedback loop).
+31 августа 2026 (packaged Windows barrier 70% пройден; feedback loop развит до явной многошаговой модели задачи).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Явная многошаговая orchestration task/action/result model (31 августа 2026)
+- В frontend введена отдельная типизированная state machine оркестрации: задача имеет стабильный id,
+  исходную цель, статус и монотонную последовательность действий; каждое File/Terminal action имеет
+  собственный id и жизненный цикл `proposed → running → completed/failed/cancelled`, а фактический
+  result ссылается на точный action id. Модель покрыта unit-тестом с двумя последовательными шагами.
+- Новый пользовательский запрос начинает задачу. Ответ AI либо создаёт ровно одно ожидающее
+  подтверждения действие, либо переводит задачу в `completed`. После подтверждения существующий
+  безопасный File Tool или двухступенчатый Terminal Tool выполняет действие; фактический результат
+  записывается в state machine и запускает следующий turn той же задачи. Цикл не ограничен одним
+  повторением и завершается обычным ответом модели без tool block.
+- Backend теперь получает компактный проверяемый orchestration snapshot как отдельные control data,
+  а не извлекает состояние из текста чата. System context сообщает модели цель, фазу и журнал
+  связанных action/result, требует выбрать ровно один следующий шаг или завершить задачу. Повреждённые
+  task/action/result contracts отклоняются до обращения к provider.
+- Граница подтверждения не менялась: предложение команды только переносится в Terminal и требует
+  отдельного Run, file proposal по-прежнему применим только к актуальному snapshot. Existing backup,
+  expected-content/stale, project/session guards, SQLite chat/terminal persistence, offline provider
+  boundary и process lifecycle не изменены. В SQLite продолжают сохраняться фактические exchanges и
+  terminal runs; runtime task state намеренно project-session scoped и пока не восстанавливает pending
+  approval после перезапуска.
+- Автоматически проверены frontend state transitions, backend contract/prompt validation, полный
+  regression suite, TypeScript/Vite production build и offline-runtime scan. Следующий целостный шаг —
+  сохранять resumable orchestration snapshot вместе с pending action, восстанавливая его только после
+  повторной stale/context проверки, а затем добавить явное событие отказа пользователя от action.
 
 ### Первый рабочий orchestration loop (31 августа 2026)
 - Chat, File Tool и Terminal Tool теперь образуют повторяемый цикл: модель предлагает ровно одно
