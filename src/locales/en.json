@@ -62,6 +62,7 @@
   "backups.error": "Unable to read or restore the backup. The file may have changed on disk.",
   "backups.restore": "Restore",
   "backups.restoring": "Restoring…",
+  "backups.directory_preview": "Directory backup. The complete nested structure, including binary files, will be restored.",
   "terminal.title": "Terminal",
   "terminal.open_project": "Open a project to run commands.",
   "terminal.empty": "Command output will appear here.",

@@ -62,6 +62,7 @@
   "backups.error": "לא ניתן לקרוא או לשחזר את הגיבוי. ייתכן שהקובץ השתנה בדיסק.",
   "backups.restore": "שחזר",
   "backups.restoring": "משחזר…",
+  "backups.directory_preview": "גיבוי תיקייה. כל המבנה המקונן, כולל קבצים בינאריים, ישוחזר.",
   "terminal.title": "מסוף",
   "terminal.open_project": "יש לפתוח פרויקט כדי להריץ פקודות.",
   "terminal.empty": "פלט הפקודה יופיע כאן.",
