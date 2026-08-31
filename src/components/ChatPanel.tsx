@@ -7,7 +7,7 @@ import { completeTask, continueTask, markActionRunning, proposeAction, recordRes
 import type { OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
-type ProjectHistory = { chatMessages: ChatMessage[]; terminalRuns: TerminalTranscript[] };
+type ProjectHistory = { chatMessages: ChatMessage[]; terminalRuns: TerminalTranscript[]; orchestrationTask?: OrchestrationTask | null };
 export type FileProposal =
   | { operation: "replace"; path: string; content: string; originalContent: string }
   | { operation: "create"; path: string; content: string }
@@ -90,6 +90,17 @@ export function formatTerminalToolResult(transcript: TerminalTranscript): string
     formatTerminalResultDraft(transcript),
     "Continue the task from this result. If another action is needed, propose exactly one next File Tool or Terminal Tool action for review.",
   ].join("\n\n");
+}
+
+export function formatActionLifecycleResult(tool: ToolKind, outcome: "declined" | "interrupted"): string {
+  const detail = outcome === "declined"
+    ? "declined by the user; the proposed action was not executed"
+    : "interrupted by an application restart; AutoCoder cannot prove whether the action completed and will not run it again";
+  return [
+    `AutoCoder ${tool === "file" ? "File" : "Terminal"} Tool lifecycle event:`,
+    `Status: ${detail}.`,
+    "Continue without assuming that action occurred. Re-check the current project context before proposing another action.",
+  ].join("\n");
 }
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
@@ -181,6 +192,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
+  const [recoveredTask, setRecoveredTask] = useState<OrchestrationTask | null>(null);
   const lastRequestContext = useRef<string | null>(null);
   const requestInFlight = useRef(false);
   const applyInFlight = useRef(false);
@@ -201,7 +213,13 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     if (!project) return;
     let current = true;
     invoke<ProjectHistory>("load_project_history")
-      .then((history) => { if (current) { setMessages(history.chatMessages); lastRequestContext.current = currentContext.current; } })
+      .then((history) => { if (current) {
+        setMessages(history.chatMessages);
+        const task = history.orchestrationTask ?? null;
+        currentTask.current = task;
+        setRecoveredTask(task && task.status !== "completed" && task.status !== "failed" ? task : null);
+        lastRequestContext.current = currentContext.current;
+      } })
       .catch((reason) => { if (current) setError(String(reason)); });
     return () => { current = false; };
   }, [project?.name]);
@@ -212,10 +230,16 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     // validated against the currently open file.
     setProposal(null);
     setCommandProposal(null);
+    if (currentTask.current?.status === "awaiting_approval") setRecoveredTask(currentTask.current);
   }, [openFile?.path, openFile?.content, openFile?.savedContent, selection, project]);
 
   const updateTask = (next: OrchestrationTask | null) => {
     currentTask.current = next;
+  };
+
+  const persistTask = async (next: OrchestrationTask | null) => {
+    await invoke("save_orchestration_task", { task: next });
+    updateTask(next);
   };
 
   const sendContent = async (rawContent: string, preserveHistory = false, continuedTask?: OrchestrationTask) => {
@@ -227,7 +251,14 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     const requestTask = continuedTask
       ? continueTask(continuedTask)
       : startTask(`task-${Date.now()}-${++taskCounter.current}`, content);
-    updateTask(requestTask);
+    try {
+      await persistTask(requestTask);
+    } catch (reason) {
+      requestInFlight.current = false;
+      setError(String(reason));
+      return;
+    }
+    setRecoveredTask(null);
     const requestMessages = preserveHistory
       ? [...messages, { role: "user" as const, content }]
       : messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
@@ -252,21 +283,24 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         return;
       }
       const completedMessages = [...pendingMessages, response.message];
-      await invoke("save_chat_exchange", {
-        projectKey: response.projectKey,
-        userMessage: { role: "user", content },
-        assistantMessage: response.message,
-      });
-      setMessages(completedMessages);
-      setProposal(response.proposal ?? null);
-      setCommandProposal(response.commandProposal ?? null);
       const responseAction = response.proposal
         ? { tool: "file" as ToolKind, payload: response.proposal }
         : response.commandProposal
           ? { tool: "terminal" as ToolKind, payload: response.commandProposal }
           : null;
-      if (responseAction) updateTask(proposeAction(requestTask, responseAction.tool, responseAction.payload).task);
-      else updateTask(completeTask(requestTask));
+      const nextTask = responseAction
+        ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
+        : completeTask(requestTask);
+      await invoke("save_chat_exchange", {
+        projectKey: response.projectKey,
+        userMessage: { role: "user", content },
+        assistantMessage: response.message,
+        orchestrationTask: nextTask,
+      });
+      updateTask(nextTask);
+      setMessages(completedMessages);
+      setProposal(response.proposal ?? null);
+      setCommandProposal(response.commandProposal ?? null);
     } catch (error) {
       if (requestId !== latestRequest.current) return;
       if (isChatResponseCurrent(contextKey, currentContext.current)) {
@@ -291,9 +325,21 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     const withResult = recordResult(markActionRunning(activeTask, activeAction.id), {
       id: `${activeAction.id}:result`, actionId: activeAction.id, tool: activeAction.tool, outcome, content: toolResult.content,
     });
-    updateTask(withResult);
-    void sendContent(toolResult.content, true, withResult);
+    void persistTask(withResult).then(() => sendContent(toolResult.content, true, withResult)).catch((reason) => setError(String(reason)));
   }, [toolResult, sending]);
+
+  const finishWithoutExecution = async (outcome: "declined" | "interrupted") => {
+    const task = currentTask.current;
+    const action = task?.actions.at(-1);
+    if (!task || !action || !["proposed", "running"].includes(action.status)) return;
+    const content = formatActionLifecycleResult(action.tool, outcome);
+    const withResult = recordResult(task, { id: `${action.id}:result`, actionId: action.id, tool: action.tool, outcome, content });
+    setProposal(null);
+    setCommandProposal(null);
+    setRecoveredTask(null);
+    await persistTask(withResult);
+    await sendContent(content, true, withResult);
+  };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -301,8 +347,27 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   };
 
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>
-    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>{messages.length > 0 && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "chat" }); setMessages([]); } catch (reason) { setError(String(reason)); } }}>{t("chat.clear_history")}</button>}</div>
+    <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>{messages.length > 0 && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "chat" }); await persistTask(null); setMessages([]); setRecoveredTask(null); } catch (reason) { setError(String(reason)); } }}>{t("chat.clear_history")}</button>}</div>
     <div className="chat-messages" aria-live="polite">
+      {recoveredTask && (() => {
+        const action = recoveredTask.actions.at(-1);
+        const canReview = recoveredTask.status === "awaiting_approval" && action?.status === "proposed" && action.contextKey === currentContext.current;
+        const canResume = recoveredTask.status === "thinking" || recoveredTask.status === "awaiting_ai";
+        return <section className="orchestration-recovery">
+          <strong>{t("chat.task_recovered")}</strong>
+          <p>{canResume ? t("chat.resume_pending") : canReview ? t("chat.resume_review") : t("chat.resume_stale")}</p>
+          {canResume && <button type="button" onClick={() => {
+            const content = recoveredTask.status === "thinking" ? recoveredTask.goal : recoveredTask.actions.at(-1)?.result?.content;
+            if (content) void sendContent(content, recoveredTask.actions.length > 0, recoveredTask);
+          }}>{t("chat.resume_task")}</button>}
+          {canReview && <button type="button" onClick={() => {
+            if (action?.tool === "file") setProposal(action.payload as FileProposal);
+            if (action?.tool === "terminal") setCommandProposal(action.payload as TerminalProposal);
+            setRecoveredTask(null);
+          }}>{t("chat.review_recovered")}</button>}
+          {!canResume && !canReview && <button type="button" onClick={() => void finishWithoutExecution(action?.status === "running" ? "interrupted" : "declined")}>{t("chat.continue_safely")}</button>}
+        </section>;
+      })()}
       {messages.length === 0 && !sending ? <p className="empty-chat">{t("chat.empty")}</p> : messages.map((item, index) => <p className={`${item.role}-message`} key={`${item.role}-${index}`}>{item.content}</p>)}
       {sending && <p className="chat-status">{t("chat.sending")}</p>}
       {error && <p className="chat-error" role="alert">
@@ -326,7 +391,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
               setApplying(true);
               try {
                 const active = currentTask.current?.actions.at(-1);
-                if (active) updateTask(markActionRunning(currentTask.current!, active.id));
+                if (active) await persistTask(markActionRunning(currentTask.current!, active.id));
                 await onApplyProposal(proposal);
                 setProposal(null);
               } finally {
@@ -334,11 +399,11 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
                 setApplying(false);
               }
             }}>{t(proposal.operation === "create" ? "chat.create_proposal" : proposal.operation === "delete" ? "chat.delete_proposal" : "chat.apply_proposal")}</button>
-            <button type="button" disabled={applying} className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
+            <button type="button" disabled={applying} className="secondary-button" onClick={() => void finishWithoutExecution("declined")}>{t("chat.dismiss_proposal")}</button>
           </div>
           : <>
             <p className="proposal-stale">{t(proposal.operation === "delete" && openFile?.content !== openFile?.savedContent ? "chat.proposal_delete_dirty" : "chat.proposal_stale")}</p>
-            <button type="button" className="secondary-button" onClick={() => setProposal(null)}>{t("chat.dismiss_proposal")}</button>
+            <button type="button" className="secondary-button" onClick={() => void finishWithoutExecution("declined")}>{t("chat.dismiss_proposal")}</button>
           </>}
       </section>}
       {commandProposal && <section className="file-proposal terminal-proposal">
@@ -346,10 +411,12 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         <pre><code>{commandProposal.command}</code></pre>
         <p>{t("chat.command_review_warning")}</p>
         <div className="proposal-actions">
-          <button type="button" onClick={() => {
+          <button type="button" onClick={async () => {
+            const active = currentTask.current?.actions.at(-1);
+            if (active) await persistTask(markActionRunning(currentTask.current!, active.id));
             onReviewCommand(commandProposal); setCommandProposal(null);
           }}>{t("chat.review_command")}</button>
-          <button type="button" className="secondary-button" onClick={() => setCommandProposal(null)}>{t("chat.dismiss_proposal")}</button>
+          <button type="button" className="secondary-button" onClick={() => void finishWithoutExecution("declined")}>{t("chat.dismiss_proposal")}</button>
         </div>
       </section>}
     </div>

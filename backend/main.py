@@ -126,7 +126,7 @@ def parse_request(payload: Any) -> list[Message]:
             if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
                 raise ValueError("Orchestration action is invalid.")
             result = action.get("result")
-            if result is not None and (not isinstance(result, dict) or set(result) != {"outcome"} or result.get("outcome") not in {"completed", "failed", "cancelled"}):
+            if result is not None and (not isinstance(result, dict) or set(result) != {"outcome"} or result.get("outcome") not in {"completed", "failed", "cancelled", "declined", "interrupted"}):
                 raise ValueError("Orchestration result is invalid.")
             action_lines.append(f'- {action["id"]}: {action["tool"]} / {action["status"]}' + (f' / result {result["outcome"]}' if result else ""))
         context_messages.append(Message(role="system", content=ORCHESTRATION_PROMPT.format(

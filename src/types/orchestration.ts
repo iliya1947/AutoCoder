@@ -5,7 +5,7 @@ export type OrchestrationResult = {
   id: string;
   actionId: string;
   tool: ToolKind;
-  outcome: "completed" | "failed" | "cancelled";
+  outcome: "completed" | "failed" | "cancelled" | "declined" | "interrupted";
   content: string;
 };
 
@@ -14,6 +14,7 @@ export type OrchestrationAction<T = unknown> = {
   tool: ToolKind;
   payload: T;
   status: "proposed" | "running" | "completed" | "failed" | "cancelled";
+  contextKey: string;
   result?: OrchestrationResult;
 };
 
@@ -37,8 +38,8 @@ export function continueTask(task: OrchestrationTask): OrchestrationTask {
   return { ...task, status: "thinking" };
 }
 
-export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T): { task: OrchestrationTask; action: OrchestrationAction<T> } {
-  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, status: "proposed" };
+export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T, contextKey = ""): { task: OrchestrationTask; action: OrchestrationAction<T> } {
+  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, contextKey, status: "proposed" };
   return { action, task: { ...task, status: "awaiting_approval", nextSequence: task.nextSequence + 1, actions: [...task.actions, action] } };
 }
 
@@ -47,7 +48,7 @@ export function markActionRunning(task: OrchestrationTask, actionId: string): Or
 }
 
 export function recordResult(task: OrchestrationTask, result: OrchestrationResult): OrchestrationTask {
-  const status = result.outcome === "completed" ? "completed" : result.outcome;
+  const status = result.outcome === "completed" ? "completed" : result.outcome === "declined" || result.outcome === "interrupted" ? "cancelled" : result.outcome;
   return {
     ...task,
     status: "awaiting_ai",

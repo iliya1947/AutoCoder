@@ -302,6 +302,20 @@ class BackendTests(unittest.TestCase):
                 },
             })
 
+    def test_accepts_declined_action_lifecycle_result(self):
+        messages = parse_request({
+            "messages": [{"role": "user", "content": "The user declined it"}],
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {
+                "id": "task-1", "goal": "Fix", "status": "awaiting_ai",
+                "actions": [{
+                    "id": "action-1", "tool": "file", "status": "cancelled",
+                    "result": {"outcome": "declined"},
+                }],
+            },
+        })
+        self.assertIn("result declined", messages[0].content)
+
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(
             {

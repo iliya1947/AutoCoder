@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -30,6 +30,11 @@ describe("chat request", () => {
     expect(terminalFeedback).toContain("AutoCoder Terminal Tool result");
     expect(terminalFeedback).toContain("Status: exit code: 0");
     expect(terminalFeedback).toContain("propose exactly one next File Tool or Terminal Tool action");
+  });
+
+  it("formats explicit decline and uncertain restart results", () => {
+    expect(formatActionLifecycleResult("file", "declined")).toContain("was not executed");
+    expect(formatActionLifecycleResult("terminal", "interrupted")).toContain("will not run it again");
   });
 
   it("includes the current unsaved open-file content", () => {

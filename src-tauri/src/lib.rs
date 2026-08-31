@@ -301,6 +301,7 @@ fn save_chat_exchange(
     project_key: String,
     user_message: ChatMessage,
     assistant_message: ChatMessage,
+    orchestration_task: Option<serde_json::Value>,
     project_state: State<'_, ProjectState>,
     history: State<'_, HistoryStore>,
 ) -> Result<(), String> {
@@ -308,7 +309,21 @@ fn save_chat_exchange(
     if current_root.to_string_lossy() != project_key {
         return Err("The chat response belongs to a previous project session.".into());
     }
-    history.append_chat_exchange(&current_root, &user_message, &assistant_message)
+    history.append_chat_exchange_and_task(
+        &current_root,
+        &user_message,
+        &assistant_message,
+        orchestration_task.as_ref(),
+    )
+}
+
+#[tauri::command]
+fn save_orchestration_task(
+    task: Option<serde_json::Value>,
+    project_state: State<'_, ProjectState>,
+    history: State<'_, HistoryStore>,
+) -> Result<(), String> {
+    history.save_orchestration_task(&project_root(&project_state)?, task.as_ref())
 }
 
 #[tauri::command]
@@ -3105,6 +3120,7 @@ pub fn run() {
             send_chat_message,
             load_project_history,
             save_chat_exchange,
+            save_orchestration_task,
             clear_project_history
         ])
         .setup(|app| {
