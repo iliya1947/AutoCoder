@@ -56,6 +56,7 @@ Keep your explanation outside the block and emit exactly one block in this form:
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
 TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
+TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result. You may propose exactly one next action through the existing File Tool or Terminal Tool format; never claim that a proposed action already happened."""
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
@@ -162,6 +163,11 @@ def parse_request(payload: Any) -> list[Message]:
         context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
     if project is not None:
         context_messages.append(Message(role="system", content=TERMINAL_PROPOSAL_PROMPT))
+    if any(
+        message.content.startswith(("AutoCoder File Tool result", "AutoCoder Terminal Tool result"))
+        for message in messages
+    ):
+        context_messages.append(Message(role="system", content=TOOL_RESULT_PROMPT))
     return [*context_messages, *messages]
 
 

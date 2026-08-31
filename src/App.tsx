@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import "./App.css";
-import { ChatPanel } from "./components/ChatPanel";
-import type { TerminalProposal, TerminalResultDraft } from "./components/ChatPanel";
+import { ChatPanel, formatFileToolResult, formatTerminalToolResult } from "./components/ChatPanel";
+import type { TerminalProposal, ToolResult } from "./components/ChatPanel";
 import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ExplorerCreateKind, ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
@@ -62,7 +62,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
-  const [terminalResultDraft, setTerminalResultDraft] = useState<TerminalResultDraft | null>(null);
+  const [toolResult, setToolResult] = useState<ToolResult | null>(null);
   const latestFileRead = useRef(0);
   const latestFileSave = useRef(0);
   const openingProject = useRef(false);
@@ -71,6 +71,7 @@ function App() {
   const manualFileOperation = useRef(false);
   const workspaceRestore = useRef(0);
   const currentProjectSession = useRef(0);
+  const nextToolResultId = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
   currentEditorContext.current = editorContextKey(openFile);
   const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
@@ -123,7 +124,7 @@ function App() {
           currentProjectSession.current = nextProjectSession(currentProjectSession.current, selected.sessionChanged);
           setProjectSession(currentProjectSession.current);
           setProposedCommand(null);
-          setTerminalResultDraft(null);
+          setToolResult(null);
           setOpenFile(null);
           setSelection(null);
           setEditorStatus("idle");
@@ -332,8 +333,8 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
     <section className="center-workspace"><Editor key={`${projectSession}:${openFile?.path ?? ""}`} file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
-    <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
+    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={(transcript) => setToolResult({ id: ++nextToolResultId.current, content: formatTerminalToolResult(transcript) })} /></section>
+    <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} toolResult={toolResult} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (applyingFileProposal.current) return;
       applyingFileProposal.current = true;
       const requestSession = currentProjectSession.current;
@@ -351,9 +352,11 @@ function App() {
           setEditorError("");
           const requestId = ++latestFileRead.current;
           void invoke("remember_project_file", { relativePath: proposal.path, requestId }).catch(() => {});
+          setToolResult({ id: ++nextToolResultId.current, content: formatFileToolResult(proposal, "completed") });
         } catch (error) {
           if (!isCurrentProjectSession(requestSession, currentProjectSession.current) || requestEditorContext !== currentEditorContext.current) return;
           setEditorError(operationError(t("editor.create_error"), error));
+          setToolResult({ id: ++nextToolResultId.current, content: formatFileToolResult(proposal, "failed", String(error)) });
         }
       } else if (proposal.operation === "delete") {
         try {
@@ -368,15 +371,18 @@ function App() {
           setSelection(null);
           setEditorStatus("idle");
           setEditorError("");
+          setToolResult({ id: ++nextToolResultId.current, content: formatFileToolResult(proposal, "completed") });
         } catch (error) {
           if (!isCurrentProjectSession(requestSession, currentProjectSession.current) || requestEditorContext !== currentEditorContext.current) return;
           setEditorError(operationError(t("editor.delete_error"), error));
+          setToolResult({ id: ++nextToolResultId.current, content: formatFileToolResult(proposal, "failed", String(error)) });
         }
       } else {
         setOpenFile((current) => current?.path === proposal.path && current.content === proposal.originalContent
           ? { ...current, content: proposal.content }
           : current);
         setSelection(null);
+        setToolResult({ id: ++nextToolResultId.current, content: formatFileToolResult(proposal, "completed") });
       }
       } finally {
         applyingFileProposal.current = false;
