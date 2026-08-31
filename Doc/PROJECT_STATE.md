@@ -20,9 +20,15 @@
   допускает добавление новых mode-policy без изменения action/result/conclusion переходов.
 - Автоматический запуск инструментов не добавлялся: review/approval, stale-context guards, backup,
   execution limits, restart recovery и process lifecycle остались неизменными.
+- Строгий Python backend contract теперь принимает и отдельно валидирует только политики
+  `autonomy` вида `{ "mode": "supervised" | "step_by_step" }`, а выбранный режим входит в системный
+  orchestration context модели. Regression-проверки покрывают весь контрактный путь: формирование
+  frontend request, прозрачную сериализацию Tauri и Python validation; неизвестные режимы и лишние
+  поля отклоняются.
 - Добавлены локализованные подписи и пояснения на русском, английском и иврите, а также regression-
-  тест нормализации, persistence snapshot и решения о продолжении. `npm test` (52 теста),
-  `npm run build` и offline runtime check успешно выполнены 31 августа 2026.
+  тесты нормализации, persistence snapshot, решения о продолжении и backend contract. `npm test`
+  (53 теста), Python backend suite, `npm run build` и offline runtime check успешно выполнены
+  31 августа 2026.
 - Следующий шаг: на основании этой persisted policy boundary позже можно добавить более самостоятельный
   режим отдельным явным этапом, предварительно определив его разрешения и не смешивая их с task status.
 
