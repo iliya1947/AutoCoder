@@ -29,6 +29,37 @@ export type ChatRequest = {
   orchestration?: OrchestrationSnapshot;
 };
 
+export type TaskProgress = {
+  tone: "active" | "waiting" | "completed" | "blocked";
+  statusKey: string;
+  waitingKey: string;
+  nextKey: string;
+  completedSteps: number;
+  totalSteps: number;
+  tool?: ToolKind;
+};
+
+export function taskProgress(task: OrchestrationTask, requestActive: boolean, recovered = false): TaskProgress {
+  const completedSteps = task.actions.filter((action) => action.status === "completed").length;
+  const totalSteps = task.actions.length;
+  const tool = task.actions.at(-1)?.tool;
+  if (task.status === "completed") return { tone: "completed", statusKey: "task.status_completed", waitingKey: "task.waiting_none", nextKey: "task.next_done", completedSteps, totalSteps };
+  if (task.status === "blocked" || task.status === "failed") return { tone: "blocked", statusKey: "task.status_blocked", waitingKey: "task.waiting_none", nextKey: "task.next_blocked", completedSteps, totalSteps };
+  if (task.status === "awaiting_approval") return { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_approval", nextKey: "task.next_approval", completedSteps, totalSteps, tool };
+  if (task.status === "running") return recovered
+    ? { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_safety", nextKey: "task.next_safety", completedSteps, totalSteps, tool }
+    : { tone: "active", statusKey: "task.status_running", waitingKey: "task.waiting_tool", nextKey: "task.next_result", completedSteps, totalSteps, tool };
+  if (task.status === "awaiting_ai") return { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_resume", nextKey: "task.next_model", completedSteps, totalSteps };
+  return {
+    tone: requestActive ? "active" : "waiting",
+    statusKey: requestActive ? "task.status_running" : "task.status_waiting",
+    waitingKey: requestActive ? "task.waiting_model" : "task.waiting_resume",
+    nextKey: requestActive ? "task.next_model" : "task.next_resume",
+    completedSteps,
+    totalSteps,
+  };
+}
+
 export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
   return JSON.stringify([
     project ? [project.name, projectEntries(project.children)] : null,
@@ -193,6 +224,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const [proposal, setProposal] = useState<FileProposal | null>(null);
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const [recoveredTask, setRecoveredTask] = useState<OrchestrationTask | null>(null);
+  const [task, setTask] = useState<OrchestrationTask | null>(null);
   const lastRequestContext = useRef<string | null>(null);
   const requestInFlight = useRef(false);
   const applyInFlight = useRef(false);
@@ -210,13 +242,20 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   }, []);
 
   useEffect(() => {
-    if (!project) return;
+    currentTask.current = null;
+    setTask(null);
+    setRecoveredTask(null);
+    if (!project) {
+      setMessages([]);
+      return;
+    }
     let current = true;
     invoke<ProjectHistory>("load_project_history")
       .then((history) => { if (current) {
         setMessages(history.chatMessages);
         const task = history.orchestrationTask ?? null;
         currentTask.current = task;
+        setTask(task);
         setRecoveredTask(task && !["completed", "blocked", "failed"].includes(task.status) ? task : null);
         lastRequestContext.current = currentContext.current;
       } })
@@ -235,6 +274,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
 
   const updateTask = (next: OrchestrationTask | null) => {
     currentTask.current = next;
+    setTask(next);
   };
 
   const persistTask = async (next: OrchestrationTask | null) => {
@@ -359,6 +399,20 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
 
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>
     <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>{messages.length > 0 && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "chat" }); await persistTask(null); setMessages([]); setRecoveredTask(null); } catch (reason) { setError(String(reason)); } }}>{t("chat.clear_history")}</button>}</div>
+    {task && (() => {
+      const progress = taskProgress(task, sending, recoveredTask?.id === task.id);
+      const toolName = progress.tool ? t(progress.tool === "file" ? "task.tool_file" : "task.tool_terminal") : "";
+      return <section className={`task-progress ${progress.tone}`} aria-label={t("task.title")} aria-live="polite">
+        <div className="task-progress-heading"><strong>{t("task.title")}</strong><span className="task-status">{t(progress.statusKey)}</span></div>
+        <p className="task-goal" title={task.goal}>{task.goal}</p>
+        <div className="task-progress-details">
+          <span>{t("task.steps")}: <strong>{progress.completedSteps}/{progress.totalSteps}</strong></span>
+          <span>{t("task.waiting")}: <strong>{t(progress.waitingKey)}{toolName ? ` · ${toolName}` : ""}</strong></span>
+          <span>{t("task.next")}: <strong>{t(progress.nextKey)}</strong></span>
+        </div>
+        {task.conclusion && <p className="task-conclusion">{task.conclusion.reason}</p>}
+      </section>;
+    })()}
     <div className="chat-messages" aria-live="polite">
       {recoveredTask && (() => {
         const action = recoveredTask.actions.at(-1);

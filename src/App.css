@@ -543,6 +543,56 @@ button.tree-node.selected {
   background: #332b1d;
 }
 
+.task-progress {
+  margin: 10px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid #3b4b66;
+  border-inline-start: 3px solid #79a8ff;
+  border-radius: 7px;
+  background: #1b2435;
+}
+
+.task-progress.waiting { border-inline-start-color: #e0b65b; }
+.task-progress.completed { border-inline-start-color: #66d49a; }
+.task-progress.blocked { border-inline-start-color: #ef7d88; }
+
+.task-progress-heading,
+.task-progress-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #dce8ff;
+  background: #2b3b58;
+  font-size: 0.72rem;
+}
+
+.task-goal,
+.task-conclusion {
+  margin: 7px 0;
+  overflow: hidden;
+  color: #c8d3e8;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-progress-details {
+  align-items: flex-start;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: #8f9db5;
+  font-size: 0.72rem;
+}
+
+.task-progress-details strong { color: #dce5f5; font-weight: 600; }
+.task-conclusion { color: #dce5f5; white-space: normal; }
+
 .secondary-button {
   border-color: #506078;
   background: #26344a;

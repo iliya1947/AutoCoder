@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -30,6 +30,31 @@ describe("chat request", () => {
     expect(terminalFeedback).toContain("AutoCoder Terminal Tool result");
     expect(terminalFeedback).toContain("Status: exit code: 0");
     expect(terminalFeedback).toContain("propose exactly one next File Tool or Terminal Tool action");
+  });
+
+  it("summarizes persisted task transitions without treating declined actions as completed", () => {
+    const task = {
+      id: "task-1", goal: "Fix and verify", status: "awaiting_approval" as const, nextSequence: 2,
+      execution: { modelTurns: 1, maxModelTurns: 12, maxActions: 8 },
+      actions: [{ id: "action-1", tool: "terminal" as const, payload: { command: "npm test" }, status: "proposed" as const, contextKey: "context" }],
+    };
+    expect(taskProgress(task, false)).toMatchObject({
+      tone: "waiting", completedSteps: 0, totalSteps: 1,
+      waitingKey: "task.waiting_approval", nextKey: "task.next_approval", tool: "terminal",
+    });
+    expect(taskProgress({ ...task, status: "running", actions: [{ ...task.actions[0], status: "running" }] }, false, true))
+      .toMatchObject({ tone: "waiting", waitingKey: "task.waiting_safety", nextKey: "task.next_safety" });
+  });
+
+  it("shows explicit persisted conclusions", () => {
+    const completed = {
+      id: "task-2", goal: "Build", status: "completed" as const, nextSequence: 1, actions: [],
+      execution: { modelTurns: 1, maxModelTurns: 12, maxActions: 8 },
+      conclusion: { outcome: "completed" as const, reason: "Build passed." },
+    };
+    expect(taskProgress(completed, false)).toMatchObject({ tone: "completed", statusKey: "task.status_completed", nextKey: "task.next_done" });
+    expect(taskProgress({ ...completed, status: "blocked", conclusion: { outcome: "blocked", reason: "SDK missing." } }, false))
+      .toMatchObject({ tone: "blocked", statusKey: "task.status_blocked", nextKey: "task.next_blocked" });
   });
 
   it("formats explicit decline and uncertain restart results", () => {
