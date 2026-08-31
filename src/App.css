@@ -535,6 +535,14 @@ button.tree-node.selected {
   white-space: pre-wrap;
 }
 
+.orchestration-recovery {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid #b38b38;
+  border-radius: 6px;
+  background: #332b1d;
+}
+
 .secondary-button {
   border-color: #506078;
   background: #26344a;

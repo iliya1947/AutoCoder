@@ -4,7 +4,7 @@ use std::{
     sync::Mutex,
 };
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::{ChatMessage, TerminalResult};
@@ -32,6 +32,7 @@ pub struct StoredTerminalRun {
 pub struct ProjectHistory {
     chat_messages: Vec<ChatMessage>,
     terminal_runs: Vec<StoredTerminalRun>,
+    orchestration_task: Option<serde_json::Value>,
 }
 
 impl HistoryStore {
@@ -44,7 +45,8 @@ impl HistoryStore {
             CREATE TABLE IF NOT EXISTS chat_messages(project TEXT NOT NULL, position INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(project, position));
             CREATE TABLE IF NOT EXISTS terminal_runs(id INTEGER PRIMARY KEY, project TEXT NOT NULL, command TEXT NOT NULL, exit_code INTEGER, stdout TEXT NOT NULL, stderr TEXT NOT NULL, cancelled INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT(unixepoch()));
             CREATE INDEX IF NOT EXISTS terminal_project_id ON terminal_runs(project, id);
-            CREATE TABLE IF NOT EXISTS workspace_state(id INTEGER PRIMARY KEY CHECK(id=1), project_root TEXT NOT NULL, open_file TEXT);")
+            CREATE TABLE IF NOT EXISTS workspace_state(id INTEGER PRIMARY KEY CHECK(id=1), project_root TEXT NOT NULL, open_file TEXT);
+            CREATE TABLE IF NOT EXISTS orchestration_tasks(project TEXT PRIMARY KEY, task TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT(unixepoch()));")
             .map_err(|e| e.to_string())?;
         Ok(Self(Mutex::new(connection)))
     }
@@ -137,10 +139,45 @@ impl HistoryStore {
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
         terminal_runs.reverse();
+        let orchestration_task = connection
+            .query_row(
+                "SELECT task FROM orchestration_tasks WHERE project=?1",
+                [&key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .map(|task| serde_json::from_str(&task).map_err(|e| e.to_string()))
+            .transpose()?;
         Ok(ProjectHistory {
             chat_messages,
             terminal_runs,
+            orchestration_task,
         })
+    }
+
+    pub fn save_orchestration_task(
+        &self,
+        root: &Path,
+        task: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let connection = self
+            .0
+            .lock()
+            .map_err(|_| "Unable to access history database.".to_string())?;
+        let key = Self::key(root);
+        match task {
+            Some(value) => {
+                let json = serde_json::to_string(value).map_err(|e| e.to_string())?;
+                connection.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
+            }
+            None => {
+                connection
+                    .execute("DELETE FROM orchestration_tasks WHERE project=?1", [key])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn append_chat_exchange(
@@ -148,6 +185,27 @@ impl HistoryStore {
         root: &Path,
         user: &ChatMessage,
         assistant: &ChatMessage,
+    ) -> Result<(), String> {
+        self.append_chat_exchange_transaction(root, user, assistant, None, false)
+    }
+
+    pub fn append_chat_exchange_and_task(
+        &self,
+        root: &Path,
+        user: &ChatMessage,
+        assistant: &ChatMessage,
+        task: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        self.append_chat_exchange_transaction(root, user, assistant, task, true)
+    }
+
+    fn append_chat_exchange_transaction(
+        &self,
+        root: &Path,
+        user: &ChatMessage,
+        assistant: &ChatMessage,
+        task: Option<&serde_json::Value>,
+        update_task: bool,
     ) -> Result<(), String> {
         let mut connection = self
             .0
@@ -169,6 +227,18 @@ impl HistoryStore {
             transaction.execute("INSERT INTO chat_messages(project, position, role, content) VALUES(?1, ?2, ?3, ?4)", params![key, next_position + offset as i64, message.role, message.content]).map_err(|e| e.to_string())?;
         }
         transaction.execute("DELETE FROM chat_messages WHERE project=?1 AND position NOT IN (SELECT position FROM chat_messages WHERE project=?1 ORDER BY position DESC LIMIT ?2)", params![key, CHAT_LIMIT]).map_err(|e| e.to_string())?;
+        match (update_task, task) {
+            (true, Some(value)) => {
+                let json = serde_json::to_string(value).map_err(|e| e.to_string())?;
+                transaction.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
+            }
+            (true, None) => {
+                transaction
+                    .execute("DELETE FROM orchestration_tasks WHERE project=?1", [&key])
+                    .map_err(|e| e.to_string())?;
+            }
+            (false, _) => {}
+        }
         transaction.commit().map_err(|e| e.to_string())
     }
 
@@ -193,6 +263,7 @@ impl HistoryStore {
         let table = match kind {
             "chat" => "chat_messages",
             "terminal" => "terminal_runs",
+            "orchestration" => "orchestration_tasks",
             _ => return Err("Unknown history kind.".into()),
         };
         self.0
@@ -359,5 +430,39 @@ mod tests {
         assert_eq!(latest.result.stdout, "stdout 100");
         assert_eq!(latest.result.stderr, "stderr 100");
         assert!(latest.result.cancelled);
+    }
+
+    #[test]
+    fn persists_the_task_state_machine_per_project() {
+        let directory = TempDir::new().unwrap();
+        let db = directory.path().join("history.db");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        let store = HistoryStore::open(db.clone()).unwrap();
+        let task = serde_json::json!({"id":"task-1","status":"awaiting_approval","goal":"fix it","nextSequence":2,"actions":[]});
+
+        store
+            .append_chat_exchange_and_task(
+                &first,
+                &ChatMessage {
+                    role: "user".into(),
+                    content: "fix".into(),
+                },
+                &ChatMessage {
+                    role: "assistant".into(),
+                    content: "review this".into(),
+                },
+                Some(&task),
+            )
+            .unwrap();
+        assert_eq!(store.load(&first).unwrap().orchestration_task, Some(task));
+        assert_eq!(store.load(&first).unwrap().chat_messages.len(), 2);
+        assert_eq!(store.load(&second).unwrap().orchestration_task, None);
+        drop(store);
+
+        let reopened = HistoryStore::open(db).unwrap();
+        assert!(reopened.load(&first).unwrap().orchestration_task.is_some());
+        reopened.save_orchestration_task(&first, None).unwrap();
+        assert!(reopened.load(&first).unwrap().orchestration_task.is_none());
     }
 }

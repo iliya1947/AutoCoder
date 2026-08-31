@@ -2,7 +2,7 @@
 
 ## Дата состояния
 
-31 августа 2026 (packaged Windows barrier 70% пройден; feedback loop развит до явной многошаговой модели задачи).
+31 августа 2026 (packaged Windows barrier 70% пройден; многошаговые orchestration tasks восстанавливаются после перезапуска).
 
 ## Текущий этап
 
@@ -22,16 +22,25 @@
   а не извлекает состояние из текста чата. System context сообщает модели цель, фазу и журнал
   связанных action/result, требует выбрать ровно один следующий шаг или завершить задачу. Повреждённые
   task/action/result contracts отклоняются до обращения к provider.
+- Та же task/action/result state machine теперь является единственным сохраняемым источником
+  orchestration state: полная активная задача project-scoped хранится в существующей SQLite history
+  database, а переходы `thinking`, `awaiting_approval`, `running`, result и завершение записываются
+  до следующего внешнего шага. После перезапуска незавершённая задача показывается отдельно и ждёт
+  явного Resume или повторного Review; сохранённое действие никогда не выполняется автоматически.
+- Каждый proposed action сохраняет context key editor/project snapshot. Повторный Review доступен
+  только при точном совпадении текущего контекста. Изменившееся или прерванное `running` действие не
+  запускается повторно: state machine получает связанный `declined` либо `interrupted` result, после
+  чего модель продолжает ту же задачу с актуальным контекстом и без предположения об исполнении.
+- Обычный отказ пользователя от File/Terminal proposal также стал явным result lifecycle event:
+  action покидает `proposed`, задача переходит в `awaiting_ai`, и отказ отправляется следующим turn.
 - Граница подтверждения не менялась: предложение команды только переносится в Terminal и требует
   отдельного Run, file proposal по-прежнему применим только к актуальному snapshot. Existing backup,
   expected-content/stale, project/session guards, SQLite chat/terminal persistence, offline provider
-  boundary и process lifecycle не изменены. В SQLite продолжают сохраняться фактические exchanges и
-  terminal runs; runtime task state намеренно project-session scoped и пока не восстанавливает pending
-  approval после перезапуска.
+  boundary и process lifecycle не изменены. SQLite по-прежнему изолирует chat, terminal runs и
+  активную orchestration task по каноническому корню проекта.
 - Автоматически проверены frontend state transitions, backend contract/prompt validation, полный
   regression suite, TypeScript/Vite production build и offline-runtime scan. Следующий целостный шаг —
-  сохранять resumable orchestration snapshot вместе с pending action, восстанавливая его только после
-  повторной stale/context проверки, а затем добавить явное событие отказа пользователя от action.
+  расширять автономность поверх этой сохраняемой state machine, не ослабляя confirmation и stale guards.
 
 ### Первый рабочий orchestration loop (31 августа 2026)
 - Chat, File Tool и Terminal Tool теперь образуют повторяемый цикл: модель предлагает ровно одно

@@ -20,4 +20,14 @@ describe("orchestration task state", () => {
     ]);
     expect(taskSnapshot(task).actions).toHaveLength(2);
   });
+
+  it("records a declined proposal as a result instead of leaving approval pending", () => {
+    const proposed = proposeAction(startTask("task-2", "Try a safe command"), "terminal", { command: "npm test" }, "context-1");
+    const task = recordResult(proposed.task, {
+      id: "declined-1", actionId: proposed.action.id, tool: "terminal", outcome: "declined", content: "not executed",
+    });
+
+    expect(task.status).toBe("awaiting_ai");
+    expect(task.actions[0]).toMatchObject({ status: "cancelled", contextKey: "context-1", result: { outcome: "declined" } });
+  });
 });
