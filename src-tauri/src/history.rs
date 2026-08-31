@@ -46,7 +46,8 @@ impl HistoryStore {
             CREATE TABLE IF NOT EXISTS terminal_runs(id INTEGER PRIMARY KEY, project TEXT NOT NULL, command TEXT NOT NULL, exit_code INTEGER, stdout TEXT NOT NULL, stderr TEXT NOT NULL, cancelled INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT(unixepoch()));
             CREATE INDEX IF NOT EXISTS terminal_project_id ON terminal_runs(project, id);
             CREATE TABLE IF NOT EXISTS workspace_state(id INTEGER PRIMARY KEY CHECK(id=1), project_root TEXT NOT NULL, open_file TEXT);
-            CREATE TABLE IF NOT EXISTS orchestration_tasks(project TEXT PRIMARY KEY, task TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT(unixepoch()));")
+            CREATE TABLE IF NOT EXISTS orchestration_tasks(project TEXT PRIMARY KEY, task TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT(unixepoch()));
+            CREATE TABLE IF NOT EXISTS orchestration_task_history(project TEXT NOT NULL, task_id TEXT NOT NULL, task TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT(unixepoch()), PRIMARY KEY(project, task_id));")
             .map_err(|e| e.to_string())?;
         Ok(Self(Mutex::new(connection)))
     }
@@ -169,7 +170,13 @@ impl HistoryStore {
         match task {
             Some(value) => {
                 let json = serde_json::to_string(value).map_err(|e| e.to_string())?;
-                connection.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
+                let task_id = task_id(value)?;
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(|e| e.to_string())?;
+                transaction.execute("INSERT INTO orchestration_task_history(project, task_id, task, updated_at) VALUES(?1, ?2, ?3, unixepoch()) ON CONFLICT(project, task_id) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, task_id, json]).map_err(|e| e.to_string())?;
+                transaction.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
+                transaction.commit().map_err(|e| e.to_string())?;
             }
             None => {
                 connection
@@ -230,6 +237,8 @@ impl HistoryStore {
         match (update_task, task) {
             (true, Some(value)) => {
                 let json = serde_json::to_string(value).map_err(|e| e.to_string())?;
+                let task_id = task_id(value)?;
+                transaction.execute("INSERT INTO orchestration_task_history(project, task_id, task, updated_at) VALUES(?1, ?2, ?3, unixepoch()) ON CONFLICT(project, task_id) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, task_id, json]).map_err(|e| e.to_string())?;
                 transaction.execute("INSERT INTO orchestration_tasks(project, task, updated_at) VALUES(?1, ?2, unixepoch()) ON CONFLICT(project) DO UPDATE SET task=excluded.task, updated_at=excluded.updated_at", params![key, json]).map_err(|e| e.to_string())?;
             }
             (true, None) => {
@@ -260,10 +269,27 @@ impl HistoryStore {
     }
 
     pub fn clear(&self, root: &Path, kind: &str) -> Result<(), String> {
+        if kind == "orchestration" {
+            let mut connection = self
+                .0
+                .lock()
+                .map_err(|_| "Unable to access history database.".to_string())?;
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            let key = Self::key(root);
+            transaction
+                .execute("DELETE FROM orchestration_tasks WHERE project=?1", [&key])
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM orchestration_task_history WHERE project=?1",
+                    [&key],
+                )
+                .map_err(|e| e.to_string())?;
+            return transaction.commit().map_err(|e| e.to_string());
+        }
         let table = match kind {
             "chat" => "chat_messages",
             "terminal" => "terminal_runs",
-            "orchestration" => "orchestration_tasks",
             _ => return Err("Unknown history kind.".into()),
         };
         self.0
@@ -276,6 +302,13 @@ impl HistoryStore {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+fn task_id(task: &serde_json::Value) -> Result<&str, String> {
+    task.get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| "An orchestration task must have a non-empty id.".to_string())
 }
 
 #[cfg(test)]
@@ -458,6 +491,32 @@ mod tests {
         assert_eq!(store.load(&first).unwrap().orchestration_task, Some(task));
         assert_eq!(store.load(&first).unwrap().chat_messages.len(), 2);
         assert_eq!(store.load(&second).unwrap().orchestration_task, None);
+        let stopped = serde_json::json!({"id":"task-1","status":"stopped","goal":"fix it","nextSequence":2,"actions":[],"conclusion":{"outcome":"stopped","reason":"The task was stopped by the user."}});
+        store
+            .save_orchestration_task(&first, Some(&stopped))
+            .unwrap();
+        let replacement = serde_json::json!({"id":"task-2","status":"thinking","goal":"new task","nextSequence":1,"actions":[]});
+        store
+            .save_orchestration_task(&first, Some(&replacement))
+            .unwrap();
+        let archived: String = store
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT task FROM orchestration_task_history WHERE project=?1 AND task_id='task-1'",
+                [HistoryStore::key(&first)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&archived).unwrap(),
+            stopped
+        );
+        assert_eq!(
+            store.load(&first).unwrap().orchestration_task,
+            Some(replacement)
+        );
         drop(store);
 
         let reopened = HistoryStore::open(db).unwrap();

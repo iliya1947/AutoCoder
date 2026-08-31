@@ -1,6 +1,6 @@
 export type ToolKind = "file" | "terminal";
-export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "running" | "awaiting_ai" | "completed" | "blocked" | "failed";
-export type TaskConclusion = { outcome: "completed" | "blocked"; reason: string };
+export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "running" | "awaiting_ai" | "completed" | "blocked" | "stopped" | "failed";
+export type TaskConclusion = { outcome: "completed" | "blocked" | "stopped"; reason: string };
 export type ExecutionPolicy = {
   modelTurns: number;
   maxModelTurns: number;
@@ -10,6 +10,7 @@ export type AutonomyMode = "supervised" | "step_by_step";
 
 export const DEFAULT_EXECUTION_LIMITS = { maxModelTurns: 12, maxActions: 8 } as const;
 export const EXECUTION_LIMIT_REASON = "The orchestration execution limit was reached. Start a new task to continue.";
+export const USER_STOP_REASON = "The task was stopped by the user.";
 
 export type OrchestrationResult = {
   id: string;
@@ -84,6 +85,15 @@ export function recordResult(task: OrchestrationTask, result: OrchestrationResul
 
 export function completeTask(task: OrchestrationTask): OrchestrationTask {
   return finishTask(task, { outcome: "completed", reason: "The model reported that the goal was completed." });
+}
+
+export function stopTask(task: OrchestrationTask): OrchestrationTask {
+  if (isTaskFinished(task)) return task;
+  return finishTask(task, { outcome: "stopped", reason: USER_STOP_REASON });
+}
+
+export function isTaskFinished(task: OrchestrationTask): boolean {
+  return ["completed", "blocked", "stopped", "failed"].includes(task.status);
 }
 
 export function finishTask(task: OrchestrationTask, conclusion: TaskConclusion): OrchestrationTask {

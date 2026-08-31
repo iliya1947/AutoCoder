@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
-import { autonomyMode, blockAtExecutionLimit, canProposeAction, continueTask, continuesAfterToolResult, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
+import { autonomyMode, blockAtExecutionLimit, canProposeAction, continueTask, continuesAfterToolResult, finishTask, isTaskFinished, markActionRunning, proposeAction, recordResult, startTask, stopTask, taskSnapshot } from "../types/orchestration";
 import type { AutonomyMode, OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -30,7 +30,7 @@ export type ChatRequest = {
 };
 
 export type TaskProgress = {
-  tone: "active" | "waiting" | "completed" | "blocked";
+  tone: "active" | "waiting" | "completed" | "blocked" | "stopped";
   statusKey: string;
   waitingKey: string;
   nextKey: string;
@@ -44,6 +44,7 @@ export function taskProgress(task: OrchestrationTask, requestActive: boolean, re
   const totalSteps = task.actions.length;
   const tool = task.actions.at(-1)?.tool;
   if (task.status === "completed") return { tone: "completed", statusKey: "task.status_completed", waitingKey: "task.waiting_none", nextKey: "task.next_done", completedSteps, totalSteps };
+  if (task.status === "stopped") return { tone: "stopped", statusKey: "task.status_stopped", waitingKey: "task.waiting_none", nextKey: "task.next_new", completedSteps, totalSteps };
   if (task.status === "blocked" || task.status === "failed") return { tone: "blocked", statusKey: "task.status_blocked", waitingKey: "task.waiting_none", nextKey: "task.next_blocked", completedSteps, totalSteps };
   if (task.status === "awaiting_approval") return { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_approval", nextKey: "task.next_approval", completedSteps, totalSteps, tool };
   if (task.status === "running") return recovered
@@ -234,6 +235,8 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const currentContext = useRef(chatContextKey(openFile, selection, project));
   const currentTask = useRef<OrchestrationTask | null>(null);
   const taskCounter = useRef(0);
+  const taskPersistence = useRef<Promise<void>>(Promise.resolve());
+  const taskMutation = useRef(0);
   currentContext.current = chatContextKey(openFile, selection, project);
 
   useEffect(() => () => {
@@ -258,7 +261,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         currentTask.current = task;
         setTask(task);
         if (task) setSelectedAutonomy(autonomyMode(task));
-        setRecoveredTask(task && !["completed", "blocked", "failed"].includes(task.status) ? task : null);
+        setRecoveredTask(task && !isTaskFinished(task) ? task : null);
         lastRequestContext.current = currentContext.current;
       } })
       .catch((reason) => { if (current) setError(String(reason)); });
@@ -280,13 +283,17 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   };
 
   const persistTask = async (next: OrchestrationTask | null) => {
-    await invoke("save_orchestration_task", { task: next });
-    updateTask(next);
+    const mutation = ++taskMutation.current;
+    const saving = taskPersistence.current.catch(() => undefined).then(async () => { await invoke("save_orchestration_task", { task: next }); });
+    taskPersistence.current = saving;
+    await saving;
+    if (mutation === taskMutation.current) updateTask(next);
   };
 
   const sendContent = async (rawContent: string, preserveHistory = false, continuedTask?: OrchestrationTask) => {
     const content = rawContent.trim();
     if (!content || requestInFlight.current) return;
+    if (continuedTask && (currentTask.current?.id !== continuedTask.id || isTaskFinished(currentTask.current))) return;
     requestInFlight.current = true;
     const requestId = ++latestRequest.current;
     const contextKey = chatContextKey(openFile, selection, project);
@@ -373,7 +380,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     consumedToolResult.current = toolResult.id;
     const activeTask = currentTask.current;
     const activeAction = activeTask?.actions.at(-1);
-    if (!activeTask || !activeAction || !["proposed", "running"].includes(activeAction.status)) return;
+    if (!activeTask || isTaskFinished(activeTask) || !activeAction || !["proposed", "running"].includes(activeAction.status)) return;
     const outcome = toolResult.content.includes("Status: failed") ? "failed" : toolResult.content.includes("Status: cancelled") ? "cancelled" : "completed";
     const withResult = recordResult(markActionRunning(activeTask, activeAction.id), {
       id: `${activeAction.id}:result`, actionId: activeAction.id, tool: activeAction.tool, outcome, content: toolResult.content,
@@ -403,6 +410,27 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     void sendContent(message);
   };
 
+  const handleStopTask = async () => {
+    const activeTask = currentTask.current;
+    if (!activeTask || isTaskFinished(activeTask)) return;
+    // Invalidate a pending model response before persisting the terminal state;
+    // a late response may return, but can no longer append chat or replace it.
+    latestRequest.current += 1;
+    requestInFlight.current = false;
+    applyInFlight.current = false;
+    setSending(false);
+    setApplying(false);
+    setProposal(null);
+    setCommandProposal(null);
+    setRecoveredTask(null);
+    setError(null);
+    try {
+      await persistTask(stopTask(activeTask));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>
     <div className="panel-heading"><h2>{t("sidebar.chat")}</h2><span className="status-dot">{t("chat.ollama")}</span>{messages.length > 0 && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "chat" }); await persistTask(null); setMessages([]); setRecoveredTask(null); } catch (reason) { setError(String(reason)); } }}>{t("chat.clear_history")}</button>}</div>
     {task && (() => {
@@ -418,11 +446,12 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           <span>{t("task.next")}: <strong>{t(progress.nextKey)}</strong></span>
         </div>
         {task.conclusion && <p className="task-conclusion">{task.conclusion.reason}</p>}
+        {!isTaskFinished(task) && <button type="button" className="secondary-button task-stop" onClick={() => void handleStopTask()}>{t("task.stop")}</button>}
       </section>;
     })()}
     <label className="autonomy-picker">
       <span>{t("task.autonomy")}</span>
-      <select value={selectedAutonomy} disabled={Boolean(task && !["completed", "blocked", "failed"].includes(task.status)) || sending} onChange={(event) => setSelectedAutonomy(event.target.value as AutonomyMode)}>
+      <select value={selectedAutonomy} disabled={Boolean(task && !isTaskFinished(task)) || sending} onChange={(event) => setSelectedAutonomy(event.target.value as AutonomyMode)}>
         <option value="supervised">{t("task.autonomy_supervised")}</option>
         <option value="step_by_step">{t("task.autonomy_step_by_step")}</option>
       </select>
@@ -501,6 +530,6 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         </div>
       </section>}
     </div>
-    <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending} /><button type="submit" disabled={!message.trim() || sending}>{t("chat.send")}</button></form>
+    <form className="chat-form" onSubmit={handleSubmit}><textarea aria-label={t("chat.placeholder")} placeholder={t("chat.placeholder")} value={message} onChange={(event) => setMessage(event.target.value)} rows={3} disabled={sending || Boolean(task && !isTaskFinished(task))} /><button type="submit" disabled={!message.trim() || sending || Boolean(task && !isTaskFinished(task))}>{t("chat.send")}</button></form>
   </aside>;
 }

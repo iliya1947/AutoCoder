@@ -120,7 +120,7 @@ def parse_request(payload: Any) -> list[Message]:
             orchestration.get("id"), orchestration.get("goal"),
             orchestration.get("status"), orchestration.get("actions"),
         )
-        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "failed"}
+        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "stopped", "failed"}
         required_keys = {"id", "goal", "status", "actions"}
         allowed_keys = required_keys | {"conclusion", "execution", "autonomy"}
         if (
@@ -135,7 +135,7 @@ def parse_request(payload: Any) -> list[Message]:
         if conclusion is not None and (
             not isinstance(conclusion, dict)
             or set(conclusion) != {"outcome", "reason"}
-            or conclusion.get("outcome") not in {"completed", "blocked"}
+            or conclusion.get("outcome") not in {"completed", "blocked", "stopped"}
             or not isinstance(conclusion.get("reason"), str)
             or not conclusion["reason"].strip()
         ):
