@@ -278,6 +278,7 @@ struct BackupEntry {
     relative_path: String,
     content: String,
     current_content: Option<String>,
+    is_directory: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1421,19 +1422,29 @@ fn backup_entry(root: &Path, backup_root: &Path, id: &str) -> Result<BackupEntry
     }) {
         return Err("The backup path is unsafe.".to_string());
     }
-    let content_bytes = fs::read(directory.join("content.bak"))
-        .map_err(|error| format!("Unable to read backup content: {error}"))?;
-    if is_binary(&content_bytes) {
-        return Err("Binary backups cannot be restored in the text editor.".to_string());
-    }
-    let content = String::from_utf8(content_bytes)
-        .map_err(|error| format!("Unable to read backup content as text: {error}"))?;
     let relative_path = relative.to_string_lossy().replace('\\', "/");
     let target = canonical_root.join(relative);
-    let current_content = if target.exists() {
-        Some(read_file(&canonical_root, &relative_path)?)
+    let directory_content = directory.join("content.dir");
+    let is_directory = directory_content.is_dir();
+    let (content, current_content) = if is_directory {
+        // Directory backups may contain arbitrary binary data.  Do not decode their
+        // contents merely to list them; restoration copies the validated tree byte-for-byte.
+        validate_backup_directory(&directory_content)?;
+        (String::new(), target.exists().then(|| "exists".to_string()))
     } else {
-        None
+        let content_bytes = fs::read(directory.join("content.bak"))
+            .map_err(|error| format!("Unable to read backup content: {error}"))?;
+        if is_binary(&content_bytes) {
+            return Err("Binary file backups cannot be restored in the text editor.".to_string());
+        }
+        let content = String::from_utf8(content_bytes)
+            .map_err(|error| format!("Unable to read backup content as text: {error}"))?;
+        let current = if target.exists() {
+            Some(read_file(&canonical_root, &relative_path)?)
+        } else {
+            None
+        };
+        (content, current)
     };
     Ok(BackupEntry {
         id: id.to_string(),
@@ -1441,7 +1452,38 @@ fn backup_entry(root: &Path, backup_root: &Path, id: &str) -> Result<BackupEntry
         relative_path,
         content,
         current_content,
+        is_directory,
     })
+}
+
+fn validate_backup_directory(directory: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(directory)
+        .map_err(|error| format!("Unable to inspect directory backup: {error}"))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("Symbolic-link directory backups are unsafe.".into());
+    }
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("Unable to read directory backup: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Unable to read directory backup: {error}"))?;
+        if !is_safe_windows_path_component(&entry.file_name()) {
+            return Err("A directory backup contains an unsafe path.".into());
+        }
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            return Err("Directory backups containing symbolic links are unsafe.".into());
+        }
+        if file_type.is_dir() {
+            validate_backup_directory(&entry.path())?;
+        } else if !file_type.is_file() {
+            return Err(
+                "Directory backups containing special filesystem entries are unsafe.".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn list_backups(root: &Path, backup_root: &Path) -> Result<Vec<BackupEntry>, String> {
@@ -1472,7 +1514,33 @@ fn restore_backup(
     if backup.current_content.as_deref() != expected_current_content {
         return Err("The file changed on disk after the backup list was opened.".to_string());
     }
-    if let Some(expected_current_content) = expected_current_content {
+    if backup.is_directory {
+        if expected_current_content.is_some() {
+            return Err("The directory already exists and will not be overwritten.".into());
+        }
+        let relative = safe_relative_path(&backup.relative_path)?;
+        let (_, parent) = canonical_project_parent(root, relative)?;
+        let destination = parent.join(relative.file_name().ok_or("The directory needs a name.")?);
+        if destination.exists() {
+            return Err("The directory changed on disk after the backup list was opened.".into());
+        }
+        let source = backup_root.join(id).join("content.dir");
+        validate_backup_directory(&source)?;
+        // Build beside the destination and publish with one rename, so a failed
+        // recursive copy never exposes a partially restored directory.
+        let staging = parent.join(format!(".autocoder-restore-{id}"));
+        if staging.exists() {
+            return Err("A previous directory restore needs manual cleanup.".into());
+        }
+        if let Err(error) = copy_directory_safely(&source, &staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        fs::rename(&staging, &destination).map_err(|error| {
+            let _ = fs::remove_dir_all(&staging);
+            format!("Unable to publish the restored directory: {error}")
+        })
+    } else if let Some(expected_current_content) = expected_current_content {
         save_file_checked(
             root,
             &backup.relative_path,
@@ -2930,6 +2998,38 @@ mod tests {
             fs::read(backups.path().join("123/content.dir/deeper/binary.bin")).unwrap(),
             [0, 1, 2]
         );
+    }
+
+    #[test]
+    fn backup_manager_lists_and_restores_a_complete_deleted_directory() {
+        let (directory, _) = project();
+        let backups = TempDir::new().unwrap();
+        fs::create_dir_all(directory.path().join("assets/deeper")).unwrap();
+        fs::write(directory.path().join("assets/readme.txt"), "hello").unwrap();
+        fs::write(
+            directory.path().join("assets/deeper/image.bin"),
+            [0, 159, 255],
+        )
+        .unwrap();
+
+        delete_entry_with_backup(directory.path(), "assets", backups.path(), 123).unwrap();
+        let listed = list_backups(directory.path(), backups.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].is_directory);
+        assert_eq!(listed[0].relative_path, "assets");
+        assert_eq!(listed[0].current_content, None);
+
+        restore_backup(directory.path(), backups.path(), "123", None, 456).unwrap();
+        assert_eq!(
+            fs::read(directory.path().join("assets/deeper/image.bin")).unwrap(),
+            [0, 159, 255]
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("assets/readme.txt")).unwrap(),
+            "hello"
+        );
+        let error = restore_backup(directory.path(), backups.path(), "123", None, 789).unwrap_err();
+        assert!(error.contains("changed on disk"));
     }
 
     #[test]

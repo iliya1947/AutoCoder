@@ -10,13 +10,14 @@ export type BackupEntry = {
   relativePath: string;
   content: string;
   currentContent: string | null;
+  isDirectory: boolean;
 };
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onRestored: (backup: BackupEntry, project: ProjectTree) => void;
-  canRestore: () => boolean;
+  canRestore: () => boolean | Promise<boolean>;
 };
 
 export function isLatestBackupRequest(requestId: number, latestRequestId: number): boolean {
@@ -64,7 +65,7 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
     onClose();
   };
   const restore = async () => {
-    if (!selected || restoreInFlight.current || !canRestore()) return;
+    if (!selected || restoreInFlight.current) return;
     restoreInFlight.current = true;
     // A list completion must not turn the dialog back to idle while restore is
     // still in flight (for example after a language change).
@@ -73,6 +74,10 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
     setStatus("restoring");
     setError("");
     try {
+      if (!await canRestore()) {
+        setStatus("idle");
+        return;
+      }
       const project = await invoke<ProjectTree>("restore_project_backup", {
         backupId: selected.id,
         expectedCurrentContent: selected.currentContent,
@@ -94,7 +99,7 @@ export function BackupDialog({ open, onClose, onRestored, canRestore }: Props) {
       <div className="panel-heading"><h2 id="backup-title">{t("backups.title")}</h2><button className="secondary-button" onClick={close} aria-label={t("common.close")}>×</button></div>
       {status === "loading" ? <p className="project-state">{t("backups.loading")}</p> : backups.length === 0 ? <p className="project-state">{t("backups.empty")}</p> : <div className="backup-browser">
         <ul className="backup-list">{backups.map((backup) => <li key={backup.id}><button className={selected?.id === backup.id ? "active" : ""} onClick={() => setSelected(backup)}><strong>{backup.relativePath}</strong><span>{new Date(backup.createdAtUnixMs).toLocaleString(lang)}</span></button></li>)}</ul>
-        <div className="backup-preview"><p>{selected?.relativePath}</p><pre>{selected?.content}</pre></div>
+        <div className="backup-preview"><p>{selected?.relativePath}</p><pre>{selected?.isDirectory ? t("backups.directory_preview") : selected?.content}</pre></div>
       </div>}
       {status === "error" && <p className="editor-error" role="alert">{error || t("backups.error")}</p>}
       <div className="proposal-actions backup-actions"><button className="secondary-button" onClick={close}>{t("common.cancel")}</button><button className="save-button" disabled={!selected || status === "loading" || status === "restoring"} onClick={restore}>{status === "restoring" ? t("backups.restoring") : t("backups.restore")}</button></div>

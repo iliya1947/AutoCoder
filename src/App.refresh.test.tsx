@@ -55,6 +55,28 @@ describe("refresh with a Monaco edit", () => {
     expect(invoke).not.toHaveBeenCalledWith("remember_project_file", expect.anything());
   });
 
+  it("requires the native packaged-app confirmation before manual deletion", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "restore_workspace") return Promise.resolve({
+        project: { name: "restored", children: [{ name: "assets", path: "assets", kind: "directory", children: [] }] },
+        openFile: null,
+      });
+      if (command === "load_project_history") return Promise.resolve({ chatMessages: [], terminalRuns: [] });
+      return Promise.resolve(null);
+    });
+    confirm.mockResolvedValue(false);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "assets" }));
+    fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("assets"),
+      { title: "AutoCoder", kind: "warning" },
+    ));
+    expect(invoke).not.toHaveBeenCalledWith("delete_project_entry", expect.anything());
+  });
+
   it("confirms and keeps Monaco text dirty when Refresh is cancelled", async () => {
     invoke.mockImplementation((command: string) => {
       operationOrder.push(command);

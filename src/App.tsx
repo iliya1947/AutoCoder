@@ -264,12 +264,16 @@ function App() {
 
   const handleDeleteEntry = async (node: ProjectNode) => {
     if (manualFileOperation.current) return;
-    const affectsOpenFile = !!openFile && (openFile.path === node.path || openFile.path.startsWith(`${node.path}/`));
-    if (affectsOpenFile && isDirty && !window.confirm(t("editor.discard_confirm"))) return;
-    if (!window.confirm(t(node.kind === "directory" ? "files.delete_folder_confirm" : "files.delete_file_confirm").replace("{name}", node.name))) return;
     manualFileOperation.current = true;
+    const affectsOpenFile = !!openFile && (openFile.path === node.path || openFile.path.startsWith(`${node.path}/`));
     const requestSession = currentProjectSession.current;
     try {
+      if (affectsOpenFile && isDirty && !await confirm(t("editor.discard_confirm"), { title: "AutoCoder", kind: "warning" })) return;
+      const approved = await confirm(
+        t(node.kind === "directory" ? "files.delete_folder_confirm" : "files.delete_file_confirm").replace("{name}", node.name),
+        { title: "AutoCoder", kind: "warning" },
+      );
+      if (!approved) return;
       const updated = await invoke<ProjectTree>("delete_project_entry", { relativePath: node.path });
       if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
       updateTreeAfterManualOperation(updated);
@@ -313,6 +317,11 @@ function App() {
     latestFileSave.current += 1;
     setSaving(false);
     setProject({ ...updated, children: transformProjectTree(updated.children) });
+    if (backup.isDirectory) {
+      setSelection(null);
+      setEditorError("");
+      return;
+    }
     setOpenFile({ name: backup.relativePath.split("/").pop() ?? backup.relativePath, path: backup.relativePath, content: backup.content, savedContent: backup.content });
     setSelection(null);
     setEditorStatus("ready");
@@ -322,7 +331,7 @@ function App() {
 
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
-    <section className="center-workspace"><Editor file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
+    <section className="center-workspace"><Editor key={`${projectSession}:${openFile?.path ?? ""}`} file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onReviewResult={(transcript) => setTerminalResultDraft({ ...transcript, id: Date.now() })} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} terminalResultDraft={terminalResultDraft} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (applyingFileProposal.current) return;
@@ -373,7 +382,7 @@ function App() {
         applyingFileProposal.current = false;
       }
     }} />
-  </main><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || window.confirm(t("editor.discard_confirm"))} /></div>;
+  </main><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || confirm(t("editor.discard_confirm"), { title: "AutoCoder", kind: "warning" })} /></div>;
 }
 
 export default App;
