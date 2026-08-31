@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
-import { blockAtExecutionLimit, canProposeAction, continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
-import type { OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
+import { autonomyMode, blockAtExecutionLimit, canProposeAction, continueTask, continuesAfterToolResult, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
+import type { AutonomyMode, OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 type ProjectHistory = { chatMessages: ChatMessage[]; terminalRuns: TerminalTranscript[]; orchestrationTask?: OrchestrationTask | null };
@@ -225,6 +225,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const [commandProposal, setCommandProposal] = useState<TerminalProposal | null>(null);
   const [recoveredTask, setRecoveredTask] = useState<OrchestrationTask | null>(null);
   const [task, setTask] = useState<OrchestrationTask | null>(null);
+  const [selectedAutonomy, setSelectedAutonomy] = useState<AutonomyMode>("supervised");
   const lastRequestContext = useRef<string | null>(null);
   const requestInFlight = useRef(false);
   const applyInFlight = useRef(false);
@@ -256,6 +257,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         const task = history.orchestrationTask ?? null;
         currentTask.current = task;
         setTask(task);
+        if (task) setSelectedAutonomy(autonomyMode(task));
         setRecoveredTask(task && !["completed", "blocked", "failed"].includes(task.status) ? task : null);
         lastRequestContext.current = currentContext.current;
       } })
@@ -290,7 +292,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     const contextKey = chatContextKey(openFile, selection, project);
     const requestTask = continuedTask
       ? continueTask(continuedTask)
-      : startTask(`task-${Date.now()}-${++taskCounter.current}`, content);
+      : startTask(`task-${Date.now()}-${++taskCounter.current}`, content, selectedAutonomy);
     try {
       await persistTask(requestTask);
     } catch (reason) {
@@ -376,7 +378,10 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     const withResult = recordResult(markActionRunning(activeTask, activeAction.id), {
       id: `${activeAction.id}:result`, actionId: activeAction.id, tool: activeAction.tool, outcome, content: toolResult.content,
     });
-    void persistTask(withResult).then(() => sendContent(toolResult.content, true, withResult)).catch((reason) => setError(String(reason)));
+    void persistTask(withResult).then(() => {
+      if (continuesAfterToolResult(withResult)) return sendContent(toolResult.content, true, withResult);
+      setRecoveredTask(withResult);
+    }).catch((reason) => setError(String(reason)));
   }, [toolResult, sending]);
 
   const finishWithoutExecution = async (outcome: "declined" | "interrupted") => {
@@ -389,7 +394,8 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
     setCommandProposal(null);
     setRecoveredTask(null);
     await persistTask(withResult);
-    await sendContent(content, true, withResult);
+    if (continuesAfterToolResult(withResult)) await sendContent(content, true, withResult);
+    else setRecoveredTask(withResult);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -406,6 +412,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         <div className="task-progress-heading"><strong>{t("task.title")}</strong><span className="task-status">{t(progress.statusKey)}</span></div>
         <p className="task-goal" title={task.goal}>{task.goal}</p>
         <div className="task-progress-details">
+          <span>{t("task.autonomy")}: <strong>{t(`task.autonomy_${autonomyMode(task)}`)}</strong></span>
           <span>{t("task.steps")}: <strong>{progress.completedSteps}/{progress.totalSteps}</strong></span>
           <span>{t("task.waiting")}: <strong>{t(progress.waitingKey)}{toolName ? ` · ${toolName}` : ""}</strong></span>
           <span>{t("task.next")}: <strong>{t(progress.nextKey)}</strong></span>
@@ -413,14 +420,23 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         {task.conclusion && <p className="task-conclusion">{task.conclusion.reason}</p>}
       </section>;
     })()}
+    <label className="autonomy-picker">
+      <span>{t("task.autonomy")}</span>
+      <select value={selectedAutonomy} disabled={Boolean(task && !["completed", "blocked", "failed"].includes(task.status)) || sending} onChange={(event) => setSelectedAutonomy(event.target.value as AutonomyMode)}>
+        <option value="supervised">{t("task.autonomy_supervised")}</option>
+        <option value="step_by_step">{t("task.autonomy_step_by_step")}</option>
+      </select>
+      <small>{t(`task.autonomy_${selectedAutonomy}_help`)}</small>
+    </label>
     <div className="chat-messages" aria-live="polite">
       {recoveredTask && (() => {
         const action = recoveredTask.actions.at(-1);
         const canReview = recoveredTask.status === "awaiting_approval" && action?.status === "proposed" && action.contextKey === currentContext.current;
         const canResume = recoveredTask.status === "thinking" || recoveredTask.status === "awaiting_ai";
+        const pausedBetweenSteps = recoveredTask.status === "awaiting_ai" && autonomyMode(recoveredTask) === "step_by_step";
         return <section className="orchestration-recovery">
-          <strong>{t("chat.task_recovered")}</strong>
-          <p>{canResume ? t("chat.resume_pending") : canReview ? t("chat.resume_review") : t("chat.resume_stale")}</p>
+          <strong>{t(pausedBetweenSteps ? "chat.task_paused" : "chat.task_recovered")}</strong>
+          <p>{pausedBetweenSteps ? t("chat.step_ready") : canResume ? t("chat.resume_pending") : canReview ? t("chat.resume_review") : t("chat.resume_stale")}</p>
           {canResume && <button type="button" onClick={() => {
             const content = recoveredTask.status === "thinking" ? recoveredTask.goal : recoveredTask.actions.at(-1)?.result?.content;
             if (content) void sendContent(content, recoveredTask.actions.length > 0, recoveredTask);

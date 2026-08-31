@@ -118,5 +118,12 @@
   "files.delete_folder_confirm": "Delete {name} and everything inside it? A safety backup will be created.",
   "files.operation_error": "Unable to change the project entry.",
   "task.waiting_safety": "Safe recovery",
-  "task.next_safety": "Record without re-running"
+  "task.next_safety": "Record without re-running",
+  "task.autonomy": "Task mode",
+  "task.autonomy_supervised": "Supervised",
+  "task.autonomy_step_by_step": "Step by step",
+  "task.autonomy_supervised_help": "AutoCoder continues after each result, but every File and Terminal action still requires your approval.",
+  "task.autonomy_step_by_step_help": "AutoCoder pauses after every tool result until you explicitly resume the task.",
+  "chat.task_paused": "Task paused between steps",
+  "chat.step_ready": "The tool result is recorded. Review it, then resume when you are ready."
 }

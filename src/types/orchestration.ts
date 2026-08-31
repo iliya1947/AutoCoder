@@ -6,6 +6,7 @@ export type ExecutionPolicy = {
   maxModelTurns: number;
   maxActions: number;
 };
+export type AutonomyMode = "supervised" | "step_by_step";
 
 export const DEFAULT_EXECUTION_LIMITS = { maxModelTurns: 12, maxActions: 8 } as const;
 export const EXECUTION_LIMIT_REASON = "The orchestration execution limit was reached. Start a new task to continue.";
@@ -34,15 +35,17 @@ export type OrchestrationTask = {
   nextSequence: number;
   actions: OrchestrationAction[];
   execution: ExecutionPolicy;
+  autonomy?: { mode: AutonomyMode };
   conclusion?: TaskConclusion;
 };
 
 export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion" | "execution"> & {
+  autonomy: { mode: AutonomyMode };
   actions: Array<Pick<OrchestrationAction, "id" | "tool" | "status"> & { result?: Pick<OrchestrationResult, "outcome"> }>;
 };
 
-export function startTask(id: string, goal: string): OrchestrationTask {
-  return { id, goal, status: "thinking", nextSequence: 1, actions: [], execution: { modelTurns: 1, ...DEFAULT_EXECUTION_LIMITS } };
+export function startTask(id: string, goal: string, mode: AutonomyMode = "supervised"): OrchestrationTask {
+  return { id, goal, status: "thinking", nextSequence: 1, actions: [], execution: { modelTurns: 1, ...DEFAULT_EXECUTION_LIMITS }, autonomy: { mode } };
 }
 
 export function continueTask(task: OrchestrationTask): OrchestrationTask {
@@ -93,9 +96,23 @@ export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
     status: task.status,
     goal: task.goal,
     execution: normalizedExecution(task),
+    autonomy: normalizedAutonomy(task),
     ...(task.conclusion ? { conclusion: task.conclusion } : {}),
     actions: task.actions.map(({ id, tool, status, result }) => ({ id, tool, status, ...(result ? { result: { outcome: result.outcome } } : {}) })),
   };
+}
+
+export function autonomyMode(task: OrchestrationTask): AutonomyMode {
+  return normalizedAutonomy(task).mode;
+}
+
+export function continuesAfterToolResult(task: OrchestrationTask): boolean {
+  return autonomyMode(task) === "supervised";
+}
+
+function normalizedAutonomy(task: OrchestrationTask): { mode: AutonomyMode } {
+  // Existing persisted tasks keep the historical, approval-gated behaviour.
+  return task.autonomy ?? { mode: "supervised" };
 }
 
 function normalizedExecution(task: OrchestrationTask): ExecutionPolicy {
