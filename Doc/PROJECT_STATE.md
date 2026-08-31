@@ -24,7 +24,8 @@
   `task_id`, если она попыталась бы заменить stopped state или дописать соответствующий Chat exchange.
   Новая task с новым id по-прежнему может быть сохранена в той же истории.
 - Добавлены Rust regression-тесты task-scoped chat cancellation и защиты stopped persistence, включая
-  отбрасывание позднего Chat exchange. Следующий шаг — проверить полный Stop workflow в установленной
+  последовательность stopped task-1 → current task-2 → поздняя запись task-1 и отбрасывание её Chat
+  exchange. Следующий шаг — проверить полный Stop workflow в установленной
   Windows-сборке на ближайшем плановом acceptance-барьере вместе с уже накопленными lifecycle checks.
 
 ### Явная остановка orchestration task (31 августа 2026)
