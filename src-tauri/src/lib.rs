@@ -2607,13 +2607,18 @@ mod tests {
     #[test]
     fn chat_request_preserves_orchestration_control_data() {
         let request: ChatRequest = serde_json::from_str(
-            r#"{"messages":[{"role":"user","content":"continue"}],"context":null,"orchestration":{"id":"task-1","status":"awaiting_ai"}}"#,
+            r#"{"messages":[{"role":"user","content":"continue"}],"context":null,"orchestration":{"id":"task-1","goal":"Fix","status":"awaiting_ai","actions":[],"execution":{"modelTurns":2,"maxModelTurns":12,"maxActions":8},"autonomy":{"mode":"step_by_step"}}}"#,
         )
         .unwrap();
 
         let backend_json = serde_json::to_value(request).unwrap();
         assert_eq!(backend_json["orchestration"]["id"], "task-1");
         assert_eq!(backend_json["orchestration"]["status"], "awaiting_ai");
+        assert_eq!(
+            backend_json["orchestration"]["autonomy"]["mode"],
+            "step_by_step"
+        );
+        assert_eq!(backend_json["orchestration"]["execution"]["modelTurns"], 2);
     }
 
     #[test]

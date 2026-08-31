@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress } from "./ChatPanel";
+import { startTask, taskSnapshot } from "../types/orchestration";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
+
+  it("includes the persisted autonomy policy in the Tauri chat request", () => {
+    const request = buildChatRequest(messages, null, null, null, taskSnapshot(
+      startTask("task-step", "Work one step at a time", "step_by_step"),
+    ));
+
+    expect(request.orchestration?.autonomy).toEqual({ mode: "step_by_step" });
+  });
 
   it("invalidates chat context when the saved disk baseline changes", () => {
     const file = { name: "a.ts", path: "a.ts", content: "edited", savedContent: "old" };

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { canProposeAction, completeTask, continueTask, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
+import { autonomyMode, canProposeAction, completeTask, continueTask, continuesAfterToolResult, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
 
 describe("orchestration task state", () => {
+  it("persists the selected autonomy mode and safely normalizes older tasks", () => {
+    const supervised = startTask("safe", "Review every action");
+    const stepByStep = startTask("manual", "Pause between steps", "step_by_step");
+
+    expect(autonomyMode(supervised)).toBe("supervised");
+    expect(continuesAfterToolResult(supervised)).toBe(true);
+    expect(taskSnapshot(stepByStep).autonomy).toEqual({ mode: "step_by_step" });
+    expect(continuesAfterToolResult(stepByStep)).toBe(false);
+    expect(autonomyMode({ ...supervised, autonomy: undefined })).toBe("supervised");
+  });
   it("links every proposal and factual result across multiple approved steps", () => {
     let task = startTask("task-1", "Fix and test the project");
     const first = proposeAction(task, "file", { path: "main.ts" });

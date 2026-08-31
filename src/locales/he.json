@@ -118,5 +118,12 @@
   "files.delete_folder_confirm": "למחוק את {name} ואת כל תוכנו? ייווצר גיבוי בטיחות.",
   "files.operation_error": "לא ניתן לשנות את פריט הפרויקט.",
   "task.waiting_safety": "שחזור בטוח",
-  "task.next_safety": "תיעוד ללא הרצה חוזרת"
+  "task.next_safety": "תיעוד ללא הרצה חוזרת",
+  "task.autonomy": "מצב משימה",
+  "task.autonomy_supervised": "בפיקוח",
+  "task.autonomy_step_by_step": "שלב אחר שלב",
+  "task.autonomy_supervised_help": "AutoCoder ממשיך אחרי כל תוצאה, אך כל פעולת קובץ ומסוף עדיין דורשת אישור שלך.",
+  "task.autonomy_step_by_step_help": "AutoCoder ממתין אחרי כל תוצאת כלי עד להמשך מפורש של המשימה.",
+  "chat.task_paused": "המשימה הושהתה בין שלבים",
+  "chat.step_ready": "תוצאת הכלי נשמרה. יש לבדוק אותה ולהמשיך את המשימה כשמתאים."
 }

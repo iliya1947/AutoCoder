@@ -61,6 +61,7 @@ ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
 Goal: {goal}
 State: {status}
+Autonomy mode: {autonomy_mode}
 Execution budget: model turn {model_turns}/{max_model_turns}; actions {action_count}/{max_actions}
 Recorded actions:
 {actions}
@@ -120,8 +121,10 @@ def parse_request(payload: Any) -> list[Message]:
             orchestration.get("status"), orchestration.get("actions"),
         )
         allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "failed"}
+        required_keys = {"id", "goal", "status", "actions"}
+        allowed_keys = required_keys | {"conclusion", "execution", "autonomy"}
         if (
-            set(orchestration) not in ({"id", "goal", "status", "actions"}, {"id", "goal", "status", "actions", "conclusion"}, {"id", "goal", "status", "actions", "execution"}, {"id", "goal", "status", "actions", "execution", "conclusion"})
+            not required_keys.issubset(orchestration) or not set(orchestration).issubset(allowed_keys)
             or not isinstance(task_id, str) or not task_id.strip()
             or not isinstance(goal, str) or not goal.strip()
             or status not in allowed_statuses
@@ -147,6 +150,13 @@ def parse_request(payload: Any) -> list[Message]:
             or execution["maxActions"] < len(actions)
         ):
             raise ValueError("Orchestration execution policy is invalid.")
+        autonomy = orchestration.get("autonomy")
+        if autonomy is not None and (
+            not isinstance(autonomy, dict)
+            or set(autonomy) != {"mode"}
+            or autonomy.get("mode") not in {"supervised", "step_by_step"}
+        ):
+            raise ValueError("Orchestration autonomy policy is invalid.")
         action_lines = []
         for action in actions:
             if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
@@ -162,6 +172,7 @@ def parse_request(payload: Any) -> list[Message]:
         }
         context_messages.append(Message(role="system", content=ORCHESTRATION_PROMPT.format(
             id=task_id, goal=goal, status=status,
+            autonomy_mode=(autonomy or {"mode": "supervised"})["mode"],
             model_turns=policy["modelTurns"], max_model_turns=policy["maxModelTurns"],
             action_count=len(actions), max_actions=policy["maxActions"],
             actions="\n".join(action_lines) or "(none)",
