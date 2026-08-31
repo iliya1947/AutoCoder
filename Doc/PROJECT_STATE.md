@@ -2,11 +2,28 @@
 
 ## Дата состояния
 
-31 августа 2026 (Stop выполняет безопасную отмену незавершённой orchestration work).
+31 августа 2026 (исправляется дефект terminal proposal contract, найденный на 80% acceptance).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Устойчивый terminal proposal contract после tool result (31 августа 2026)
+- Packaged Windows acceptance на барьере 80% **пока не пройден**. В реальном многошаговом сценарии
+  после успешного File Tool model turn назвал следующий Terminal Tool fence `autocoder-terminal`,
+  хотя канонический backend-контракт ожидает `autocoder-command`. Семантически корректное действие
+  не распозналось, и task ошибочно завершилась как `blocked` с причиной отсутствия следующего action.
+- Prompt теперь во всех orchestration/tool-result инструкциях явно связывает Terminal Tool с точным
+  каноническим fence `autocoder-command` и отдельно предупреждает не использовать display-derived
+  имя `autocoder-terminal`.
+- Parser сохраняет `autocoder-command` каноническим форматом, но совместимо принимает единственный
+  `autocoder-terminal` fence от реальной модели. Для alias действует тот же строгий JSON shape
+  `{ "command": string }`, проверка непустой команды, открытого проекта, запрет совмещения с File
+  Tool и прежний approval workflow; два terminal-блока отклоняются вместо неявного выбора одного.
+- Backend regression воспроизводит последовательность успешный File Tool result → следующий model
+  turn с `autocoder-terminal` → распознанный `next_action`, а также доказывает отклонение лишних полей
+  и дублирующих canonical/alias proposals. После автоматических проверок требуется повторить 80%
+  packaged Windows acceptance; до этого барьер остаётся непройденным.
 
 ### Безопасная отмена незавершённой orchestration work (31 августа 2026)
 - После сохранения terminal state `stopped` frontend адресно отменяет активный model turn этой task.

@@ -112,6 +112,37 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(parse_terminal_proposal(answer, payload), {"command": "npm test"})
         self.assertIsNone(parse_terminal_proposal(answer, {"context": None}))
 
+    def test_file_result_turn_accepts_terminal_tool_fence_mismatch_as_next_action(self):
+        payload = {
+            "messages": [
+                {"role": "user", "content": "Fix the file and run the tests"},
+                {"role": "assistant", "content": "I propose the file change."},
+                {"role": "user", "content": "AutoCoder File Tool result (this is factual output):\nStatus: completed"},
+            ],
+            "context": {"project": {"name": "demo", "entries": ["file: package.json"]}},
+            "orchestration": {
+                "id": "task-1", "goal": "Fix the file and run the tests", "status": "awaiting_ai",
+                "actions": [{
+                    "id": "task-1:action:1", "tool": "file", "status": "completed",
+                    "result": {"outcome": "completed"},
+                }],
+            },
+        }
+        answer = Message(
+            "assistant",
+            'The file change succeeded; now run the tests.\n```autocoder-terminal\n{"command":"npm test"}\n```',
+        )
+
+        messages = parse_request(payload)
+        command = parse_terminal_proposal(answer, payload)
+
+        self.assertIn("`autocoder-command`, not `autocoder-terminal`", messages[0].content)
+        self.assertIn("Terminal Tool (`autocoder-command`)", messages[-4].content)
+        self.assertEqual(command, {"command": "npm test"})
+        self.assertEqual(parse_task_decision(answer, command is not None), {
+            "outcome": "next_action", "reason": "A reviewable tool action was proposed."
+        })
+
     def test_rejects_invalid_or_combined_terminal_proposal(self):
         payload = {"context": {"project": {"name": "demo", "entries": []}}}
         invalid = Message("assistant", '```autocoder-command\n{"command":"   "}\n```')
@@ -123,6 +154,15 @@ class BackendTests(unittest.TestCase):
 
         self.assertIsNone(parse_terminal_proposal(invalid, payload))
         self.assertIsNone(parse_terminal_proposal(combined, payload))
+
+        malformed_alias = Message("assistant", '```autocoder-terminal\n{"command":"npm test","approve":true}\n```')
+        duplicate_aliases = Message(
+            "assistant",
+            '```autocoder-command\n{"command":"npm test"}\n```\n'
+            '```autocoder-terminal\n{"command":"npm test"}\n```',
+        )
+        self.assertIsNone(parse_terminal_proposal(malformed_alias, payload))
+        self.assertIsNone(parse_terminal_proposal(duplicate_aliases, payload))
 
     def test_extracts_file_proposal_for_current_open_file(self):
         answer = Message(

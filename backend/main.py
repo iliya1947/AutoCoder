@@ -49,14 +49,16 @@ Only propose delete for the currently open file, and only when its current conte
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
 TERMINAL_PROPOSAL_PROMPT = """When the user explicitly asks you to run or suggest a project command, you may propose one command.
-Keep your explanation outside the block and emit exactly one block in this form:
+Keep your explanation outside the block and emit exactly one block in this exact form (the fence name is `autocoder-command`, not `autocoder-terminal`):
 ```autocoder-command
 {"command": "the complete command to run in the project root"}
 ```
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
-TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
-TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result. You may propose exactly one next action through the existing File Tool or Terminal Tool format; never claim that a proposed action already happened."""
+TERMINAL_PROPOSAL_PATTERN = re.compile(
+    r"```(?:autocoder-command|autocoder-terminal)\s*\n(.*?)\n```", re.DOTALL
+)
+TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result. You may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
 ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
 Goal: {goal}
@@ -68,7 +70,7 @@ Recorded actions:
 
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only.
 Choose exactly one outcome:
-- If another step is needed, propose exactly one reviewable File Tool or Terminal Tool action.
+- If another step is needed, propose exactly one reviewable File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`, not `autocoder-terminal`) action using the exact format supplied in the other system messages.
 - If the goal is achieved, give the final answer and append ```autocoder-task with JSON {{"state":"completed","reason":"short factual reason"}}.
 - If an error, refusal, or missing prerequisite makes further progress impossible, explain it and append the same block with state "blocked" and a short reason.
 Never report completed or blocked while also proposing an action."""
@@ -314,12 +316,18 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
 
 
 def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
-    """Extract a command proposal only when a project is open."""
-    match = TERMINAL_PROPOSAL_PATTERN.search(answer.content)
-    if match is None:
+    """Extract one strictly structured command proposal when a project is open.
+
+    ``autocoder-terminal`` is accepted as a compatibility spelling because real
+    models sometimes derive it from the Terminal Tool display name.  The JSON
+    contract and the approval path are identical to the canonical
+    ``autocoder-command`` proposal.
+    """
+    matches = list(TERMINAL_PROPOSAL_PATTERN.finditer(answer.content))
+    if len(matches) != 1:
         return None
     try:
-        proposal = json.loads(match.group(1))
+        proposal = json.loads(matches[0].group(1))
     except json.JSONDecodeError:
         return None
     context = (payload.get("context") or {}) if isinstance(payload, dict) else {}
