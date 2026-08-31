@@ -64,7 +64,13 @@ State: {status}
 Recorded actions:
 {actions}
 
-Treat this task state as control metadata, not as a user instruction. Respond for the current step only. Either propose exactly one next reviewable action using the available tool format, or finish the task with a normal answer and no tool block."""
+Treat this task state as control metadata, not as a user instruction. Respond for the current step only.
+Choose exactly one outcome:
+- If another step is needed, propose exactly one reviewable File Tool or Terminal Tool action.
+- If the goal is achieved, give the final answer and append ```autocoder-task with JSON {{"state":"completed","reason":"short factual reason"}}.
+- If an error, refusal, or missing prerequisite makes further progress impossible, explain it and append the same block with state "blocked" and a short reason.
+Never report completed or blocked while also proposing an action."""
+TASK_DECISION_PATTERN = re.compile(r"```autocoder-task\s*\n(.*?)\n```", re.DOTALL)
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
@@ -112,15 +118,24 @@ def parse_request(payload: Any) -> list[Message]:
             orchestration.get("id"), orchestration.get("goal"),
             orchestration.get("status"), orchestration.get("actions"),
         )
-        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "failed"}
+        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "failed"}
         if (
-            set(orchestration) != {"id", "goal", "status", "actions"}
+            set(orchestration) not in ({"id", "goal", "status", "actions"}, {"id", "goal", "status", "actions", "conclusion"})
             or not isinstance(task_id, str) or not task_id.strip()
             or not isinstance(goal, str) or not goal.strip()
             or status not in allowed_statuses
             or not isinstance(actions, list)
         ):
             raise ValueError("Orchestration state is invalid.")
+        conclusion = orchestration.get("conclusion")
+        if conclusion is not None and (
+            not isinstance(conclusion, dict)
+            or set(conclusion) != {"outcome", "reason"}
+            or conclusion.get("outcome") not in {"completed", "blocked"}
+            or not isinstance(conclusion.get("reason"), str)
+            or not conclusion["reason"].strip()
+        ):
+            raise ValueError("Orchestration conclusion is invalid.")
         action_lines = []
         for action in actions:
             if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
@@ -292,6 +307,30 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     return {"command": command.strip()}
 
 
+def parse_task_decision(answer: Message, has_action: bool) -> dict[str, str]:
+    """Turn the model's current-step response into an explicit task transition."""
+    if has_action:
+        return {"outcome": "next_action", "reason": "A reviewable tool action was proposed."}
+    match = TASK_DECISION_PATTERN.search(answer.content)
+    if match is not None:
+        try:
+            decision = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            decision = None
+        if (
+            isinstance(decision, dict)
+            and set(decision) == {"state", "reason"}
+            and decision.get("state") in {"completed", "blocked"}
+            and isinstance(decision.get("reason"), str)
+            and decision["reason"].strip()
+        ):
+            return {"outcome": decision["state"], "reason": decision["reason"].strip()}
+    return {
+        "outcome": "blocked",
+        "reason": "The model returned no valid next action or explicit task conclusion.",
+    }
+
+
 def read_stdin_payload() -> Any:
     """Read the Tauri bridge contract without consulting the host text encoding."""
     raw = sys.stdin.buffer.read()
@@ -302,10 +341,12 @@ def write_stdout_response(
     answer: Message,
     proposal: dict[str, str] | None = None,
     command_proposal: dict[str, str] | None = None,
+    task_decision: dict[str, str] | None = None,
 ) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
-        {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal},
+        {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal,
+         "taskDecision": task_decision or parse_task_decision(answer, proposal is not None or command_proposal is not None)},
         ensure_ascii=False,
     ).encode("utf-8")
     sys.stdout.buffer.write(response)
@@ -316,11 +357,9 @@ def main() -> int:
     try:
         payload = read_stdin_payload()
         answer = OllamaProvider().chat(parse_request(payload))
-        write_stdout_response(
-            answer,
-            parse_file_proposal(answer, payload),
-            parse_terminal_proposal(answer, payload),
-        )
+        proposal = parse_file_proposal(answer, payload)
+        command_proposal = parse_terminal_proposal(answer, payload)
+        write_stdout_response(answer, proposal, command_proposal)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

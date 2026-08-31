@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
-import { completeTask, continueTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
+import { continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
 import type { OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -15,7 +15,7 @@ export type FileProposal =
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string };
 export type ToolResult = { id: number; content: string };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; projectKey: string };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -217,7 +217,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
         setMessages(history.chatMessages);
         const task = history.orchestrationTask ?? null;
         currentTask.current = task;
-        setRecoveredTask(task && task.status !== "completed" && task.status !== "failed" ? task : null);
+        setRecoveredTask(task && !["completed", "blocked", "failed"].includes(task.status) ? task : null);
         lastRequestContext.current = currentContext.current;
       } })
       .catch((reason) => { if (current) setError(String(reason)); });
@@ -290,7 +290,10 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           : null;
       const nextTask = responseAction
         ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
-        : completeTask(requestTask);
+        : finishTask(requestTask, {
+          outcome: response.taskDecision.outcome === "completed" ? "completed" : "blocked",
+          reason: response.taskDecision.reason,
+        });
       await invoke("save_chat_exchange", {
         projectKey: response.projectKey,
         userMessage: { role: "user", content },
