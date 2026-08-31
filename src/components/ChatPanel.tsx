@@ -12,7 +12,7 @@ export type FileProposal =
   | { operation: "delete"; path: string; originalContent: string; expectedSavedContent: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string };
-export type TerminalResultDraft = TerminalTranscript & { id: number };
+export type ToolResult = { id: number; content: string };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
@@ -64,6 +64,29 @@ export function formatTerminalResultDraft({ command, result }: TerminalTranscrip
   if (result.stdout) sections.push(`stdout:\n${result.stdout}`);
   if (result.stderr) sections.push(`stderr:\n${result.stderr}`);
   return sections.join("\n\n");
+}
+
+export function formatFileToolResult(proposal: FileProposal, outcome: "completed" | "failed", details?: string): string {
+  const action = proposal.operation === "replace"
+    ? `updated the editor buffer for ${proposal.path} (not saved to disk yet)`
+    : proposal.operation === "create"
+      ? `created ${proposal.path} on disk`
+      : `deleted ${proposal.path} from disk after creating a safety backup`;
+  return [
+    "AutoCoder File Tool result (this is factual output from the explicitly approved action):",
+    `Status: ${outcome}`,
+    `Action: ${action}`,
+    ...(details ? [`Details: ${details}`] : []),
+    "Continue the task from this result. If another action is needed, propose exactly one next File Tool or Terminal Tool action for review.",
+  ].join("\n");
+}
+
+export function formatTerminalToolResult(transcript: TerminalTranscript): string {
+  return [
+    "AutoCoder Terminal Tool result (this is factual output from the explicitly approved command):",
+    formatTerminalResultDraft(transcript),
+    "Continue the task from this result. If another action is needed, propose exactly one next File Tool or Terminal Tool action for review.",
+  ].join("\n\n");
 }
 
 export function canApplyProposal(openFile: OpenedFile | null, proposal: FileProposal): boolean {
@@ -144,7 +167,7 @@ export function buildChatRequest(
   };
 }
 
-export function ChatPanel({ openFile, selection, project, terminalResultDraft, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; terminalResultDraft?: TerminalResultDraft | null; onApplyProposal: (proposal: FileProposal) => void | Promise<void>; onReviewCommand: (proposal: TerminalProposal) => void }) {
+export function ChatPanel({ openFile, selection, project, toolResult, onApplyProposal, onReviewCommand }: { openFile: OpenedFile | null; selection: string | null; project: ProjectTree | null; toolResult?: ToolResult | null; onApplyProposal: (proposal: FileProposal) => void | Promise<void>; onReviewCommand: (proposal: TerminalProposal) => void }) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -157,6 +180,7 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
   const requestInFlight = useRef(false);
   const applyInFlight = useRef(false);
   const latestRequest = useRef(0);
+  const consumedToolResult = useRef<number | null>(null);
   const currentContext = useRef(chatContextKey(openFile, selection, project));
   currentContext.current = chatContextKey(openFile, selection, project);
 
@@ -183,18 +207,15 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
     setCommandProposal(null);
   }, [openFile?.path, openFile?.content, openFile?.savedContent, selection, project]);
 
-  useEffect(() => {
-    if (terminalResultDraft) setMessage(formatTerminalResultDraft(terminalResultDraft));
-  }, [terminalResultDraft]);
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const content = message.trim();
+  const sendContent = async (rawContent: string, preserveHistory = false) => {
+    const content = rawContent.trim();
     if (!content || requestInFlight.current) return;
     requestInFlight.current = true;
     const requestId = ++latestRequest.current;
     const contextKey = chatContextKey(openFile, selection, project);
-    const requestMessages = messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
+    const requestMessages = preserveHistory
+      ? [...messages, { role: "user" as const, content }]
+      : messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
     lastRequestContext.current = contextKey;
     const pendingMessages = [...messages, { role: "user" as const, content }];
     setMessages(pendingMessages);
@@ -236,6 +257,17 @@ export function ChatPanel({ openFile, selection, project, terminalResultDraft, o
         setSending(false);
       }
     }
+  };
+
+  useEffect(() => {
+    if (!toolResult || sending || consumedToolResult.current === toolResult.id) return;
+    consumedToolResult.current = toolResult.id;
+    void sendContent(toolResult.content, true);
+  }, [toolResult, sending]);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void sendContent(message);
   };
 
   return <aside className="chat-panel" aria-label={t("sidebar.chat")}>

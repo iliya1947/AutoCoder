@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
-from main import parse_file_proposal, parse_messages, parse_request, parse_terminal_proposal
+from main import TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_terminal_proposal
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
@@ -257,6 +257,22 @@ class BackendTests(unittest.TestCase):
         self.assertIn("autocoder-file", messages[1].content)
         self.assertIn("autocoder-command", messages[2].content)
         self.assertEqual(messages[3], Message("user", "Where are the tests?"))
+
+    def test_marks_executed_tool_feedback_as_factual_orchestration_context(self):
+        tool_result = "AutoCoder Terminal Tool result (this is factual output):\nCommand: npm test\nStatus: exit code: 0"
+        messages = parse_request(
+            {
+                "messages": [
+                    {"role": "user", "content": "Run the tests"},
+                    {"role": "assistant", "content": "Please review npm test"},
+                    {"role": "user", "content": tool_result},
+                ],
+                "context": {"project": {"name": "demo", "entries": []}},
+            }
+        )
+
+        self.assertEqual(messages[-4], Message("system", TOOL_RESULT_PROMPT))
+        self.assertEqual(messages[-1], Message("user", tool_result))
 
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(

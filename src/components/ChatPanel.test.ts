@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatTerminalResultDraft, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext } from "./ChatPanel";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -18,6 +18,18 @@ describe("chat request", () => {
       command: "long task",
       result: { exitCode: null, stdout: "partial", stderr: "", cancelled: true },
     })).toBe("Command: long task\n\nStatus: cancelled\n\nstdout:\npartial");
+  });
+
+  it("formats factual tool feedback for the next orchestration turn", () => {
+    expect(formatFileToolResult({ operation: "replace", path: "main.ts", originalContent: "old", content: "new" }, "completed"))
+      .toContain("updated the editor buffer for main.ts (not saved to disk yet)");
+    const terminalFeedback = formatTerminalToolResult({
+      command: "npm test",
+      result: { exitCode: 0, stdout: "passed", stderr: "", cancelled: false },
+    });
+    expect(terminalFeedback).toContain("AutoCoder Terminal Tool result");
+    expect(terminalFeedback).toContain("Status: exit code: 0");
+    expect(terminalFeedback).toContain("propose exactly one next File Tool or Terminal Tool action");
   });
 
   it("includes the current unsaved open-file content", () => {

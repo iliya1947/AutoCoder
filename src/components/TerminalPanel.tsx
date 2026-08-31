@@ -46,7 +46,7 @@ export function navigateTerminalHistory(
   return { command: nextIndex === history.length ? draft : history[nextIndex], index: nextIndex, draft };
 }
 
-export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: { projectOpen: boolean; proposedCommand?: { command: string } | null; onReviewResult?: (transcript: TerminalTranscript) => void }) {
+export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { projectOpen: boolean; proposedCommand?: { command: string } | null; onCompleted?: (transcript: TerminalTranscript) => void }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
   const [execution, setExecution] = useState<TerminalExecution>({ status: "idle" });
@@ -117,6 +117,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution((current) => completeTerminalRun(current, completedResult));
+      onCompleted?.({ command: value, result: completedResult });
     } catch (reason) {
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution({ status: "idle" });
@@ -175,9 +176,6 @@ export function TerminalPanel({ projectOpen, proposedCommand, onReviewResult }: 
       {result && <span className={!result.cancelled && result.exitCode === 0 ? "terminal-success" : "terminal-failure"}>
         {result.cancelled ? t("terminal.cancelled") : `${t("terminal.exit_code")}: ${result.exitCode ?? t("terminal.unknown_exit")}`}
       </span>}
-      {transcript && onReviewResult && <button type="button" className="secondary-button" onClick={() => onReviewResult(transcript)}>
-        {t("terminal.review_result")}
-      </button>}
       {history.current.length > 0 && !running && <button type="button" className="secondary-button" onClick={async () => { try { await invoke("clear_project_history", { kind: "terminal" }); history.current = []; historyIndex.current = 0; setExecution({ status: "idle" }); } catch (reason) { setError(String(reason)); } }}>{t("terminal.clear_history")}</button>}
     </div>
     <div className="terminal-output" aria-live="polite">
