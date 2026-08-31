@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
-import { continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
+import { blockAtExecutionLimit, canProposeAction, continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "../types/orchestration";
 import type { OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -259,6 +259,11 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
       return;
     }
     setRecoveredTask(null);
+    if (requestTask.status === "blocked") {
+      requestInFlight.current = false;
+      setError(requestTask.conclusion?.reason ?? "The task was blocked by its execution policy.");
+      return;
+    }
     const requestMessages = preserveHistory
       ? [...messages, { role: "user" as const, content }]
       : messagesForCurrentContext(messages, content, lastRequestContext.current, contextKey);
@@ -289,7 +294,9 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           ? { tool: "terminal" as ToolKind, payload: response.commandProposal }
           : null;
       const nextTask = responseAction
-        ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
+        ? canProposeAction(requestTask)
+          ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
+          : blockAtExecutionLimit(requestTask)
         : finishTask(requestTask, {
           outcome: response.taskDecision.outcome === "completed" ? "completed" : "blocked",
           reason: response.taskDecision.reason,
@@ -302,8 +309,9 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
       });
       updateTask(nextTask);
       setMessages(completedMessages);
-      setProposal(response.proposal ?? null);
-      setCommandProposal(response.commandProposal ?? null);
+      setProposal(nextTask.status === "awaiting_approval" ? response.proposal ?? null : null);
+      setCommandProposal(nextTask.status === "awaiting_approval" ? response.commandProposal ?? null : null);
+      if (nextTask.status === "blocked" && responseAction && !canProposeAction(requestTask)) setError(nextTask.conclusion?.reason ?? null);
     } catch (error) {
       if (requestId !== latestRequest.current) return;
       if (isChatResponseCurrent(contextKey, currentContext.current)) {

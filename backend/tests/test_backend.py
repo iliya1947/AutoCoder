@@ -296,6 +296,7 @@ class BackendTests(unittest.TestCase):
             "context": {"project": {"name": "demo", "entries": []}},
             "orchestration": {
                 "id": "task-1", "goal": "Fix and test", "status": "awaiting_ai",
+                "execution": {"modelTurns": 2, "maxModelTurns": 12, "maxActions": 8},
                 "actions": [{
                     "id": "task-1:action:1", "tool": "terminal", "status": "completed",
                     "result": {"outcome": "completed"},
@@ -304,9 +305,21 @@ class BackendTests(unittest.TestCase):
         })
 
         self.assertIn("Task id: task-1", messages[0].content)
+        self.assertIn("model turn 2/12; actions 1/8", messages[0].content)
         self.assertIn("task-1:action:1: terminal / completed / result completed", messages[0].content)
         self.assertIn("Choose exactly one outcome", messages[0].content)
         self.assertIn('state "blocked"', messages[0].content)
+
+    def test_rejects_exhausted_or_inconsistent_execution_policy(self):
+        with self.assertRaisesRegex(ValueError, "execution policy"):
+            parse_request({
+                "messages": [{"role": "user", "content": "continue"}],
+                "context": {"project": {"name": "demo", "entries": []}},
+                "orchestration": {
+                    "id": "task-1", "goal": "Fix", "status": "awaiting_ai", "actions": [],
+                    "execution": {"modelTurns": 13, "maxModelTurns": 12, "maxActions": 8},
+                },
+            })
 
     def test_rejects_invalid_orchestration_action_state(self):
         with self.assertRaisesRegex(ValueError, "Orchestration action"):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completeTask, continueTask, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
+import { canProposeAction, completeTask, continueTask, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, taskSnapshot } from "./orchestration";
 
 describe("orchestration task state", () => {
   it("links every proposal and factual result across multiple approved steps", () => {
@@ -41,5 +41,21 @@ describe("orchestration task state", () => {
     expect(task.status).toBe("blocked");
     expect(task.actions[0].status).toBe("failed");
     expect(taskSnapshot(task).conclusion).toEqual({ outcome: "blocked", reason: "The required SDK is unavailable." });
+  });
+
+  it("bounds model turns in persisted task state", () => {
+    let task = startTask("bounded", "Do bounded work");
+    task = { ...task, execution: { ...task.execution, maxModelTurns: 2 } };
+    task = continueTask(task);
+    expect(task.execution.modelTurns).toBe(2);
+    task = continueTask(task);
+    expect(task).toMatchObject({ status: "blocked", conclusion: { outcome: "blocked", reason: EXECUTION_LIMIT_REASON } });
+    expect(taskSnapshot(task).execution).toEqual({ modelTurns: 2, maxModelTurns: 2, maxActions: 8 });
+  });
+
+  it("bounds reviewable actions independently from model turns", () => {
+    const task = { ...startTask("actions", "Do work"), execution: { modelTurns: 1, maxModelTurns: 12, maxActions: 1 } };
+    expect(canProposeAction(task)).toBe(true);
+    expect(canProposeAction(proposeAction(task, "terminal", { command: "test" }).task)).toBe(false);
   });
 });
