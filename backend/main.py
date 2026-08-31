@@ -61,6 +61,7 @@ ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
 Goal: {goal}
 State: {status}
+Execution budget: model turn {model_turns}/{max_model_turns}; actions {action_count}/{max_actions}
 Recorded actions:
 {actions}
 
@@ -120,7 +121,7 @@ def parse_request(payload: Any) -> list[Message]:
         )
         allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "failed"}
         if (
-            set(orchestration) not in ({"id", "goal", "status", "actions"}, {"id", "goal", "status", "actions", "conclusion"})
+            set(orchestration) not in ({"id", "goal", "status", "actions"}, {"id", "goal", "status", "actions", "conclusion"}, {"id", "goal", "status", "actions", "execution"}, {"id", "goal", "status", "actions", "execution", "conclusion"})
             or not isinstance(task_id, str) or not task_id.strip()
             or not isinstance(goal, str) or not goal.strip()
             or status not in allowed_statuses
@@ -136,6 +137,16 @@ def parse_request(payload: Any) -> list[Message]:
             or not conclusion["reason"].strip()
         ):
             raise ValueError("Orchestration conclusion is invalid.")
+        execution = orchestration.get("execution")
+        if execution is not None and (
+            not isinstance(execution, dict)
+            or set(execution) != {"modelTurns", "maxModelTurns", "maxActions"}
+            or any(not isinstance(execution.get(key), int) for key in execution)
+            or execution["modelTurns"] < 1
+            or execution["maxModelTurns"] < execution["modelTurns"]
+            or execution["maxActions"] < len(actions)
+        ):
+            raise ValueError("Orchestration execution policy is invalid.")
         action_lines = []
         for action in actions:
             if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
@@ -144,8 +155,16 @@ def parse_request(payload: Any) -> list[Message]:
             if result is not None and (not isinstance(result, dict) or set(result) != {"outcome"} or result.get("outcome") not in {"completed", "failed", "cancelled", "declined", "interrupted"}):
                 raise ValueError("Orchestration result is invalid.")
             action_lines.append(f'- {action["id"]}: {action["tool"]} / {action["status"]}' + (f' / result {result["outcome"]}' if result else ""))
+        policy = execution or {
+            "modelTurns": max(1, len(actions) + 1),
+            "maxModelTurns": 12,
+            "maxActions": 8,
+        }
         context_messages.append(Message(role="system", content=ORCHESTRATION_PROMPT.format(
-            id=task_id, goal=goal, status=status, actions="\n".join(action_lines) or "(none)",
+            id=task_id, goal=goal, status=status,
+            model_turns=policy["modelTurns"], max_model_turns=policy["maxModelTurns"],
+            action_count=len(actions), max_actions=policy["maxActions"],
+            actions="\n".join(action_lines) or "(none)",
         )))
     if context is None:
         return [*context_messages, *messages]
