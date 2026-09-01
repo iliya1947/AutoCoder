@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved, nextProjectSession, refreshedOpenFile } from "../App";
+import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFileSave, markFileSaved, nextProjectSession, reconciledTerminalOpenFile, refreshedOpenFile } from "../App";
 import { Editor, selectedText } from "./Editor";
 import { isLatestBackupRequest } from "./BackupDialog";
 import { ProjectExplorer } from "./ProjectExplorer";
@@ -41,6 +41,20 @@ describe("panel states", () => {
     });
     expect(refreshedOpenFile(current, null)).toBeNull();
     expect(refreshedOpenFile(null, null)).toBeNull();
+  });
+
+  it("reconciles Terminal disk changes without destroying a dirty Monaco buffer", () => {
+    const clean = { name: "acceptance.txt", path: "acceptance.txt", content: "STEP 1 OK", savedContent: "STEP 1 OK" };
+    expect(reconciledTerminalOpenFile(clean, "STEP 1 OK\nSTEP 2 OK")).toEqual({
+      ...clean, content: "STEP 1 OK\nSTEP 2 OK", savedContent: "STEP 1 OK\nSTEP 2 OK", existsOnDisk: true,
+    });
+    const dirty = { ...clean, content: "user draft" };
+    expect(reconciledTerminalOpenFile(dirty, "terminal version")).toEqual({
+      ...dirty, savedContent: "terminal version", existsOnDisk: true,
+    });
+    expect(reconciledTerminalOpenFile(dirty, null)).toEqual({ ...dirty, existsOnDisk: false });
+    expect(reconciledTerminalOpenFile(clean, null)).toBeNull();
+    expect(reconciledTerminalOpenFile(dirty, "STEP 1 OK")).toEqual({ ...dirty, existsOnDisk: true });
   });
 
   it("ignores stale backup list and restore completions", () => {

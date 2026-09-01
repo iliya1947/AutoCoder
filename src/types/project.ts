@@ -30,6 +30,8 @@ export type OpenedFile = {
   path: string;
   content: string;
   savedContent: string;
+  /** False when an external tool removed the file while a dirty buffer is kept. */
+  existsOnDisk?: boolean;
 };
 
 export type FileReadResult = {

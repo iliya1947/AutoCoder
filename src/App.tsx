@@ -8,7 +8,7 @@ import { BackupDialog, BackupEntry } from "./components/BackupDialog";
 import { Editor, EditorStatus } from "./components/Editor";
 import { ExplorerCreateKind, ProjectExplorer, ProjectStatus } from "./components/ProjectExplorer";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { TerminalPanel, TerminalTranscript } from "./components/TerminalPanel";
 import { useTranslation } from "./hooks/useTranslation";
 import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree, RefreshProjectResult, RestoredWorkspace } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
@@ -31,7 +31,7 @@ export function nextProjectSession(currentSession: number, sessionChanged: boole
 }
 
 export function editorContextKey(file: OpenedFile | null): string {
-  return JSON.stringify(file ? [file.path, file.content, file.savedContent] : null);
+  return JSON.stringify(file ? [file.path, file.content, file.savedContent, file.existsOnDisk ?? true] : null);
 }
 
 export function markFileSaved(
@@ -47,6 +47,14 @@ export function markFileSaved(
 
 export function refreshedOpenFile(current: OpenedFile | null, content: string | null): OpenedFile | null {
   return current && content !== null ? { ...current, content, savedContent: content } : null;
+}
+
+export function reconciledTerminalOpenFile(current: OpenedFile | null, diskContent: string | null): OpenedFile | null {
+  if (!current) return null;
+  const dirty = current.content !== current.savedContent;
+  if (diskContent === null) return dirty ? { ...current, existsOnDisk: false } : null;
+  if (dirty) return { ...current, savedContent: diskContent, existsOnDisk: true };
+  return { ...current, content: diskContent, savedContent: diskContent, existsOnDisk: true };
 }
 
 function App() {
@@ -73,8 +81,10 @@ function App() {
   const currentProjectSession = useRef(0);
   const nextToolResultId = useRef(0);
   const currentEditorContext = useRef(editorContextKey(openFile));
+  const currentOpenFile = useRef(openFile);
   currentEditorContext.current = editorContextKey(openFile);
-  const isDirty = openFile !== null && openFile.content !== openFile.savedContent;
+  currentOpenFile.current = openFile;
+  const isDirty = openFile !== null && (openFile.content !== openFile.savedContent || openFile.existsOnDisk === false);
 
   useEffect(() => {
     let active = true;
@@ -330,13 +340,49 @@ function App() {
     void invoke("remember_project_file", { relativePath: backup.relativePath, requestId: latestFileRead.current }).catch(() => {});
   };
 
+  const handleTerminalCompleted = async (transcript: TerminalTranscript) => {
+    const requestSession = currentProjectSession.current;
+    let file = currentOpenFile.current;
+    try {
+      let refreshed = await invoke<RefreshProjectResult>("refresh_project", { openFilePath: file?.path ?? null });
+      if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      // An edit to the same buffer is reconciled against the just-read disk
+      // baseline. If another file was opened meanwhile, read that path too so
+      // neither the editor nor a following model turn receives mismatched data.
+      const latestFile = currentOpenFile.current;
+      if (latestFile?.path !== file?.path) {
+        file = latestFile;
+        refreshed = await invoke<RefreshProjectResult>("refresh_project", { openFilePath: file?.path ?? null });
+        if (!isCurrentProjectSession(requestSession, currentProjectSession.current)) return;
+      } else {
+        file = latestFile;
+      }
+      const reconciled = reconciledTerminalOpenFile(file, refreshed.openFileContent);
+      // Publish the refreshed tree/editor snapshot in the same React update as the
+      // tool result. Chat can only continue after these values reach its props.
+      currentOpenFile.current = reconciled;
+      currentEditorContext.current = editorContextKey(reconciled);
+      setProject({ ...refreshed.project, children: transformProjectTree(refreshed.project.children) });
+      setOpenFile(reconciled);
+      setSelection(null);
+      setEditorStatus(reconciled ? "ready" : "idle");
+      setEditorError("");
+      setProjectStatus("opened");
+      setProjectError("");
+      if (transcript.actionId) {
+        setToolResult({ id: ++nextToolResultId.current, actionId: transcript.actionId, tool: "terminal", command: transcript.command, content: formatTerminalToolResult(transcript) });
+      }
+    } catch (error) {
+      // Do not advance orchestration with a snapshot that could be stale.
+      setProjectError(operationError(t("files.refresh_error"), error));
+      setProjectStatus("error");
+    }
+  };
+
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
     <section className="center-workspace"><Editor key={`${projectSession}:${openFile?.path ?? ""}`} file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={(transcript) => {
-      if (!transcript.actionId) return;
-      setToolResult({ id: ++nextToolResultId.current, actionId: transcript.actionId, tool: "terminal", command: transcript.command, content: formatTerminalToolResult(transcript) });
-    }} /></section>
+    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={handleTerminalCompleted} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} toolResult={toolResult} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (applyingFileProposal.current) return;
       applyingFileProposal.current = true;
