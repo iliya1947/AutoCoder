@@ -17,9 +17,16 @@
   канонический fence, конечный набор операций, aliases и проверяемое условие доступности из текущего
   factual context. Один и тот же registry формирует closed-world model context и является источником
   pre-approval validation; это расширяемая граница для будущих tools, а не правило acceptance-теста.
-- Явное и однозначное упоминание пользователем зарегистрированного инструмента компилируется в
-  task-level allow-list. Action другого tool теперь детерминированно отклоняется backend до попадания
-  в approval UI. При отсутствии явного выбора система не угадывает предпочтение по глаголам задачи.
+- Пользовательские tool constraints теперь привязаны не ко всей task, а к стабильным requirement
+  scopes, полученным из строк, пунктов и предложений исходного `goal`. Для каждого scope отдельно
+  сохраняются required/forbidden tools; многошаговая задача может последовательно требовать File,
+  Terminal и не ограниченный пользователем action без потери или глобализации constraints.
+- Каждый предложенный orchestration action обязан объявить `requirementId`. Backend проверяет этот id
+  и scoped tool policy до approval, удаляет planning metadata из executable payload, но сохраняет id в
+  persisted action history для factual reconciliation следующих turns. Bare mention имени tool не
+  считается выбором: constraint создаётся только из явной affirmative/negative invocation-формы,
+  распознаваемой расширяемыми aliases registry; если пользователь tool не задал, система его не
+  угадывает.
 - Удалён permissive alias несуществующего Terminal fence. Любой неизвестный `autocoder-*` contract,
   неизвестная File Tool operation, malformed payload, несколько actions или action, недоступный в
   текущем context, превращаются в явный blocked decision и не могут маскироваться одновременным
@@ -27,8 +34,8 @@
 - Сохранена factual reconciliation предыдущих actions: registry ограничивает пространство реально
   исполнимых переходов, а persisted exact payload/result и свежий editor/disk context остаются
   доказательной основой выбора следующего шага и completion. Добавлены regression-тесты tool binding,
-  contract rendering, несуществующего fence и операции, конфликтующего completion и validation до
-  approval.
+  contract rendering, multi-tool scopes, отрицания и простого упоминания tool, сохранения requirement
+  association, несуществующего fence и операции, конфликтующего completion и validation до approval.
 - Барьер 80% **остаётся непройденным** до повторной packaged Windows проверки.
 
 ### Семантическая reconciliation многошаговой задачи (1 сентября 2026)

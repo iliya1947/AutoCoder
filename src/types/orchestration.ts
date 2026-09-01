@@ -24,6 +24,7 @@ export type OrchestrationAction<T = unknown> = {
   id: string;
   tool: ToolKind;
   payload: T;
+  requirementId?: string;
   status: "proposed" | "running" | "completed" | "failed" | "cancelled";
   contextKey: string;
   result?: OrchestrationResult;
@@ -42,7 +43,7 @@ export type OrchestrationTask = {
 
 export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion" | "execution"> & {
   autonomy: { mode: AutonomyMode };
-  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "payload" | "status"> & { result?: OrchestrationResult }>;
+  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "payload" | "requirementId" | "status"> & { result?: OrchestrationResult }>;
 };
 
 export function startTask(id: string, goal: string, mode: AutonomyMode = "supervised"): OrchestrationTask {
@@ -65,8 +66,8 @@ export function blockAtExecutionLimit(task: OrchestrationTask): OrchestrationTas
   return finishTask({ ...task, execution: normalizedExecution(task) }, { outcome: "blocked", reason: EXECUTION_LIMIT_REASON });
 }
 
-export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T, contextKey = ""): { task: OrchestrationTask; action: OrchestrationAction<T> } {
-  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, contextKey, status: "proposed" };
+export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T, contextKey = "", requirementId?: string): { task: OrchestrationTask; action: OrchestrationAction<T> } {
+  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, ...(requirementId ? { requirementId } : {}), contextKey, status: "proposed" };
   return { action, task: { ...task, status: "awaiting_approval", nextSequence: task.nextSequence + 1, actions: [...task.actions, action] } };
 }
 
@@ -111,7 +112,7 @@ export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
     // The backend prompt needs the action evidence, not only lifecycle labels:
     // an exit code cannot tell the model what command actually ran, and a
     // completed file action does not identify the content that was applied.
-    actions: task.actions.map(({ id, tool, payload, status, result }) => ({ id, tool, payload, status, ...(result ? { result } : {}) })),
+    actions: task.actions.map(({ id, tool, payload, requirementId, status, result }) => ({ id, tool, payload, ...(requirementId ? { requirementId } : {}), status, ...(result ? { result } : {}) })),
   };
 }
 

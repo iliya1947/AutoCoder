@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
-from tool_contracts import render_tool_contract, validate_selected_tool
+from tool_contracts import executable_fences, render_tool_contract, requirement_contracts, tool_contract, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -53,7 +53,9 @@ Keep your explanation outside the block and emit exactly one block in one of the
 Only propose create when the path is absent from the supplied project structure. Never use an absolute path or .. path components.
 Only propose delete for the currently open file, and only when its current content is identical to its saved content.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
-FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
+FILE_PROPOSAL_PATTERN = re.compile(
+    rf"```{re.escape(tool_contract('file').fence)}\s*\n(.*?)\n```", re.DOTALL
+)
 TERMINAL_PROPOSAL_PROMPT = """When the user explicitly asks you to run or suggest a project command, you may propose one command.
 On Windows, AutoCoder executes the command in cmd.exe with the effective contract `cmd.exe /D /A /S /C`, in the project root, after selecting UTF-8 code page 65001. Generate cmd.exe-compatible commands: use Windows commands such as `type` rather than Unix-only commands such as `cat`, and use cmd.exe quoting (normally double quotes; single quotes are literal characters, not quoting syntax). Built-in cmd.exe text redirected to a file is therefore written as UTF-8 rather than UTF-16LE.
 Keep your explanation outside the block and emit exactly one block in this exact form (the fence name is `autocoder-command`, not `autocoder-terminal`):
@@ -62,7 +64,9 @@ Keep your explanation outside the block and emit exactly one block in this exact
 ```
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
-TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
+TERMINAL_PROPOSAL_PATTERN = re.compile(
+    rf"```{re.escape(tool_contract('terminal').fence)}\s*\n(.*?)\n```", re.DOTALL
+)
 ACTION_FENCE_PATTERN = re.compile(r"```(autocoder-[\w-]+)\s*\n", re.IGNORECASE)
 TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result and the current project/editor/disk context. On every continuation, reconcile the complete original task, the exact recorded action payloads, their factual results, and the latest editor/disk state. A successful action status proves execution only; it does not prove that the action produced the required semantic result. Before proposing an action, decide whether the factual state satisfies every requirement in the original task. If it does, complete the task without a File Tool or Terminal Tool action. If it does not, propose an action that repairs or advances the factual state toward the unmet requirement; do not merely repeat a read, display, or verification whose answer is already present in the current factual context. If genuinely new work or unavailable information is required, you may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
 ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
@@ -80,6 +84,7 @@ Recorded actions:
 {tool_contract}
 
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only. The original task contract is the durable semantic specification, not a summary of the last action; preserve its requested ordering, content, constraints, and completion checks across every turn.
+For an action, add `"requirementId":"requirement-N"` to the canonical File or Terminal JSON. This is planning metadata used for validation and is removed before execution; choose the scope whose factual requirement the action advances.
 
 Before choosing an outcome, perform this reconciliation:
 1. Extract every still-applicable requirement and final-state condition from the complete original task contract.
@@ -180,31 +185,34 @@ def parse_request(payload: Any) -> list[Message]:
         ):
             raise ValueError("Orchestration autonomy policy is invalid.")
         action_lines = []
+        requirement_ids = {requirement.id for requirement in requirement_contracts(payload)}
         for action in actions:
             if (
                 not isinstance(action, dict)
-                or set(action) - {"id", "tool", "payload", "status", "result"}
+                or set(action) - {"id", "tool", "payload", "requirementId", "status", "result"}
                 or not isinstance(action.get("id"), str)
                 or action.get("tool") not in {"file", "terminal"}
                 or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}
                 or not isinstance(action.get("payload"), dict)
+                or ("requirementId" in action and not isinstance(action.get("requirementId"), str))
+                or (action.get("requirementId") is not None and action.get("requirementId") not in requirement_ids)
             ):
                 raise ValueError("Orchestration action is invalid.")
-            payload = action["payload"]
+            action_payload = action["payload"]
             if action["tool"] == "terminal":
-                valid_payload = set(payload) == {"command"} and isinstance(payload.get("command"), str) and bool(payload["command"].strip())
+                valid_payload = set(action_payload) == {"command"} and isinstance(action_payload.get("command"), str) and bool(action_payload["command"].strip())
             else:
-                operation = payload.get("operation")
+                operation = action_payload.get("operation")
                 required = {"operation", "path"} if operation == "delete" else {"operation", "path", "content"}
                 # File proposals persisted by the UI can also contain the
                 # optimistic-concurrency baselines used during review.
                 allowed = required | {"originalContent", "expectedSavedContent"}
                 valid_payload = (
-                    operation in {"create", "replace", "delete"}
-                    and required.issubset(payload)
-                    and not set(payload) - allowed
-                    and isinstance(payload.get("path"), str)
-                    and (operation == "delete" or isinstance(payload.get("content"), str))
+                    operation in tool_contract("file").operations
+                    and required.issubset(action_payload)
+                    and not set(action_payload) - allowed
+                    and isinstance(action_payload.get("path"), str)
+                    and (operation == "delete" or isinstance(action_payload.get("content"), str))
                 )
             if not valid_payload:
                 raise ValueError("Orchestration action payload is invalid.")
@@ -221,7 +229,8 @@ def parse_request(payload: Any) -> list[Message]:
                 raise ValueError("Orchestration result is invalid.")
             action_lines.append(
                 f'- {action["id"]}: {action["tool"]} / {action["status"]}\n'
-                f'  payload: {json.dumps(payload, ensure_ascii=False)}'
+                + (f'  requirement: {action["requirementId"]}\n' if action.get("requirementId") else "")
+                + f'  payload: {json.dumps(action_payload, ensure_ascii=False)}'
                 + (f'\n  result: {json.dumps(result, ensure_ascii=False)}' if result else "")
             )
         policy = execution or {
@@ -333,14 +342,14 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     project = context.get("project")
     if (
         not isinstance(proposal, dict)
-        or proposal.get("operation") not in {"replace", "create", "delete"}
+        or proposal.get("operation") not in tool_contract("file").operations
         or not isinstance(proposal.get("path"), str)
         or not proposal["path"].strip()
     ):
         return None
     if proposal["operation"] == "delete":
         if (
-            set(proposal) != {"operation", "path"}
+            set(proposal) not in ({"operation", "path"}, {"operation", "path", "requirementId"})
             or not isinstance(open_file, dict)
             or proposal["path"] != open_file.get("path")
             or not isinstance(open_file.get("content"), str)
@@ -350,11 +359,11 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         ):
             return None
         return {
-            **proposal,
+            **{key: value for key, value in proposal.items() if key != "requirementId"},
             "originalContent": open_file["content"],
             "expectedSavedContent": open_file["savedContent"],
         }
-    if set(proposal) != {"operation", "path", "content"} or not isinstance(proposal.get("content"), str):
+    if set(proposal) not in ({"operation", "path", "content"}, {"operation", "path", "content", "requirementId"}) or not isinstance(proposal.get("content"), str):
         return None
     if proposal["operation"] == "replace":
         if (
@@ -364,7 +373,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
             or open_file.get("existsOnDisk", True) is not True
         ):
             return None
-        return {**proposal, "originalContent": open_file["content"]}
+        return {**{key: value for key, value in proposal.items() if key != "requirementId"}, "originalContent": open_file["content"]}
 
     entries = project.get("entries") if isinstance(project, dict) else None
     normalized = proposal["path"].replace("\\", "/")
@@ -379,7 +388,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         or f"directory: {normalized}" in normalized_entries
     ):
         return None
-    return proposal
+    return {key: value for key, value in proposal.items() if key != "requirementId"}
 
 
 def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
@@ -399,7 +408,7 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     command = proposal.get("command") if isinstance(proposal, dict) else None
     if (
         not isinstance(proposal, dict)
-        or set(proposal) != {"command"}
+        or set(proposal) not in ({"command"}, {"command", "requirementId"})
         or not isinstance(command, str)
         or not command.strip()
         or "\0" in command
@@ -410,6 +419,19 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     return {"command": command.strip()}
 
 
+def action_requirement_id(answer: Message, tool: str) -> str | None:
+    """Read planning metadata without passing it to the executable payload."""
+    pattern = FILE_PROPOSAL_PATTERN if tool == "file" else TERMINAL_PROPOSAL_PATTERN
+    match = pattern.search(answer.content)
+    if match is None:
+        return None
+    try:
+        value = json.loads(match.group(1)).get("requirementId")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
 def validate_model_action(
     answer: Message,
     payload: Any,
@@ -418,20 +440,20 @@ def validate_model_action(
 ) -> tuple[dict[str, str] | None, dict[str, str] | None, str | None]:
     """Apply the closed-world contract after syntax parsing and before approval."""
     action_fences = ACTION_FENCE_PATTERN.findall(answer.content)
-    known_fences = {"autocoder-file", "autocoder-command", "autocoder-task"}
+    known_fences = executable_fences() | {"autocoder-task"}
     unknown = sorted({fence.lower() for fence in action_fences} - known_fences)
     if unknown:
         return None, None, f"The model selected a nonexistent action contract: {', '.join(unknown)}."
-    executable_fences = [fence.lower() for fence in action_fences if fence.lower() != "autocoder-task"]
-    if executable_fences and proposal is None and command_proposal is None:
+    emitted_fences = [fence.lower() for fence in action_fences if fence.lower() != "autocoder-task"]
+    if emitted_fences and proposal is None and command_proposal is None:
         return None, None, "The model action does not satisfy the executable tool payload contract."
-    if len(executable_fences) > 1:
+    if len(emitted_fences) > 1:
         return None, None, "The model selected more than one action."
     if proposal is not None and command_proposal is not None:
         return None, None, "The model selected more than one action."
     tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
     if tool is not None:
-        violation = validate_selected_tool(tool, payload)
+        violation = validate_selected_tool(tool, action_requirement_id(answer, tool), payload)
         if violation:
             return None, None, violation
     return proposal, command_proposal, None
@@ -472,10 +494,12 @@ def write_stdout_response(
     proposal: dict[str, str] | None = None,
     command_proposal: dict[str, str] | None = None,
     task_decision: dict[str, str] | None = None,
+    action_requirement_id: str | None = None,
 ) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
         {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal,
+         "actionRequirementId": action_requirement_id,
          "taskDecision": task_decision or parse_task_decision(answer, proposal is not None or command_proposal is not None)},
         ensure_ascii=False,
     ).encode("utf-8")
@@ -493,7 +517,9 @@ def main() -> int:
             answer, payload, proposal, command_proposal
         )
         decision = ({"outcome": "blocked", "reason": violation} if violation else None)
-        write_stdout_response(answer, proposal, command_proposal, decision)
+        selected_tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
+        requirement_id = action_requirement_id(answer, selected_tool) if selected_tool else None
+        write_stdout_response(answer, proposal, command_proposal, decision, requirement_id)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

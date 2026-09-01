@@ -15,7 +15,7 @@ export type FileProposal =
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string; actionId?: string };
 export type ToolResult = { id: number; content: string; actionId?: string; tool?: ToolKind; command?: string };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; actionRequirementId?: string | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -356,7 +356,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           : null;
       const nextTask = responseAction
         ? canProposeAction(requestTask)
-          ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
+          ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey, response.actionRequirementId ?? undefined).task
           : blockAtExecutionLimit(requestTask)
         : finishTask(requestTask, {
           outcome: response.taskDecision.outcome === "completed" ? "completed" : "blocked",

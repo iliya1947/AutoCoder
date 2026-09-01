@@ -171,6 +171,7 @@ class BackendTests(unittest.TestCase):
                 "message": {"role": "assistant", "content": "Готово: файл сохранён"},
                 "proposal": None,
                 "commandProposal": None,
+                "actionRequirementId": None,
                 "taskDecision": {
                     "outcome": "blocked",
                     "reason": "The model returned no valid next action or explicit task conclusion.",
@@ -260,21 +261,22 @@ class BackendTests(unittest.TestCase):
         self.assertIsNone(parsed)
         self.assertIn("nonexistent action contract", violation)
 
-    def test_explicit_tool_choice_is_enforced_before_approval(self):
+    def test_tool_choices_are_scoped_to_requirements_before_approval(self):
+        goal = "1. Create the artifact using File Tool.\n2. Then update it via terminal.\n3. Report the result."
         payload = {
-            "messages": [{"role": "user", "content": "Use Terminal Tool to update the generated artifact"}],
+            "messages": [{"role": "user", "content": goal}],
             "context": {
                 "project": {"name": "demo", "entries": ["file: artifact.txt"]},
                 "openFile": {"path": "artifact.txt", "content": "old", "savedContent": "old"},
             },
             "orchestration": {
-                "id": "task-bound", "goal": "Use Terminal Tool to update the generated artifact",
+                "id": "task-bound", "goal": goal,
                 "status": "thinking", "actions": [],
             },
         }
         answer = Message(
             "assistant",
-            '```autocoder-file\n{"operation":"replace","path":"artifact.txt","content":"new"}\n```',
+            '```autocoder-file\n{"requirementId":"requirement-2","operation":"replace","path":"artifact.txt","content":"new"}\n```',
         )
         file_proposal = parse_file_proposal(answer, payload)
 
@@ -284,11 +286,40 @@ class BackendTests(unittest.TestCase):
 
         self.assertIsNone(proposal)
         self.assertIsNone(command)
-        self.assertIn("explicit tool constraint", violation)
+        self.assertIn("required: terminal", violation)
         contract_prompt = parse_request(payload)[0].content
-        self.assertIn("Allowed tools for this task: terminal", contract_prompt)
+        self.assertIn("requirement-1; required=file", contract_prompt)
+        self.assertIn("requirement-2; required=terminal", contract_prompt)
+        self.assertIn("requirement-3; no explicit tool constraint", contract_prompt)
         self.assertIn("operations=create,replace,delete", contract_prompt)
         self.assertIn("operations=execute", contract_prompt)
+
+        terminal_answer = Message(
+            "assistant",
+            '```autocoder-command\n{"requirementId":"requirement-2","command":"build artifact"}\n```',
+        )
+        _, command, violation = backend_main.validate_model_action(
+            terminal_answer, payload, None, parse_terminal_proposal(terminal_answer, payload)
+        )
+        self.assertEqual(command, {"command": "build artifact"})
+        self.assertIsNone(violation)
+
+    def test_mentions_and_negation_do_not_become_global_tool_choices(self):
+        goal = "Do not use File Tool for the build. Fix the Terminal Tool tests by running the test suite."
+        payload = {
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {"id": "task-policy", "goal": goal, "status": "thinking", "actions": []},
+        }
+        prompt = parse_request({**payload, "messages": [{"role": "user", "content": goal}]})[0].content
+        self.assertIn("requirement-1; forbidden=file", prompt)
+        self.assertIn("requirement-2; no explicit tool constraint", prompt)
+
+        answer = Message("assistant", '```autocoder-command\n{"requirementId":"requirement-2","command":"run tests"}\n```')
+        _, command, violation = backend_main.validate_model_action(
+            answer, payload, None, parse_terminal_proposal(answer, payload)
+        )
+        self.assertEqual(command, {"command": "run tests"})
+        self.assertIsNone(violation)
 
     def test_nonexistent_file_operation_cannot_be_hidden_by_completed_decision(self):
         payload = {
@@ -515,6 +546,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("task-1:action:1: terminal / completed", messages[0].content)
         self.assertIn('payload: {"command": "npm test"}', messages[0].content)
         self.assertIn('"outcome": "completed"', messages[0].content)
+        self.assertIn("id=terminal; fence=autocoder-command; operations=execute", messages[0].content)
         self.assertIn("successful tool status proves only", messages[0].content)
         self.assertIn("Choose exactly one outcome", messages[0].content)
         self.assertIn('state "blocked"', messages[0].content)
