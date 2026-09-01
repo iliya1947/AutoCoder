@@ -79,14 +79,53 @@ class BackendTests(unittest.TestCase):
         orchestration_prompt = messages[0].content
 
         self.assertIn("saved disk content", orchestration_prompt)
-        self.assertIn("If they already establish the goal, choose completed", orchestration_prompt)
+        self.assertIn("Choose completed only when the factual evidence establishes every final-state condition", orchestration_prompt)
         self.assertIn("Terminal Tool must not be used as a substitute reader", orchestration_prompt)
         tool_result_prompt = next(
             message.content for message in messages
             if message.role == "system" and "trusted factual feedback" in message.content
         )
         self.assertIn("without a File Tool or Terminal Tool action", tool_result_prompt)
-        self.assertIn("Do not propose a tool action merely to re-read", tool_result_prompt)
+        self.assertIn("do not merely repeat a read, display, or verification", tool_result_prompt)
+
+    def test_orchestration_preserves_full_task_contract_and_requires_state_repair(self):
+        goal = "Create a document with two separate lines.\nThen append the second line.\nFinish only when both lines are separate."
+        payload = {
+            "messages": [{"role": "user", "content": goal}],
+            "context": {
+                "project": {"name": "demo", "entries": ["file: notes.txt"]},
+                "openFile": {
+                    "path": "notes.txt", "content": "firstsecond\n",
+                    "savedContent": "firstsecond\n", "existsOnDisk": True,
+                },
+            },
+            "orchestration": {
+                "id": "task-repair", "goal": goal, "status": "awaiting_ai",
+                "actions": [
+                    {
+                        "id": "task-repair:action:1", "tool": "file", "status": "completed",
+                        "payload": {"operation": "create", "path": "notes.txt", "content": "first"},
+                        "result": {"id": "result-1", "actionId": "task-repair:action:1", "tool": "file",
+                                   "outcome": "completed", "content": "Status: completed"},
+                    },
+                    {
+                        "id": "task-repair:action:2", "tool": "terminal", "status": "completed",
+                        "payload": {"command": "append second"},
+                        "result": {"id": "result-2", "actionId": "task-repair:action:2", "tool": "terminal",
+                                   "outcome": "completed", "content": "Status: exit code: 0"},
+                    },
+                ],
+            },
+        }
+
+        prompt = parse_request(payload)[0].content
+
+        self.assertIn(f"<original_task>\n{goal}\n</original_task>", prompt)
+        self.assertIn('"content": "first"', prompt)
+        self.assertIn('"command": "append second"', prompt)
+        self.assertIn("latest supplied project/editor/saved-disk state", prompt)
+        self.assertIn("repair a partially wrong result", prompt)
+        self.assertIn("Choose completed only when", prompt)
 
     @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):

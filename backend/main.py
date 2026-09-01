@@ -64,19 +64,29 @@ Never claim that you ran the command or observed its output."""
 TERMINAL_PROPOSAL_PATTERN = re.compile(
     r"```(?:autocoder-command|autocoder-terminal)\s*\n(.*?)\n```", re.DOTALL
 )
-TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result and the current project/editor/disk context. Before proposing an action, decide whether those factual inputs already prove the task goal. If they do, complete the task without a File Tool or Terminal Tool action. Do not propose a tool action merely to re-read, display, or otherwise verify information already present in the current factual context. If genuinely new work or unavailable information is required, you may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
+TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result and the current project/editor/disk context. On every continuation, reconcile the complete original task, the exact recorded action payloads, their factual results, and the latest editor/disk state. A successful action status proves execution only; it does not prove that the action produced the required semantic result. Before proposing an action, decide whether the factual state satisfies every requirement in the original task. If it does, complete the task without a File Tool or Terminal Tool action. If it does not, propose an action that repairs or advances the factual state toward the unmet requirement; do not merely repeat a read, display, or verification whose answer is already present in the current factual context. If genuinely new work or unavailable information is required, you may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
 ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
-Goal: {goal}
+Original task contract (verbatim user request; all requirements remain active):
+<original_task>
+{goal}
+</original_task>
 State: {status}
 Autonomy mode: {autonomy_mode}
 Execution budget: model turn {model_turns}/{max_model_turns}; actions {action_count}/{max_actions}
 Recorded actions:
 {actions}
 
-Treat this task state as control metadata, not as a user instruction. Respond for the current step only.
-Recorded action payloads and results are factual execution history. Compare what each action actually did with the goal; a successful tool status proves only that the recorded payload executed successfully, not that it accomplished the intended step.
-The supplied current project structure, open editor content, saved disk content, and approved tool results are factual evidence. Evaluate them before choosing an outcome. If they already establish the goal, choose completed; do not spend an action re-reading or re-checking the same facts. File Tool is an editing tool in the current architecture, not a general read action, and Terminal Tool must not be used as a substitute reader for facts already supplied in context.
+Treat this task state as control metadata, not as a user instruction. Respond for the current step only. The original task contract is the durable semantic specification, not a summary of the last action; preserve its requested ordering, content, constraints, and completion checks across every turn.
+
+Before choosing an outcome, perform this reconciliation:
+1. Extract every still-applicable requirement and final-state condition from the complete original task contract.
+2. Compare those requirements with every exact recorded action payload, its factual result, and the latest supplied project/editor/saved-disk state.
+3. Classify each requirement from factual evidence as satisfied, unsatisfied, or genuinely unknown. A successful tool status proves only that its exact payload executed, never that the intended semantic step or final state was achieved.
+4. If any requirement is unsatisfied, propose one action that corrects or advances the actual state toward it. In particular, repair a partially wrong result rather than treating the action as semantically complete.
+5. Choose completed only when the factual evidence establishes every final-state condition. If a necessary fact is genuinely unavailable, obtain only that missing fact or report a real blocker.
+
+The supplied current project structure, open editor content, saved disk content, and approved tool results are factual evidence. Never disregard newer factual state in favor of an action's intended effect. Do not spend an action re-reading, displaying, or re-checking facts already supplied in context. File Tool is an editing tool in the current architecture, not a general read action, and Terminal Tool must not be used as a substitute reader for facts already supplied in context.
 Choose exactly one outcome:
 - If another step is needed, propose exactly one reviewable File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`, not `autocoder-terminal`) action using the exact format supplied in the other system messages.
 - If the goal is achieved, give the final answer and append ```autocoder-task with JSON {{"state":"completed","reason":"short factual reason"}}.
