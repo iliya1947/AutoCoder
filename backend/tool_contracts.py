@@ -163,6 +163,52 @@ def render_tool_contract(payload: Any) -> str:
     return "\n".join(lines)
 
 
+def orchestration_decision_schema(payload: Any) -> dict[str, Any]:
+    """Build the generation contract from the authoritative runtime registry.
+
+    Display text is data, not a control channel.  Executable variants exist
+    only for tools that are factually available, and their operation enums are
+    copied from the same contracts used by post-generation validation.
+    """
+    common = {
+        "displayText": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+    }
+
+    def outcome(kind: str, extra: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
+        properties = {"outcome": {"const": kind}, **common, **(extra or {})}
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": ["outcome", "displayText", "reason", *(required or [])],
+            "additionalProperties": False,
+        }
+
+    variants = [
+        outcome("requirement_satisfied"),
+        outcome("completed"),
+        outcome("blocked"),
+    ]
+    available = {contract.id: contract for contract in available_tool_contracts(payload)}
+    file_contract = available.get("file")
+    if file_contract:
+        for operation in file_contract.operations:
+            extra = {
+                "operation": {"const": operation},
+                "path": {"type": "string", "minLength": 1},
+            }
+            required = ["operation", "path"]
+            if operation != "delete":
+                extra["content"] = {"type": "string"}
+                required.append("content")
+            variants.append(outcome("file_action", extra, required))
+    if "terminal" in available:
+        variants.append(outcome("terminal_action", {
+            "command": {"type": "string", "minLength": 1},
+        }, ["command"]))
+    return {"type": "object", "oneOf": variants}
+
+
 def validate_selected_tool(tool: str, requirement_id: str | None, payload: Any) -> str | None:
     available_ids = {contract.id for contract in available_tool_contracts(payload)}
     if tool not in available_ids:

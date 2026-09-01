@@ -13,6 +13,7 @@ from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
 from main import TERMINAL_PROPOSAL_PROMPT, TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_task_decision, parse_terminal_proposal
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
+from tool_contracts import orchestration_decision_schema
 
 
 class FakeResponse:
@@ -39,6 +40,64 @@ def ready_ollama(request_or_url, **_kwargs):
 
 
 class BackendTests(unittest.TestCase):
+    def _structured_payload(self):
+        return {
+            "messages": [{"role": "user", "content": "Create a note, then run tests"}],
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {
+                "id": "task-typed", "goal": "Create a note, then run tests",
+                "status": "thinking", "actions": [],
+            },
+        }
+
+    def test_generation_schema_contains_only_registry_tools_and_operations(self):
+        schema = orchestration_decision_schema(self._structured_payload())
+        variants = {item["properties"]["outcome"]["const"] for item in schema["oneOf"]}
+        file_variants = [
+            item for item in schema["oneOf"]
+            if item["properties"]["outcome"]["const"] == "file_action"
+        ]
+        terminal_variant = next(
+            item for item in schema["oneOf"]
+            if item["properties"]["outcome"]["const"] == "terminal_action"
+        )
+
+        self.assertEqual(variants, {
+            "file_action", "terminal_action", "requirement_satisfied", "completed", "blocked"
+        })
+        self.assertEqual(
+            [item["properties"]["operation"]["const"] for item in file_variants],
+            ["create", "replace", "delete"],
+        )
+        self.assertNotIn("content", file_variants[-1]["properties"])
+        self.assertNotIn("tool", terminal_variant["properties"])
+        self.assertNotIn("fence", terminal_variant["properties"])
+
+    def test_structured_boundary_rejects_nonexistent_outcome_and_file_operation(self):
+        payload = self._structured_payload()
+        with self.assertRaisesRegex(ValueError, "unknown orchestration outcome"):
+            backend_main.parse_structured_decision({
+                "outcome": "autocoder-terminal", "displayText": "Run it", "reason": "Next step"
+            }, payload)
+        with self.assertRaisesRegex(ValueError, "File action does not satisfy"):
+            backend_main.parse_structured_decision({
+                "outcome": "file_action", "displayText": "Read it", "reason": "Need data",
+                "operation": "read", "path": "note.txt",
+            }, payload)
+
+    def test_structured_terminal_action_is_executable_without_markdown_protocol(self):
+        answer, proposal, command, transition, conclusion = backend_main.parse_structured_decision({
+            "outcome": "terminal_action", "displayText": "Please review the test command.",
+            "reason": "Tests remain to be run.", "command": "npm test",
+        }, self._structured_payload())
+
+        self.assertEqual(answer.content, "Please review the test command.")
+        self.assertNotIn("autocoder-", answer.content)
+        self.assertIsNone(proposal)
+        self.assertEqual(command, {"command": "npm test"})
+        self.assertIsNone(transition)
+        self.assertIsNone(conclusion)
+
     def test_terminal_prompt_describes_the_real_windows_shell_contract(self):
         self.assertIn("cmd.exe /D /A /S /C", TERMINAL_PROPOSAL_PROMPT)
         self.assertIn("code page 65001", TERMINAL_PROPOSAL_PROMPT)
@@ -229,8 +288,8 @@ class BackendTests(unittest.TestCase):
         command = parse_terminal_proposal(answer, payload)
         proposal, command, violation = backend_main.validate_model_action(answer, payload, None, command)
 
-        self.assertIn("`autocoder-command`, not `autocoder-terminal`", messages[0].content)
-        self.assertIn("Terminal Tool (`autocoder-command`)", messages[-4].content)
+        self.assertIn("provider-supplied structured-output schema", messages[0].content)
+        self.assertNotIn("autocoder-terminal", messages[0].content)
         self.assertIsNone(proposal)
         self.assertIsNone(command)
         self.assertIn("nonexistent action contract", violation)
@@ -657,7 +716,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("id=terminal; fence=autocoder-command; operations=execute", messages[0].content)
         self.assertIn("successful tool status proves only", messages[0].content)
         self.assertIn("Choose exactly one outcome", messages[0].content)
-        self.assertIn('state "blocked"', messages[0].content)
+        self.assertIn("blocked only when further", messages[0].content)
 
     def test_rejects_invalid_orchestration_autonomy_policy(self):
         for autonomy in ({"mode": "automatic"}, {"mode": "supervised", "extra": True}, "supervised"):
@@ -808,6 +867,25 @@ class BackendTests(unittest.TestCase):
         sent = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(sent["model"], "test-model")
         self.assertFalse(sent["stream"])
+
+    @patch("provider.request.urlopen")
+    def test_ollama_structured_chat_sends_json_schema_as_format(self, urlopen):
+        schema = {"type": "object", "properties": {"outcome": {"const": "completed"}}}
+
+        def response(request_or_url, **_kwargs):
+            url = request_or_url.full_url if hasattr(request_or_url, "full_url") else request_or_url
+            if url.endswith("/api/version"):
+                return FakeResponse({"version": "1.0"})
+            if url.endswith("/api/tags"):
+                return FakeResponse({"models": [{"name": "test-model"}]})
+            return FakeResponse({"message": {"role": "assistant", "content": '{"outcome":"completed"}'}})
+
+        urlopen.side_effect = response
+        result = OllamaProvider(model="test-model").structured_chat([Message("user", "finish")], schema)
+
+        sent = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(sent["format"], schema)
+        self.assertEqual(result, {"outcome": "completed"})
 
     @patch("provider.request.urlopen")
     def test_ollama_http_error_preserves_response_details(self, urlopen):
