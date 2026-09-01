@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
-from tool_contracts import executable_fences, missing_required_tools, next_requirement_id, render_tool_contract, requirement_contracts, tool_contract, unmet_requirement_transitions, validate_selected_tool
+from tool_contracts import executable_fences, missing_required_tools, next_requirement_id, orchestration_decision_schema, render_tool_contract, requirement_contracts, tool_contract, unmet_requirement_transitions, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -95,12 +95,13 @@ Before choosing an outcome, perform this reconciliation:
 5. Choose completed only when the factual evidence establishes every final-state condition. If a necessary fact is genuinely unavailable, obtain only that missing fact or report a real blocker.
 
 The supplied current project structure, open editor content, saved disk content, and approved tool results are factual evidence. Never disregard newer factual state in favor of an action's intended effect. Do not spend an action re-reading, displaying, or re-checking facts already supplied in context. File Tool is an editing tool in the current architecture, not a general read action, and Terminal Tool must not be used as a substitute reader for facts already supplied in context.
-Choose exactly one outcome:
-- If another step is needed, propose exactly one reviewable File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`, not `autocoder-terminal`) action using the exact format supplied in the other system messages.
-- If the active requirement is factually satisfied, append ```autocoder-requirement with JSON {{"state":"satisfied","reason":"short factual reason"}}. This proposes a semantic transition for user review; it does not advance state by itself and must not be combined with an action.
-- If the goal is achieved, give the final answer and append ```autocoder-task with JSON {{"state":"completed","reason":"short factual reason"}}.
-- If an error, refusal, or missing prerequisite makes further progress impossible, explain it and append the same block with state "blocked" and a short reason.
-Never report completed or blocked while also proposing an action."""
+Choose exactly one outcome through the provider-supplied structured-output schema. The schema is the
+machine control channel; never encode control in Markdown, a code fence, or a tool/contract name in
+displayText. Use displayText only for ordinary user-facing conversational text and reason for the
+short factual rationale. File and Terminal variants are reviewable proposals, not executed facts.
+The requirement_satisfied variant proposes a semantic transition for user review and does not
+advance state by itself. Choose completed only for an achieved goal, or blocked only when further
+progress is genuinely impossible. Never combine outcomes."""
 TASK_DECISION_PATTERN = re.compile(r"```autocoder-task\s*\n(.*?)\n```", re.DOTALL)
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
@@ -309,7 +310,8 @@ def parse_request(payload: Any) -> list[Message]:
                 disk_state="exists" if exists_on_disk else "deleted/missing (the editor buffer is retained only to protect unsaved changes)",
             ),
         ))
-        context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
+        if orchestration is None:
+            context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
 
     selection = context.get("selection")
     if selection is not None:
@@ -337,9 +339,9 @@ def parse_request(payload: Any) -> list[Message]:
 
     if not context_messages:
         raise ValueError("Context must contain an openFile, selection, or project object.")
-    if project is not None and open_file is None:
+    if project is not None and open_file is None and orchestration is None:
         context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
-    if project is not None:
+    if project is not None and orchestration is None:
         context_messages.append(Message(role="system", content=TERMINAL_PROPOSAL_PROMPT))
     if any(
         message.content.startswith(("AutoCoder File Tool result", "AutoCoder Terminal Tool result"))
@@ -513,6 +515,57 @@ def parse_task_decision(answer: Message, has_action: bool) -> dict[str, str]:
     }
 
 
+def parse_structured_decision(value: Any, payload: Any) -> tuple[Message, dict[str, str] | None, dict[str, str] | None, dict[str, str] | None, dict[str, str] | None]:
+    """Convert provider JSON into a typed decision, then independently validate it."""
+    if not isinstance(value, dict):
+        raise ValueError("The model response is not a structured orchestration decision.")
+    outcome, display, reason = value.get("outcome"), value.get("displayText"), value.get("reason")
+    if not isinstance(display, str) or not display.strip() or not isinstance(reason, str) or not reason.strip():
+        raise ValueError("The model structured decision needs non-empty displayText and reason.")
+    answer = Message("assistant", display.strip())
+    proposal = command = requirement = decision = None
+    if outcome == "file_action":
+        allowed = {"outcome", "displayText", "reason", "operation", "path", "content"}
+        if set(value) - allowed:
+            raise ValueError("The model File action has unknown fields.")
+        action = {key: value[key] for key in ("operation", "path", "content") if key in value}
+        # Reuse the mature path/concurrency validator without treating model
+        # Markdown as a protocol: this synthetic envelope is backend-owned.
+        encoded = json.dumps(action, ensure_ascii=False)
+        proposal = parse_file_proposal(Message("assistant", f"```autocoder-file\n{encoded}\n```"), payload)
+        if proposal is None:
+            raise ValueError("The model File action does not satisfy the executable payload contract.")
+    elif outcome == "terminal_action":
+        if set(value) != {"outcome", "displayText", "reason", "command"}:
+            raise ValueError("The model Terminal action has invalid fields.")
+        command_value = value.get("command")
+        if not isinstance(command_value, str) or not command_value.strip() or "\0" in command_value:
+            raise ValueError("The model Terminal action does not satisfy the executable payload contract.")
+        command = {"command": command_value.strip()}
+    elif outcome == "requirement_satisfied":
+        if set(value) != {"outcome", "displayText", "reason"}:
+            raise ValueError("The model requirement transition has invalid fields.")
+        requirement_id = next_requirement_id(payload)
+        if requirement_id is None or missing_required_tools(requirement_id, payload):
+            raise ValueError("The semantic transition lacks an active requirement or required tool evidence.")
+        requirement = {"requirementId": requirement_id, "reason": reason.strip()}
+    elif outcome in {"completed", "blocked"}:
+        if set(value) != {"outcome", "displayText", "reason"}:
+            raise ValueError("The model task conclusion has invalid fields.")
+        if outcome == "completed" and unmet_requirement_transitions(payload):
+            raise ValueError("The model cannot complete while requirement transitions remain unmet.")
+        decision = {"outcome": outcome, "reason": reason.strip()}
+    else:
+        raise ValueError(f"The model selected an unknown orchestration outcome: {outcome!r}.")
+
+    selected_tool = "file" if proposal else "terminal" if command else None
+    if selected_tool:
+        violation = validate_selected_tool(selected_tool, next_requirement_id(payload), payload)
+        if violation:
+            raise ValueError(violation)
+    return answer, proposal, command, requirement, decision
+
+
 def read_stdin_payload() -> Any:
     """Read the Tauri bridge contract without consulting the host text encoding."""
     raw = sys.stdin.buffer.read()
@@ -542,7 +595,16 @@ def write_stdout_response(
 def main() -> int:
     try:
         payload = read_stdin_payload()
-        answer = OllamaProvider().chat(parse_request(payload))
+        provider = OllamaProvider()
+        messages = parse_request(payload)
+        if isinstance(payload, dict) and payload.get("orchestration") is not None:
+            raw_decision = provider.structured_chat(messages, orchestration_decision_schema(payload))
+            answer, proposal, command_proposal, requirement_proposal, decision = parse_structured_decision(raw_decision, payload)
+            selected_tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
+            requirement_id = next_requirement_id(payload) if selected_tool else None
+            write_stdout_response(answer, proposal, command_proposal, decision, requirement_id, requirement_proposal)
+            return 0
+        answer = provider.chat(messages)
         proposal = parse_file_proposal(answer, payload)
         command_proposal = parse_terminal_proposal(answer, payload)
         proposal, command_proposal, violation = validate_model_action(

@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 from urllib import error, parse, request
 
 
@@ -26,6 +26,8 @@ class Message:
 
 class ModelProvider(Protocol):
     def chat(self, messages: list[Message]) -> Message: ...
+
+    def structured_chat(self, messages: list[Message], schema: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class OllamaRuntime:
@@ -166,15 +168,25 @@ class OllamaProvider:
         api_root = parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
         self.runtime = runtime or OllamaRuntime(api_root, opener=self.opener)
 
-    def chat(self, messages: list[Message]) -> Message:
+    def _request(self, messages: list[Message], *, schema: dict[str, Any] | None = None) -> Message:
         # Explicitly configured remote providers remain untouched: process and
         # model lifecycle management applies only to a loopback Ollama endpoint.
         if self.is_local:
             self.runtime.ensure_ready()
             self.runtime.ensure_model(self.model)
 
+        request_body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [message.__dict__ for message in messages],
+            "stream": False,
+        }
+        if schema is not None:
+            # Ollama's /api/chat `format` accepts a JSON Schema and constrains
+            # generation to JSON matching that schema.  Keep this capability
+            # behind ModelProvider rather than leaking Ollama into orchestration.
+            request_body["format"] = schema
         body = json.dumps(
-            {"model": self.model, "messages": [message.__dict__ for message in messages], "stream": False},
+            request_body,
             ensure_ascii=False,
         ).encode("utf-8")
         http_request = request.Request(
@@ -196,3 +208,16 @@ class OllamaProvider:
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ProviderError("Ollama response does not contain an assistant message.")
         return Message(role="assistant", content=message["content"])
+
+    def chat(self, messages: list[Message]) -> Message:
+        return self._request(messages)
+
+    def structured_chat(self, messages: list[Message], schema: dict[str, Any]) -> dict[str, Any]:
+        answer = self._request(messages, schema=schema)
+        try:
+            value = json.loads(answer.content)
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Ollama violated the requested structured-output JSON contract.") from exc
+        if not isinstance(value, dict):
+            raise ProviderError("Ollama structured output is not a JSON object.")
+        return value

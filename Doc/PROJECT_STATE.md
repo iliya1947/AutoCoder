@@ -2,11 +2,40 @@
 
 ## Дата состояния
 
-1 сентября 2026 (введён исполняемый contract и pre-approval validation инструментов).
+1 сентября 2026 (LLM → orchestration переведён на typed structured output).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Typed generation contract для orchestration decision (1 сентября 2026)
+- Packaged Windows acceptance после #102 снова подтвердил FAIL: File action исполнился, но на
+  следующем turn модель напечатала несуществующий fence `autocoder-terminal`. Closed-world backend
+  validation правильно остановил action до approval, однако Markdown оставался ненадёжным control
+  channel на самой границе генерации.
+- Проверен актуальный официальный Ollama API: `/api/chat` поддерживает JSON Schema в поле `format`
+  (structured outputs), а native tool calling передаёт function definitions в `tools` и возвращает
+  `message.tool_calls`. Для AutoCoder выбран structured output: один discriminated outcome должен
+  охватывать не только два executable tools, но также semantic requirement transition, `completed`
+  и `blocked`; моделирование последних как фиктивных tools смешало бы lifecycle и исполнение. Native
+  tool calls остаются подходящим будущим механизмом для provider-side исполнения функций, но не
+  являются единым contract текущей orchestration state machine.
+- `ModelProvider` теперь явно предоставляет `structured_chat`; Ollama adapter отправляет code-owned
+  JSON Schema через `format` и декодирует только JSON object. Обычный `chat` сохранён для
+  conversational turns и будущие providers могут реализовать тот же capability своим API.
+- Schema строится из authoritative tool registry и текущей factual availability. Exhaustive variants:
+  `file_action` с operation enum реального File Tool, `terminal_action`,
+  `requirement_satisfied`, `completed`, `blocked`. Tool/fence/contract name вообще не является полем
+  executable proposal. `displayText` отделён от control data и остаётся обычным пользовательским
+  текстом; Markdown больше не парсится на orchestration turns.
+- После constrained generation сохранена независимая backend защита: response повторно проверяется
+  как точный tagged shape, File path/operation/content проходят прежние safety/concurrency rules,
+  Terminal payload и factual availability проверяются отдельно, active requirement назначает backend,
+  required-tool evidence и unmet transitions продолжают блокировать ложный semantic/completed outcome.
+- Regression coverage проверяет schema registry binding, отсутствие полей `tool`/`fence`, передачу
+  schema в Ollama `format`, успешный Terminal proposal без Markdown и отказ неизвестного outcome
+  `autocoder-terminal`/несуществующей File operation на response → typed-decision boundary.
+- Барьер 80% **остаётся FAIL** до новой packaged Windows проверки.
 
 ### Closed-world contract выбора orchestration action (1 сентября 2026)
 - Полный путь ревизии показал разрыв ответственности: backend подробно объяснял модели форматы в
