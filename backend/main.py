@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
-from tool_contracts import executable_fences, next_requirement_id, render_tool_contract, requirement_contracts, tool_contract, unmet_requirement_transitions, validate_selected_tool
+from tool_contracts import executable_fences, missing_required_tools, next_requirement_id, render_tool_contract, requirement_contracts, tool_contract, unmet_requirement_transitions, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -198,6 +198,13 @@ def parse_request(payload: Any) -> list[Message]:
             for transition in transitions
         ):
             raise ValueError("Orchestration requirement transitions are invalid.")
+        for transition in transitions:
+            missing_tools = missing_required_tools(transition["requirementId"], payload)
+            if transition["status"] in {"proposed", "approved"} and missing_tools:
+                raise ValueError(
+                    "Orchestration requirement transition lacks factual required-tool evidence: "
+                    + ", ".join(sorted(missing_tools))
+                )
         action_lines = []
         requirement_ids = {requirement.id for requirement in requirement_contracts(payload)}
         for action in actions:
@@ -471,8 +478,9 @@ def parse_requirement_proposal(answer: Message, payload: Any) -> dict[str, str] 
     except json.JSONDecodeError:
         return None
     requirement_id = next_requirement_id(payload)
+    missing_tools = missing_required_tools(requirement_id, payload) if requirement_id else frozenset()
     if (
-        requirement_id is None or not isinstance(decision, dict)
+        requirement_id is None or missing_tools or not isinstance(decision, dict)
         or set(decision) != {"state", "reason"}
         or decision.get("state") != "satisfied"
         or not isinstance(decision.get("reason"), str) or not decision["reason"].strip()
@@ -542,6 +550,11 @@ def main() -> int:
         )
         decision = ({"outcome": "blocked", "reason": violation} if violation else None)
         requirement_proposal = parse_requirement_proposal(answer, payload) if decision is None else None
+        if decision is None and REQUIREMENT_DECISION_PATTERN.search(answer.content) and requirement_proposal is None:
+            requirement_id = next_requirement_id(payload)
+            missing_tools = missing_required_tools(requirement_id, payload) if requirement_id else frozenset()
+            reason = "Required tool evidence is missing: " + ", ".join(sorted(missing_tools)) if missing_tools else "The semantic transition contract is invalid."
+            decision = {"outcome": "blocked", "reason": reason}
         if decision is None and proposal is None and command_proposal is None and requirement_proposal is None:
             parsed_decision = parse_task_decision(answer, False)
             unmet = unmet_requirement_transitions(payload)

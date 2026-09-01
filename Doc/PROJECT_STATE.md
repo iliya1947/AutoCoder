@@ -32,6 +32,15 @@
   scope, а пользователь отдельно подтверждает или отклоняет смысловое завершение. Только approved
   transition меняет active scope. Task completion блокируется, пока transition не одобрен для каждого
   scope, включая условия, которым не требовался отдельный tool action.
+- Для constrained scope semantic approval является необходимым, но недостаточным условием перехода:
+  backend отдельно вычисляет factual tool evidence из persisted actions, связанных с тем же
+  requirement, и принимает только `status=completed` с согласованным result (`actionId`, tool,
+  `outcome=completed`). Каждый tool из `required_tools` обязан иметь такое доказательство; coordinated
+  формулировки с несколькими явно требуемыми tools сохраняются как conjunctive set, а не `any-of`.
+- `autocoder-requirement` proposal не создаётся до наличия всех required-tool evidence. При загрузке
+  snapshot backend повторно проверяет proposed/approved transitions и отклоняет состояние, которое
+  пытается закрыть constrained requirement без фактов. Active cursor и final completion используют
+  только effective transition = user-approved semantic transition + полный required-tool evidence.
 - Bare mention имени tool не считается выбором: constraint создаётся только из явной
   affirmative/negative invocation-формы, распознаваемой расширяемыми aliases registry; если
   пользователь tool не задал, система его не угадывает.

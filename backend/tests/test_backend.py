@@ -295,6 +295,7 @@ class BackendTests(unittest.TestCase):
         payload["orchestration"]["actions"] = [{
             "id": "task-bound:action:1", "tool": "file", "requirementId": "requirement-1",
             "status": "completed", "payload": {"operation": "replace", "path": "artifact.txt", "content": "new"},
+            "result": {"id": "result-1", "actionId": "task-bound:action:1", "tool": "file", "outcome": "completed", "content": "updated"},
         }]
         payload["orchestration"]["requirementTransitions"] = [{
             "id": "transition-1", "requirementId": "requirement-1", "status": "approved",
@@ -356,7 +357,8 @@ class BackendTests(unittest.TestCase):
         goal = "1. Repair the artifact using Terminal Tool.\n2. Publish the result using File Tool."
         actions = [
             {"id": f"action-{index}", "tool": "terminal", "requirementId": "requirement-1",
-             "status": "completed", "payload": {"command": command}}
+             "status": "completed", "payload": {"command": command},
+             "result": {"id": f"result-{index}", "actionId": f"action-{index}", "tool": "terminal", "outcome": "completed", "content": "done"}}
             for index, command in enumerate(("attempt repair", "correct repair"), 1)
         ]
         payload = {
@@ -379,11 +381,41 @@ class BackendTests(unittest.TestCase):
             "orchestration": {"id": "task-review", "goal": goal, "status": "awaiting_ai", "actions": []},
         }
         decision = Message("assistant", '```autocoder-requirement\n{"state":"satisfied","reason":"Output matches."}\n```')
+        self.assertIsNone(backend_main.parse_requirement_proposal(decision, payload))
+        payload["orchestration"]["actions"] = [{
+            "id": "action-1", "tool": "terminal", "requirementId": "requirement-1", "status": "completed",
+            "payload": {"command": "repair"},
+            "result": {"id": "result-1", "actionId": "action-1", "tool": "terminal", "outcome": "completed", "content": "done"},
+        }]
         self.assertEqual(backend_main.parse_requirement_proposal(decision, payload), {
             "requirementId": "requirement-1", "reason": "Output matches.",
         })
         combined = Message("assistant", decision.content + '\n```autocoder-command\n{"command":"verify"}\n```')
         self.assertIsNone(backend_main.parse_requirement_proposal(combined, payload))
+
+    def test_all_required_tools_need_factual_results_before_semantic_transition(self):
+        goal = "Process the artifact using Terminal Tool and File Tool."
+        payload = {
+            "messages": [{"role": "user", "content": goal}],
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {"id": "task-all-tools", "goal": goal, "status": "awaiting_ai", "actions": []},
+        }
+        self.assertEqual(
+            backend_main.missing_required_tools("requirement-1", payload),
+            frozenset({"file", "terminal"}),
+        )
+        payload["orchestration"]["actions"] = [{
+            "id": "terminal-1", "tool": "terminal", "requirementId": "requirement-1", "status": "completed",
+            "payload": {"command": "process"},
+            "result": {"id": "terminal-result", "actionId": "terminal-1", "tool": "terminal", "outcome": "completed", "content": "done"},
+        }]
+        self.assertEqual(backend_main.missing_required_tools("requirement-1", payload), frozenset({"file"}))
+
+        payload["orchestration"]["requirementTransitions"] = [{
+            "id": "transition-1", "requirementId": "requirement-1", "status": "approved", "reason": "claimed",
+        }]
+        with self.assertRaisesRegex(ValueError, "lacks factual required-tool evidence: file"):
+            parse_request(payload)
 
     def test_list_data_lines_do_not_create_policy_scopes(self):
         goal = "1. Create a document with this content:\nalpha\nbeta\n2. Update it via Terminal Tool."

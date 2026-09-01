@@ -107,6 +107,14 @@ def _scoped_tool_mentions(text: str, contract: ToolContract) -> tuple[bool, bool
         rf"(?:\buse|\busing|\bvia|\bthrough|\bwith|\bиспольз\w*|\bчерез|\bпосредством|\bс\s+помощью)\s+(?:the\s+)?{aliases}(?!\w)",
         text, re.IGNORECASE,
     ))
+    # Coordinated explicit choices share the invocation marker, for example
+    # "using Terminal Tool and File Tool". The bounded span stays inside the
+    # already isolated requirement scope and does not turn bare mentions in a
+    # later requirement into policy.
+    required = required or bool(re.search(
+        rf"(?:\buse|\busing|\bvia|\bthrough|\bwith|\bиспольз\w*|\bчерез|\bпосредством|\bс\s+помощью)\b.{{0,120}}?(?<!\w){aliases}(?!\w)",
+        text, re.IGNORECASE,
+    ))
     return required and not forbidden, forbidden
 
 
@@ -172,19 +180,49 @@ def validate_selected_tool(tool: str, requirement_id: str | None, payload: Any) 
     return None
 
 
+def missing_required_tools(requirement_id: str, payload: Any) -> frozenset[str]:
+    """Return required tools not proven by completed, factual action results."""
+    requirement = next(
+        (item for item in requirement_contracts(payload) if item.id == requirement_id), None
+    )
+    if requirement is None or not requirement.required_tools:
+        return frozenset()
+    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
+    actions = orchestration.get("actions", []) if isinstance(orchestration, dict) else []
+    completed_tools = {
+        action.get("tool")
+        for action in actions
+        if isinstance(action, dict)
+        and action.get("requirementId") == requirement_id
+        and action.get("status") == "completed"
+        and isinstance(action.get("result"), dict)
+        and action["result"].get("actionId") == action.get("id")
+        and action["result"].get("tool") == action.get("tool")
+        and action["result"].get("outcome") == "completed"
+    }
+    return requirement.required_tools - completed_tools
+
+
+def requirement_transition_is_effective(requirement_id: str, payload: Any) -> bool:
+    """Semantic approval and every hard tool obligation are both necessary."""
+    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
+    transitions = orchestration.get("requirementTransitions", []) if isinstance(orchestration, dict) else []
+    approved = any(
+        isinstance(transition, dict)
+        and transition.get("requirementId") == requirement_id
+        and transition.get("status") == "approved"
+        for transition in transitions
+    )
+    return approved and not missing_required_tools(requirement_id, payload)
+
+
 def next_requirement_id(payload: Any) -> str | None:
     """Select the active scope from user-approved semantic transitions."""
     requirements = requirement_contracts(payload)
     if not requirements:
         return None
-    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
-    transitions = orchestration.get("requirementTransitions", []) if isinstance(orchestration, dict) else []
-    satisfied = {
-        transition.get("requirementId") for transition in transitions
-        if isinstance(transition, dict) and transition.get("status") == "approved"
-    }
     for requirement in requirements:
-        if requirement.id in satisfied:
+        if requirement_transition_is_effective(requirement.id, payload):
             continue
         return requirement.id
     return None
@@ -193,10 +231,7 @@ def next_requirement_id(payload: Any) -> str | None:
 def unmet_requirement_transitions(payload: Any) -> tuple[str, ...]:
     """No semantic scope can be skipped by a model completion claim."""
     requirements = requirement_contracts(payload)
-    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
-    transitions = orchestration.get("requirementTransitions", []) if isinstance(orchestration, dict) else []
-    satisfied = {
-        transition.get("requirementId") for transition in transitions
-        if isinstance(transition, dict) and transition.get("status") == "approved"
-    }
-    return tuple(requirement.id for requirement in requirements if requirement.id not in satisfied)
+    return tuple(
+        requirement.id for requirement in requirements
+        if not requirement_transition_is_effective(requirement.id, payload)
+    )
