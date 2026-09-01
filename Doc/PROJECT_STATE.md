@@ -2,11 +2,64 @@
 
 ## Дата состояния
 
-1 сентября 2026 (усилена семантическая reconciliation orchestration planning).
+1 сентября 2026 (введён исполняемый contract и pre-approval validation инструментов).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Closed-world contract выбора orchestration action (1 сентября 2026)
+- Полный путь ревизии показал разрыв ответственности: backend подробно объяснял модели форматы в
+  prompt, но executable contract был размазан между regex/parser/UI, а compatibility parser даже
+  принимал несуществующий fence `autocoder-terminal`. Семантический выбор модели после parsing не
+  проходил общей проверкой против явно названного пользователем инструмента.
+- Добавлен backend registry реальных инструментов. Для каждого tool он задаёт стабильный id,
+  канонический fence, конечный набор операций, aliases и проверяемое условие доступности из текущего
+  factual context. Один и тот же registry формирует closed-world model context и является источником
+  pre-approval validation; это расширяемая граница для будущих tools, а не правило acceptance-теста.
+- Пользовательские tool constraints теперь привязаны не ко всей task, а к стабильным requirement
+  scopes, полученным из строк, пунктов и предложений исходного `goal`. Для каждого scope отдельно
+  сохраняются required/forbidden tools; многошаговая задача может последовательно требовать File,
+  Terminal и не ограниченный пользователем action без потери или глобализации constraints.
+- Модель больше не выбирает `requirementId`: backend определяет active scope из immutable task
+  contract и отдельно persisted, явно одобренных semantic transitions, проверяет policy, а затем сам
+  присваивает id принятому action. Любой `requirementId` внутри model payload является лишним полем и
+  отклоняется, поэтому модель не может сослаться на соседний unconstrained scope.
+- `completed` tool action означает только исполнение конкретного payload и никогда не двигает
+  requirement cursor. В одном active scope допускается любое число File/Terminal actions, включая
+  исправление предыдущего результата. Когда модель считает requirement фактически выполненным, она
+  может предложить отдельный `autocoder-requirement` transition; backend привязывает его к active
+  scope, а пользователь отдельно подтверждает или отклоняет смысловое завершение. Только approved
+  transition меняет active scope. Task completion блокируется, пока transition не одобрен для каждого
+  scope, включая условия, которым не требовался отдельный tool action.
+- Для constrained scope semantic approval является необходимым, но недостаточным условием перехода:
+  backend отдельно вычисляет factual tool evidence из persisted actions, связанных с тем же
+  requirement, и принимает только `status=completed` с согласованным result (`actionId`, tool,
+  `outcome=completed`). Каждый tool из `required_tools` обязан иметь такое доказательство; coordinated
+  формулировки с несколькими явно требуемыми tools сохраняются как conjunctive set, а не `any-of`.
+- `autocoder-requirement` proposal не создаётся до наличия всех required-tool evidence. При загрузке
+  snapshot backend повторно проверяет proposed/approved transitions и отклоняет состояние, которое
+  пытается закрыть constrained requirement без фактов. Active cursor и final completion используют
+  только effective transition = user-approved semantic transition + полный required-tool evidence.
+- Bare mention имени tool не считается выбором: constraint создаётся только из явной
+  affirmative/negative invocation-формы, распознаваемой расширяемыми aliases registry; если
+  пользователь tool не задал, система его не угадывает.
+- Requirement compiler использует явные верхнеуровневые маркеры списка как границы, а последующие
+  строки считает продолжением/данными предыдущего пункта. Для обычного prose применяются границы
+  предложений. Строки контента больше не сдвигают code-owned policy cursor и не создают фиктивные
+  action scopes.
+- Удалён permissive alias несуществующего Terminal fence. Любой неизвестный `autocoder-*` contract,
+  неизвестная File Tool operation, malformed payload, несколько actions или action, недоступный в
+  текущем context, превращаются в явный blocked decision и не могут маскироваться одновременным
+  заявлением модели о completion.
+- Сохранена factual reconciliation предыдущих actions: registry ограничивает пространство реально
+  исполнимых переходов, а persisted exact payload/result и свежий editor/disk context остаются
+  доказательной основой выбора следующего шага и completion. Добавлены regression-тесты tool binding,
+  contract rendering, multi-tool scopes, нескольких actions и repair в одном scope, отдельного
+  user-reviewed semantic transition, code-owned requirement assignment, запрета model-supplied id,
+  data continuation lines, отрицания и простого упоминания tool, сохранения requirement association,
+  несуществующего fence и операции, конфликтующего completion и validation до approval.
+- Барьер 80% **остаётся непройденным** до повторной packaged Windows проверки.
 
 ### Семантическая reconciliation многошаговой задачи (1 сентября 2026)
 - Очередной 80% packaged Windows acceptance показал, что одного наличия action payload/result в

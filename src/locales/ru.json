@@ -128,5 +128,10 @@
   "chat.step_ready": "Результат инструмента сохранён. Проверьте его и продолжите задачу, когда будете готовы.",
   "task.status_stopped": "Остановлена пользователем",
   "task.next_new": "Выбрать режим и начать новую задачу",
-  "task.stop": "Остановить задачу"
+  "task.stop": "Остановить задачу",
+  "task.waiting_requirement": "Проверки требования",
+  "task.next_requirement": "Подтвердить смысловое завершение",
+  "chat.requirement_review": "Проверка завершения требования",
+  "chat.requirement_approve": "Считать выполненным",
+  "chat.requirement_decline": "Оставить активным"
 }

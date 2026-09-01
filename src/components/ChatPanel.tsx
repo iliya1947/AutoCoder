@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../hooks/useTranslation";
 import { OpenedFile, ProjectNode, ProjectTree } from "../types/project";
 import type { TerminalTranscript } from "./TerminalPanel";
-import { autonomyMode, blockAtExecutionLimit, canProposeAction, continueTask, continuesAfterToolResult, finishTask, isTaskFinished, markActionRunning, proposeAction, recordResult, startTask, stopTask, taskSnapshot } from "../types/orchestration";
+import { autonomyMode, blockAtExecutionLimit, canProposeAction, continueTask, continuesAfterToolResult, finishTask, isTaskFinished, markActionRunning, proposeAction, proposeRequirementTransition, recordResult, resolveRequirementTransition, startTask, stopTask, taskSnapshot } from "../types/orchestration";
 import type { AutonomyMode, OrchestrationSnapshot, OrchestrationTask, ToolKind } from "../types/orchestration";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -15,7 +15,7 @@ export type FileProposal =
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
 export type TerminalProposal = { command: string; actionId?: string };
 export type ToolResult = { id: number; content: string; actionId?: string; tool?: ToolKind; command?: string };
-type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
+type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; actionRequirementId?: string | null; requirementProposal?: { requirementId: string; reason: string } | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
   | { state: "none" };
@@ -47,6 +47,7 @@ export function taskProgress(task: OrchestrationTask, requestActive: boolean, re
   if (task.status === "stopped") return { tone: "stopped", statusKey: "task.status_stopped", waitingKey: "task.waiting_none", nextKey: "task.next_new", completedSteps, totalSteps };
   if (task.status === "blocked" || task.status === "failed") return { tone: "blocked", statusKey: "task.status_blocked", waitingKey: "task.waiting_none", nextKey: "task.next_blocked", completedSteps, totalSteps };
   if (task.status === "awaiting_approval") return { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_approval", nextKey: "task.next_approval", completedSteps, totalSteps, tool };
+  if (task.status === "awaiting_requirement_approval") return { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_requirement", nextKey: "task.next_requirement", completedSteps, totalSteps };
   if (task.status === "running") return recovered
     ? { tone: "waiting", statusKey: "task.status_waiting", waitingKey: "task.waiting_safety", nextKey: "task.next_safety", completedSteps, totalSteps, tool }
     : { tone: "active", statusKey: "task.status_running", waitingKey: "task.waiting_tool", nextKey: "task.next_result", completedSteps, totalSteps, tool };
@@ -356,9 +357,11 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           : null;
       const nextTask = responseAction
         ? canProposeAction(requestTask)
-          ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey).task
+          ? proposeAction(requestTask, responseAction.tool, responseAction.payload, contextKey, response.actionRequirementId ?? undefined).task
           : blockAtExecutionLimit(requestTask)
-        : finishTask(requestTask, {
+        : response.requirementProposal
+          ? proposeRequirementTransition(requestTask, response.requirementProposal.requirementId, response.requirementProposal.reason)
+          : finishTask(requestTask, {
           outcome: response.taskDecision.outcome === "completed" ? "completed" : "blocked",
           reason: response.taskDecision.reason,
         });
@@ -424,6 +427,16 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     void sendContent(message);
+  };
+
+  const reviewRequirementTransition = async (approved: boolean) => {
+    const activeTask = currentTask.current;
+    const transition = activeTask?.requirementTransitions?.at(-1);
+    if (!activeTask || activeTask.status !== "awaiting_requirement_approval" || transition?.status !== "proposed") return;
+    const resolved = resolveRequirementTransition(activeTask, approved);
+    await persistTask(resolved);
+    const content = `AutoCoder requirement transition review (factual user decision):\nRequirement: ${transition.requirementId}\nStatus: ${approved ? "approved as semantically satisfied" : "declined; keep the requirement active"}\nReason proposed: ${transition.reason}`;
+    await sendContent(content, true, resolved);
   };
 
   const handleStopTask = async () => {
@@ -505,7 +518,15 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
       {error && <p className="chat-error" role="alert">
         {t("chat.error")}<br /><code>{error}</code>
       </p>}
-      {proposal && <section className="file-proposal">
+    {task?.status === "awaiting_requirement_approval" && task.requirementTransitions?.at(-1)?.status === "proposed" && <section className="file-proposal">
+      <strong>{t("chat.requirement_review")}: {task.requirementTransitions.at(-1)!.requirementId}</strong>
+      <p>{task.requirementTransitions.at(-1)!.reason}</p>
+      <div className="proposal-actions">
+        <button type="button" onClick={() => void reviewRequirementTransition(true)}>{t("chat.requirement_approve")}</button>
+        <button type="button" className="secondary-button" onClick={() => void reviewRequirementTransition(false)}>{t("chat.requirement_decline")}</button>
+      </div>
+    </section>}
+    {proposal && <section className="file-proposal">
         <strong>{t(proposal.operation === "create" ? "chat.proposal_create" : proposal.operation === "delete" ? "chat.proposal_delete" : "chat.proposal")}: {proposal.path}</strong>
         <div className="proposal-diff" role="table" aria-label={t("chat.proposal_diff")}>
           {buildLineDiff(proposal.operation === "create" ? "" : proposal.originalContent, proposal.operation === "delete" ? "" : proposal.content).map((line, index) => <div className={`diff-line ${line.kind}`} role="row" key={`${line.kind}-${index}`}>

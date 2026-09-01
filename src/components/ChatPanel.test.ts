@@ -21,14 +21,14 @@ describe("chat request", () => {
 
   it("sends factual action payloads and results in the orchestration snapshot", () => {
     const initial = startTask("task-history", "Append the requested line");
-    const proposed = proposeAction(initial, "terminal", { command: "echo actual payload" }).task;
+    const proposed = proposeAction(initial, "terminal", { command: "echo actual payload" }, "context", "requirement-2").task;
     const completed = recordResult(proposed, {
       id: "result-1", actionId: "task-history:action:1", tool: "terminal", outcome: "completed",
       content: "Command: echo actual payload\nStatus: exit code: 0",
     });
 
     expect(taskSnapshot(completed).actions).toEqual([{
-      id: "task-history:action:1", tool: "terminal", payload: { command: "echo actual payload" }, status: "completed",
+      id: "task-history:action:1", tool: "terminal", payload: { command: "echo actual payload" }, requirementId: "requirement-2", status: "completed",
       result: {
         id: "result-1", actionId: "task-history:action:1", tool: "terminal", outcome: "completed",
         content: "Command: echo actual payload\nStatus: exit code: 0",

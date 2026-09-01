@@ -1,5 +1,5 @@
 export type ToolKind = "file" | "terminal";
-export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "running" | "awaiting_ai" | "completed" | "blocked" | "stopped" | "failed";
+export type TaskStatus = "idle" | "thinking" | "awaiting_approval" | "awaiting_requirement_approval" | "running" | "awaiting_ai" | "completed" | "blocked" | "stopped" | "failed";
 export type TaskConclusion = { outcome: "completed" | "blocked" | "stopped"; reason: string };
 export type ExecutionPolicy = {
   modelTurns: number;
@@ -24,10 +24,12 @@ export type OrchestrationAction<T = unknown> = {
   id: string;
   tool: ToolKind;
   payload: T;
+  requirementId?: string;
   status: "proposed" | "running" | "completed" | "failed" | "cancelled";
   contextKey: string;
   result?: OrchestrationResult;
 };
+export type RequirementTransition = { id: string; requirementId: string; status: "proposed" | "approved" | "declined"; reason: string };
 
 export type OrchestrationTask = {
   id: string;
@@ -35,18 +37,29 @@ export type OrchestrationTask = {
   goal: string;
   nextSequence: number;
   actions: OrchestrationAction[];
+  requirementTransitions?: RequirementTransition[];
   execution: ExecutionPolicy;
   autonomy?: { mode: AutonomyMode };
   conclusion?: TaskConclusion;
 };
 
-export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion" | "execution"> & {
+export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion" | "execution" | "requirementTransitions"> & {
   autonomy: { mode: AutonomyMode };
-  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "payload" | "status"> & { result?: OrchestrationResult }>;
+  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "payload" | "requirementId" | "status"> & { result?: OrchestrationResult }>;
 };
 
 export function startTask(id: string, goal: string, mode: AutonomyMode = "supervised"): OrchestrationTask {
   return { id, goal, status: "thinking", nextSequence: 1, actions: [], execution: { modelTurns: 1, ...DEFAULT_EXECUTION_LIMITS }, autonomy: { mode } };
+}
+
+export function proposeRequirementTransition(task: OrchestrationTask, requirementId: string, reason: string): OrchestrationTask {
+  const transition: RequirementTransition = { id: `${task.id}:requirement:${(task.requirementTransitions?.length ?? 0) + 1}`, requirementId, status: "proposed", reason };
+  return { ...task, status: "awaiting_requirement_approval", requirementTransitions: [...(task.requirementTransitions ?? []), transition] };
+}
+
+export function resolveRequirementTransition(task: OrchestrationTask, approved: boolean): OrchestrationTask {
+  const transitions = task.requirementTransitions ?? [];
+  return { ...task, status: "awaiting_ai", requirementTransitions: transitions.map((transition, index) => index === transitions.length - 1 && transition.status === "proposed" ? { ...transition, status: approved ? "approved" : "declined" } : transition) };
 }
 
 export function continueTask(task: OrchestrationTask): OrchestrationTask {
@@ -65,8 +78,8 @@ export function blockAtExecutionLimit(task: OrchestrationTask): OrchestrationTas
   return finishTask({ ...task, execution: normalizedExecution(task) }, { outcome: "blocked", reason: EXECUTION_LIMIT_REASON });
 }
 
-export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T, contextKey = ""): { task: OrchestrationTask; action: OrchestrationAction<T> } {
-  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, contextKey, status: "proposed" };
+export function proposeAction<T>(task: OrchestrationTask, tool: ToolKind, payload: T, contextKey = "", requirementId?: string): { task: OrchestrationTask; action: OrchestrationAction<T> } {
+  const action: OrchestrationAction<T> = { id: `${task.id}:action:${task.nextSequence}`, tool, payload, ...(requirementId ? { requirementId } : {}), contextKey, status: "proposed" };
   return { action, task: { ...task, status: "awaiting_approval", nextSequence: task.nextSequence + 1, actions: [...task.actions, action] } };
 }
 
@@ -108,10 +121,11 @@ export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
     execution: normalizedExecution(task),
     autonomy: normalizedAutonomy(task),
     ...(task.conclusion ? { conclusion: task.conclusion } : {}),
+    ...(task.requirementTransitions ? { requirementTransitions: task.requirementTransitions } : {}),
     // The backend prompt needs the action evidence, not only lifecycle labels:
     // an exit code cannot tell the model what command actually ran, and a
     // completed file action does not identify the content that was applied.
-    actions: task.actions.map(({ id, tool, payload, status, result }) => ({ id, tool, payload, status, ...(result ? { result } : {}) })),
+    actions: task.actions.map(({ id, tool, payload, requirementId, status, result }) => ({ id, tool, payload, ...(requirementId ? { requirementId } : {}), status, ...(result ? { result } : {}) })),
   };
 }
 

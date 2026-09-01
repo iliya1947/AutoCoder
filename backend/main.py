@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
+from tool_contracts import executable_fences, missing_required_tools, next_requirement_id, render_tool_contract, requirement_contracts, tool_contract, unmet_requirement_transitions, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -52,7 +53,9 @@ Keep your explanation outside the block and emit exactly one block in one of the
 Only propose create when the path is absent from the supplied project structure. Never use an absolute path or .. path components.
 Only propose delete for the currently open file, and only when its current content is identical to its saved content.
 This is only a proposal for user review. Never claim that you changed or saved the file."""
-FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
+FILE_PROPOSAL_PATTERN = re.compile(
+    rf"```{re.escape(tool_contract('file').fence)}\s*\n(.*?)\n```", re.DOTALL
+)
 TERMINAL_PROPOSAL_PROMPT = """When the user explicitly asks you to run or suggest a project command, you may propose one command.
 On Windows, AutoCoder executes the command in cmd.exe with the effective contract `cmd.exe /D /A /S /C`, in the project root, after selecting UTF-8 code page 65001. Generate cmd.exe-compatible commands: use Windows commands such as `type` rather than Unix-only commands such as `cat`, and use cmd.exe quoting (normally double quotes; single quotes are literal characters, not quoting syntax). Built-in cmd.exe text redirected to a file is therefore written as UTF-8 rather than UTF-16LE.
 Keep your explanation outside the block and emit exactly one block in this exact form (the fence name is `autocoder-command`, not `autocoder-terminal`):
@@ -62,8 +65,10 @@ Keep your explanation outside the block and emit exactly one block in this exact
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
 TERMINAL_PROPOSAL_PATTERN = re.compile(
-    r"```(?:autocoder-command|autocoder-terminal)\s*\n(.*?)\n```", re.DOTALL
+    rf"```{re.escape(tool_contract('terminal').fence)}\s*\n(.*?)\n```", re.DOTALL
 )
+ACTION_FENCE_PATTERN = re.compile(r"```(autocoder-[\w-]+)\s*\n", re.IGNORECASE)
+REQUIREMENT_DECISION_PATTERN = re.compile(r"```autocoder-requirement\s*\n(.*?)\n```", re.DOTALL)
 TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result and the current project/editor/disk context. On every continuation, reconcile the complete original task, the exact recorded action payloads, their factual results, and the latest editor/disk state. A successful action status proves execution only; it does not prove that the action produced the required semantic result. Before proposing an action, decide whether the factual state satisfies every requirement in the original task. If it does, complete the task without a File Tool or Terminal Tool action. If it does not, propose an action that repairs or advances the factual state toward the unmet requirement; do not merely repeat a read, display, or verification whose answer is already present in the current factual context. If genuinely new work or unavailable information is required, you may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
 ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
@@ -77,7 +82,10 @@ Execution budget: model turn {model_turns}/{max_model_turns}; actions {action_co
 Recorded actions:
 {actions}
 
+{tool_contract}
+
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only. The original task contract is the durable semantic specification, not a summary of the last action; preserve its requested ordering, content, constraints, and completion checks across every turn.
+Never add a requirement id to an action. AutoCoder assigns the next requirement from persisted factual history; the model cannot select or skip the policy scope used for validation.
 
 Before choosing an outcome, perform this reconciliation:
 1. Extract every still-applicable requirement and final-state condition from the complete original task contract.
@@ -89,6 +97,7 @@ Before choosing an outcome, perform this reconciliation:
 The supplied current project structure, open editor content, saved disk content, and approved tool results are factual evidence. Never disregard newer factual state in favor of an action's intended effect. Do not spend an action re-reading, displaying, or re-checking facts already supplied in context. File Tool is an editing tool in the current architecture, not a general read action, and Terminal Tool must not be used as a substitute reader for facts already supplied in context.
 Choose exactly one outcome:
 - If another step is needed, propose exactly one reviewable File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`, not `autocoder-terminal`) action using the exact format supplied in the other system messages.
+- If the active requirement is factually satisfied, append ```autocoder-requirement with JSON {{"state":"satisfied","reason":"short factual reason"}}. This proposes a semantic transition for user review; it does not advance state by itself and must not be combined with an action.
 - If the goal is achieved, give the final answer and append ```autocoder-task with JSON {{"state":"completed","reason":"short factual reason"}}.
 - If an error, refusal, or missing prerequisite makes further progress impossible, explain it and append the same block with state "blocked" and a short reason.
 Never report completed or blocked while also proposing an action."""
@@ -140,9 +149,9 @@ def parse_request(payload: Any) -> list[Message]:
             orchestration.get("id"), orchestration.get("goal"),
             orchestration.get("status"), orchestration.get("actions"),
         )
-        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "completed", "blocked", "stopped", "failed"}
+        allowed_statuses = {"thinking", "awaiting_approval", "running", "awaiting_ai", "awaiting_requirement_approval", "completed", "blocked", "stopped", "failed"}
         required_keys = {"id", "goal", "status", "actions"}
-        allowed_keys = required_keys | {"conclusion", "execution", "autonomy"}
+        allowed_keys = required_keys | {"conclusion", "execution", "autonomy", "requirementTransitions"}
         if (
             not required_keys.issubset(orchestration) or not set(orchestration).issubset(allowed_keys)
             or not isinstance(task_id, str) or not task_id.strip()
@@ -177,32 +186,54 @@ def parse_request(payload: Any) -> list[Message]:
             or autonomy.get("mode") not in {"supervised", "step_by_step"}
         ):
             raise ValueError("Orchestration autonomy policy is invalid.")
+        transitions = orchestration.get("requirementTransitions", [])
+        valid_requirement_ids = {requirement.id for requirement in requirement_contracts(payload)}
+        if not isinstance(transitions, list) or any(
+            not isinstance(transition, dict)
+            or set(transition) != {"id", "requirementId", "status", "reason"}
+            or not isinstance(transition.get("id"), str)
+            or transition.get("requirementId") not in valid_requirement_ids
+            or transition.get("status") not in {"proposed", "approved", "declined"}
+            or not isinstance(transition.get("reason"), str) or not transition["reason"].strip()
+            for transition in transitions
+        ):
+            raise ValueError("Orchestration requirement transitions are invalid.")
+        for transition in transitions:
+            missing_tools = missing_required_tools(transition["requirementId"], payload)
+            if transition["status"] in {"proposed", "approved"} and missing_tools:
+                raise ValueError(
+                    "Orchestration requirement transition lacks factual required-tool evidence: "
+                    + ", ".join(sorted(missing_tools))
+                )
         action_lines = []
+        requirement_ids = {requirement.id for requirement in requirement_contracts(payload)}
         for action in actions:
             if (
                 not isinstance(action, dict)
-                or set(action) - {"id", "tool", "payload", "status", "result"}
+                or set(action) - {"id", "tool", "payload", "requirementId", "status", "result"}
                 or not isinstance(action.get("id"), str)
                 or action.get("tool") not in {"file", "terminal"}
                 or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}
                 or not isinstance(action.get("payload"), dict)
+                or ("requirementId" in action and not isinstance(action.get("requirementId"), str))
+                or (action.get("requirementId") is not None and action.get("requirementId") not in requirement_ids)
             ):
                 raise ValueError("Orchestration action is invalid.")
-            payload = action["payload"]
+            action_payload = action["payload"]
             if action["tool"] == "terminal":
-                valid_payload = set(payload) == {"command"} and isinstance(payload.get("command"), str) and bool(payload["command"].strip())
+                valid_payload = set(action_payload) == {"command"} and isinstance(action_payload.get("command"), str) and bool(action_payload["command"].strip())
             else:
-                operation = payload.get("operation")
+                operation = action_payload.get("operation")
                 required = {"operation", "path"} if operation == "delete" else {"operation", "path", "content"}
                 # File proposals persisted by the UI can also contain the
                 # optimistic-concurrency baselines used during review.
                 allowed = required | {"originalContent", "expectedSavedContent"}
                 valid_payload = (
-                    operation in {"create", "replace", "delete"}
-                    and required.issubset(payload)
-                    and not set(payload) - allowed
-                    and isinstance(payload.get("path"), str)
-                    and (operation == "delete" or isinstance(payload.get("content"), str))
+                    operation in tool_contract("file").operations
+                    and required.issubset(action_payload)
+                    and not set(action_payload) - allowed
+                    and isinstance(action_payload.get("path"), str)
+                    and (operation == "delete" or isinstance(action_payload.get("content"), str))
                 )
             if not valid_payload:
                 raise ValueError("Orchestration action payload is invalid.")
@@ -219,7 +250,8 @@ def parse_request(payload: Any) -> list[Message]:
                 raise ValueError("Orchestration result is invalid.")
             action_lines.append(
                 f'- {action["id"]}: {action["tool"]} / {action["status"]}\n'
-                f'  payload: {json.dumps(payload, ensure_ascii=False)}'
+                + (f'  requirement: {action["requirementId"]}\n' if action.get("requirementId") else "")
+                + f'  payload: {json.dumps(action_payload, ensure_ascii=False)}'
                 + (f'\n  result: {json.dumps(result, ensure_ascii=False)}' if result else "")
             )
         policy = execution or {
@@ -233,6 +265,7 @@ def parse_request(payload: Any) -> list[Message]:
             model_turns=policy["modelTurns"], max_model_turns=policy["maxModelTurns"],
             action_count=len(actions), max_actions=policy["maxActions"],
             actions="\n".join(action_lines) or "(none)",
+            tool_contract=render_tool_contract(payload),
         )))
     if context is None:
         return [*context_messages, *messages]
@@ -330,7 +363,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     project = context.get("project")
     if (
         not isinstance(proposal, dict)
-        or proposal.get("operation") not in {"replace", "create", "delete"}
+        or proposal.get("operation") not in tool_contract("file").operations
         or not isinstance(proposal.get("path"), str)
         or not proposal["path"].strip()
     ):
@@ -382,10 +415,8 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
 def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     """Extract one strictly structured command proposal when a project is open.
 
-    ``autocoder-terminal`` is accepted as a compatibility spelling because real
-    models sometimes derive it from the Terminal Tool display name.  The JSON
-    contract and the approval path are identical to the canonical
-    ``autocoder-command`` proposal.
+    Only the registry's canonical fence is executable.  Friendly aliases in a
+    model response must never silently become real operations.
     """
     matches = list(TERMINAL_PROPOSAL_PATTERN.finditer(answer.content))
     if len(matches) != 1:
@@ -407,6 +438,55 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     ):
         return None
     return {"command": command.strip()}
+
+
+def validate_model_action(
+    answer: Message,
+    payload: Any,
+    proposal: dict[str, str] | None,
+    command_proposal: dict[str, str] | None,
+) -> tuple[dict[str, str] | None, dict[str, str] | None, str | None]:
+    """Apply the closed-world contract after syntax parsing and before approval."""
+    action_fences = ACTION_FENCE_PATTERN.findall(answer.content)
+    known_fences = executable_fences() | {"autocoder-task", "autocoder-requirement"}
+    unknown = sorted({fence.lower() for fence in action_fences} - known_fences)
+    if unknown:
+        return None, None, f"The model selected a nonexistent action contract: {', '.join(unknown)}."
+    control_fences = {"autocoder-task", "autocoder-requirement"}
+    emitted_fences = [fence.lower() for fence in action_fences if fence.lower() not in control_fences]
+    if emitted_fences and proposal is None and command_proposal is None:
+        return None, None, "The model action does not satisfy the executable tool payload contract."
+    if len(emitted_fences) > 1:
+        return None, None, "The model selected more than one action."
+    if proposal is not None and command_proposal is not None:
+        return None, None, "The model selected more than one action."
+    tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
+    if tool is not None:
+        violation = validate_selected_tool(tool, next_requirement_id(payload), payload)
+        if violation:
+            return None, None, violation
+    return proposal, command_proposal, None
+
+
+def parse_requirement_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
+    """Return a backend-scoped semantic transition proposal for user review."""
+    match = REQUIREMENT_DECISION_PATTERN.search(answer.content)
+    if match is None or any(pattern.search(answer.content) for pattern in (FILE_PROPOSAL_PATTERN, TERMINAL_PROPOSAL_PATTERN)):
+        return None
+    try:
+        decision = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    requirement_id = next_requirement_id(payload)
+    missing_tools = missing_required_tools(requirement_id, payload) if requirement_id else frozenset()
+    if (
+        requirement_id is None or missing_tools or not isinstance(decision, dict)
+        or set(decision) != {"state", "reason"}
+        or decision.get("state") != "satisfied"
+        or not isinstance(decision.get("reason"), str) or not decision["reason"].strip()
+    ):
+        return None
+    return {"requirementId": requirement_id, "reason": decision["reason"].strip()}
 
 
 def parse_task_decision(answer: Message, has_action: bool) -> dict[str, str]:
@@ -444,10 +524,14 @@ def write_stdout_response(
     proposal: dict[str, str] | None = None,
     command_proposal: dict[str, str] | None = None,
     task_decision: dict[str, str] | None = None,
+    action_requirement_id: str | None = None,
+    requirement_proposal: dict[str, str] | None = None,
 ) -> None:
     """Write the Tauri bridge contract as UTF-8 bytes, independent of locale."""
     response = json.dumps(
         {"message": answer.__dict__, "proposal": proposal, "commandProposal": command_proposal,
+         "actionRequirementId": action_requirement_id,
+         "requirementProposal": requirement_proposal,
          "taskDecision": task_decision or parse_task_decision(answer, proposal is not None or command_proposal is not None)},
         ensure_ascii=False,
     ).encode("utf-8")
@@ -461,7 +545,24 @@ def main() -> int:
         answer = OllamaProvider().chat(parse_request(payload))
         proposal = parse_file_proposal(answer, payload)
         command_proposal = parse_terminal_proposal(answer, payload)
-        write_stdout_response(answer, proposal, command_proposal)
+        proposal, command_proposal, violation = validate_model_action(
+            answer, payload, proposal, command_proposal
+        )
+        decision = ({"outcome": "blocked", "reason": violation} if violation else None)
+        requirement_proposal = parse_requirement_proposal(answer, payload) if decision is None else None
+        if decision is None and REQUIREMENT_DECISION_PATTERN.search(answer.content) and requirement_proposal is None:
+            requirement_id = next_requirement_id(payload)
+            missing_tools = missing_required_tools(requirement_id, payload) if requirement_id else frozenset()
+            reason = "Required tool evidence is missing: " + ", ".join(sorted(missing_tools)) if missing_tools else "The semantic transition contract is invalid."
+            decision = {"outcome": "blocked", "reason": reason}
+        if decision is None and proposal is None and command_proposal is None and requirement_proposal is None:
+            parsed_decision = parse_task_decision(answer, False)
+            unmet = unmet_requirement_transitions(payload)
+            if parsed_decision["outcome"] == "completed" and unmet:
+                decision = {"outcome": "blocked", "reason": f"Requirement transitions remain unmet: {', '.join(unmet)}."}
+        selected_tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
+        requirement_id = next_requirement_id(payload) if selected_tool else None
+        write_stdout_response(answer, proposal, command_proposal, decision, requirement_id, requirement_proposal)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)

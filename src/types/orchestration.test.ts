@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { autonomyMode, canProposeAction, completeTask, continueTask, continuesAfterToolResult, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, recordResult, startTask, stopTask, taskSnapshot } from "./orchestration";
+import { autonomyMode, canProposeAction, completeTask, continueTask, continuesAfterToolResult, EXECUTION_LIMIT_REASON, finishTask, markActionRunning, proposeAction, proposeRequirementTransition, recordResult, resolveRequirementTransition, startTask, stopTask, taskSnapshot } from "./orchestration";
 
 describe("orchestration task state", () => {
+  it("advances semantic requirements only after explicit review", () => {
+    const proposed = proposeRequirementTransition(startTask("task-review", "Repair and verify"), "requirement-1", "Factual state matches");
+    expect(proposed.status).toBe("awaiting_requirement_approval");
+    expect(resolveRequirementTransition(proposed, true).requirementTransitions?.at(-1)?.status).toBe("approved");
+    expect(resolveRequirementTransition(proposed, false).requirementTransitions?.at(-1)?.status).toBe("declined");
+  });
   it("persists the selected autonomy mode and safely normalizes older tasks", () => {
     const supervised = startTask("safe", "Review every action");
     const stepByStep = startTask("manual", "Pause between steps", "step_by_step");
