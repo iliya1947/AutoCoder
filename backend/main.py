@@ -559,7 +559,7 @@ def main() -> int:
             parsed_decision = parse_task_decision(answer, False)
             unmet = unmet_requirement_transitions(payload)
             if parsed_decision["outcome"] == "completed" and unmet:
-                decision = {"outcome": "blocked", "reason": f"Required tool constraints remain unmet: {', '.join(unmet)}."}
+                decision = {"outcome": "blocked", "reason": f"Requirement transitions remain unmet: {', '.join(unmet)}."}
         selected_tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
         requirement_id = next_requirement_id(payload) if selected_tool else None
         write_stdout_response(answer, proposal, command_proposal, decision, requirement_id, requirement_proposal)
