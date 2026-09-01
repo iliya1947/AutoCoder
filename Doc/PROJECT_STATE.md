@@ -2,11 +2,34 @@
 
 ## Дата состояния
 
-1 сентября 2026 (усилена семантическая reconciliation orchestration planning).
+1 сентября 2026 (введён исполняемый contract и pre-approval validation инструментов).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Closed-world contract выбора orchestration action (1 сентября 2026)
+- Полный путь ревизии показал разрыв ответственности: backend подробно объяснял модели форматы в
+  prompt, но executable contract был размазан между regex/parser/UI, а compatibility parser даже
+  принимал несуществующий fence `autocoder-terminal`. Семантический выбор модели после parsing не
+  проходил общей проверкой против явно названного пользователем инструмента.
+- Добавлен backend registry реальных инструментов. Для каждого tool он задаёт стабильный id,
+  канонический fence, конечный набор операций, aliases и проверяемое условие доступности из текущего
+  factual context. Один и тот же registry формирует closed-world model context и является источником
+  pre-approval validation; это расширяемая граница для будущих tools, а не правило acceptance-теста.
+- Явное и однозначное упоминание пользователем зарегистрированного инструмента компилируется в
+  task-level allow-list. Action другого tool теперь детерминированно отклоняется backend до попадания
+  в approval UI. При отсутствии явного выбора система не угадывает предпочтение по глаголам задачи.
+- Удалён permissive alias несуществующего Terminal fence. Любой неизвестный `autocoder-*` contract,
+  неизвестная File Tool operation, malformed payload, несколько actions или action, недоступный в
+  текущем context, превращаются в явный blocked decision и не могут маскироваться одновременным
+  заявлением модели о completion.
+- Сохранена factual reconciliation предыдущих actions: registry ограничивает пространство реально
+  исполнимых переходов, а persisted exact payload/result и свежий editor/disk context остаются
+  доказательной основой выбора следующего шага и completion. Добавлены regression-тесты tool binding,
+  contract rendering, несуществующего fence и операции, конфликтующего completion и validation до
+  approval.
+- Барьер 80% **остаётся непройденным** до повторной packaged Windows проверки.
 
 ### Семантическая reconciliation многошаговой задачи (1 сентября 2026)
 - Очередной 80% packaged Windows acceptance показал, что одного наличия action payload/result в

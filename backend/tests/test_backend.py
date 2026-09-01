@@ -200,7 +200,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(parse_terminal_proposal(answer, payload), {"command": "npm test"})
         self.assertIsNone(parse_terminal_proposal(answer, {"context": None}))
 
-    def test_file_result_turn_accepts_terminal_tool_fence_mismatch_as_next_action(self):
+    def test_file_result_turn_rejects_nonexistent_terminal_fence(self):
         payload = {
             "messages": [
                 {"role": "user", "content": "Fix the file and run the tests"},
@@ -225,13 +225,13 @@ class BackendTests(unittest.TestCase):
 
         messages = parse_request(payload)
         command = parse_terminal_proposal(answer, payload)
+        proposal, command, violation = backend_main.validate_model_action(answer, payload, None, command)
 
         self.assertIn("`autocoder-command`, not `autocoder-terminal`", messages[0].content)
         self.assertIn("Terminal Tool (`autocoder-command`)", messages[-4].content)
-        self.assertEqual(command, {"command": "npm test"})
-        self.assertEqual(parse_task_decision(answer, command is not None), {
-            "outcome": "next_action", "reason": "A reviewable tool action was proposed."
-        })
+        self.assertIsNone(proposal)
+        self.assertIsNone(command)
+        self.assertIn("nonexistent action contract", violation)
 
     def test_rejects_invalid_or_combined_terminal_proposal(self):
         payload = {"context": {"project": {"name": "demo", "entries": []}}}
@@ -252,7 +252,64 @@ class BackendTests(unittest.TestCase):
             '```autocoder-terminal\n{"command":"npm test"}\n```',
         )
         self.assertIsNone(parse_terminal_proposal(malformed_alias, payload))
-        self.assertIsNone(parse_terminal_proposal(duplicate_aliases, payload))
+        parsed = parse_terminal_proposal(duplicate_aliases, payload)
+        self.assertEqual(parsed, {"command": "npm test"})
+        _, parsed, violation = backend_main.validate_model_action(
+            duplicate_aliases, payload, None, parsed
+        )
+        self.assertIsNone(parsed)
+        self.assertIn("nonexistent action contract", violation)
+
+    def test_explicit_tool_choice_is_enforced_before_approval(self):
+        payload = {
+            "messages": [{"role": "user", "content": "Use Terminal Tool to update the generated artifact"}],
+            "context": {
+                "project": {"name": "demo", "entries": ["file: artifact.txt"]},
+                "openFile": {"path": "artifact.txt", "content": "old", "savedContent": "old"},
+            },
+            "orchestration": {
+                "id": "task-bound", "goal": "Use Terminal Tool to update the generated artifact",
+                "status": "thinking", "actions": [],
+            },
+        }
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"replace","path":"artifact.txt","content":"new"}\n```',
+        )
+        file_proposal = parse_file_proposal(answer, payload)
+
+        proposal, command, violation = backend_main.validate_model_action(
+            answer, payload, file_proposal, None
+        )
+
+        self.assertIsNone(proposal)
+        self.assertIsNone(command)
+        self.assertIn("explicit tool constraint", violation)
+        contract_prompt = parse_request(payload)[0].content
+        self.assertIn("Allowed tools for this task: terminal", contract_prompt)
+        self.assertIn("operations=create,replace,delete", contract_prompt)
+        self.assertIn("operations=execute", contract_prompt)
+
+    def test_nonexistent_file_operation_cannot_be_hidden_by_completed_decision(self):
+        payload = {
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {
+                "id": "task-read", "goal": "Inspect the project", "status": "thinking", "actions": [],
+            },
+        }
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"read","path":"missing.txt"}\n```\n'
+            '```autocoder-task\n{"state":"completed","reason":"read it"}\n```',
+        )
+
+        proposal, command, violation = backend_main.validate_model_action(
+            answer, payload, parse_file_proposal(answer, payload), None
+        )
+
+        self.assertIsNone(proposal)
+        self.assertIsNone(command)
+        self.assertIn("payload contract", violation)
 
     def test_extracts_file_proposal_for_current_open_file(self):
         answer = Message(

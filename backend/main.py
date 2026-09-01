@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
+from tool_contracts import render_tool_contract, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -61,9 +62,8 @@ Keep your explanation outside the block and emit exactly one block in this exact
 ```
 Never combine a command proposal with a file proposal. This is only a proposal for user review: it is not executed automatically.
 Never claim that you ran the command or observed its output."""
-TERMINAL_PROPOSAL_PATTERN = re.compile(
-    r"```(?:autocoder-command|autocoder-terminal)\s*\n(.*?)\n```", re.DOTALL
-)
+TERMINAL_PROPOSAL_PATTERN = re.compile(r"```autocoder-command\s*\n(.*?)\n```", re.DOTALL)
+ACTION_FENCE_PATTERN = re.compile(r"```(autocoder-[\w-]+)\s*\n", re.IGNORECASE)
 TOOL_RESULT_PROMPT = """Messages beginning with an AutoCoder File Tool result or AutoCoder Terminal Tool result are trusted factual feedback from an action that the user explicitly approved and AutoCoder executed. Continue the user's existing task using that result and the current project/editor/disk context. On every continuation, reconcile the complete original task, the exact recorded action payloads, their factual results, and the latest editor/disk state. A successful action status proves execution only; it does not prove that the action produced the required semantic result. Before proposing an action, decide whether the factual state satisfies every requirement in the original task. If it does, complete the task without a File Tool or Terminal Tool action. If it does not, propose an action that repairs or advances the factual state toward the unmet requirement; do not merely repeat a read, display, or verification whose answer is already present in the current factual context. If genuinely new work or unavailable information is required, you may propose exactly one next action through the existing File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`) format; use those exact fence names and never claim that a proposed action already happened."""
 ORCHESTRATION_PROMPT = """AutoCoder is executing one explicit multi-step task.
 Task id: {id}
@@ -76,6 +76,8 @@ Autonomy mode: {autonomy_mode}
 Execution budget: model turn {model_turns}/{max_model_turns}; actions {action_count}/{max_actions}
 Recorded actions:
 {actions}
+
+{tool_contract}
 
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only. The original task contract is the durable semantic specification, not a summary of the last action; preserve its requested ordering, content, constraints, and completion checks across every turn.
 
@@ -233,6 +235,7 @@ def parse_request(payload: Any) -> list[Message]:
             model_turns=policy["modelTurns"], max_model_turns=policy["maxModelTurns"],
             action_count=len(actions), max_actions=policy["maxActions"],
             actions="\n".join(action_lines) or "(none)",
+            tool_contract=render_tool_contract(payload),
         )))
     if context is None:
         return [*context_messages, *messages]
@@ -382,10 +385,8 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
 def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
     """Extract one strictly structured command proposal when a project is open.
 
-    ``autocoder-terminal`` is accepted as a compatibility spelling because real
-    models sometimes derive it from the Terminal Tool display name.  The JSON
-    contract and the approval path are identical to the canonical
-    ``autocoder-command`` proposal.
+    Only the registry's canonical fence is executable.  Friendly aliases in a
+    model response must never silently become real operations.
     """
     matches = list(TERMINAL_PROPOSAL_PATTERN.finditer(answer.content))
     if len(matches) != 1:
@@ -407,6 +408,33 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     ):
         return None
     return {"command": command.strip()}
+
+
+def validate_model_action(
+    answer: Message,
+    payload: Any,
+    proposal: dict[str, str] | None,
+    command_proposal: dict[str, str] | None,
+) -> tuple[dict[str, str] | None, dict[str, str] | None, str | None]:
+    """Apply the closed-world contract after syntax parsing and before approval."""
+    action_fences = ACTION_FENCE_PATTERN.findall(answer.content)
+    known_fences = {"autocoder-file", "autocoder-command", "autocoder-task"}
+    unknown = sorted({fence.lower() for fence in action_fences} - known_fences)
+    if unknown:
+        return None, None, f"The model selected a nonexistent action contract: {', '.join(unknown)}."
+    executable_fences = [fence.lower() for fence in action_fences if fence.lower() != "autocoder-task"]
+    if executable_fences and proposal is None and command_proposal is None:
+        return None, None, "The model action does not satisfy the executable tool payload contract."
+    if len(executable_fences) > 1:
+        return None, None, "The model selected more than one action."
+    if proposal is not None and command_proposal is not None:
+        return None, None, "The model selected more than one action."
+    tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
+    if tool is not None:
+        violation = validate_selected_tool(tool, payload)
+        if violation:
+            return None, None, violation
+    return proposal, command_proposal, None
 
 
 def parse_task_decision(answer: Message, has_action: bool) -> dict[str, str]:
@@ -461,7 +489,11 @@ def main() -> int:
         answer = OllamaProvider().chat(parse_request(payload))
         proposal = parse_file_proposal(answer, payload)
         command_proposal = parse_terminal_proposal(answer, payload)
-        write_stdout_response(answer, proposal, command_proposal)
+        proposal, command_proposal, violation = validate_model_action(
+            answer, payload, proposal, command_proposal
+        )
+        decision = ({"outcome": "blocked", "reason": violation} if violation else None)
+        write_stdout_response(answer, proposal, command_proposal, decision)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:
         print(str(exc), file=sys.stderr)
