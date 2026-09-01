@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from provider import Message, OllamaProvider, ProviderError
-from tool_contracts import executable_fences, render_tool_contract, requirement_contracts, tool_contract, validate_selected_tool
+from tool_contracts import executable_fences, next_requirement_id, render_tool_contract, requirement_contracts, tool_contract, unmet_required_tool_constraints, validate_selected_tool
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
@@ -84,7 +84,7 @@ Recorded actions:
 {tool_contract}
 
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only. The original task contract is the durable semantic specification, not a summary of the last action; preserve its requested ordering, content, constraints, and completion checks across every turn.
-For an action, add `"requirementId":"requirement-N"` to the canonical File or Terminal JSON. This is planning metadata used for validation and is removed before execution; choose the scope whose factual requirement the action advances.
+Never add a requirement id to an action. AutoCoder assigns the next requirement from persisted factual history; the model cannot select or skip the policy scope used for validation.
 
 Before choosing an outcome, perform this reconciliation:
 1. Extract every still-applicable requirement and final-state condition from the complete original task contract.
@@ -349,7 +349,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         return None
     if proposal["operation"] == "delete":
         if (
-            set(proposal) not in ({"operation", "path"}, {"operation", "path", "requirementId"})
+            set(proposal) != {"operation", "path"}
             or not isinstance(open_file, dict)
             or proposal["path"] != open_file.get("path")
             or not isinstance(open_file.get("content"), str)
@@ -359,11 +359,11 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         ):
             return None
         return {
-            **{key: value for key, value in proposal.items() if key != "requirementId"},
+            **proposal,
             "originalContent": open_file["content"],
             "expectedSavedContent": open_file["savedContent"],
         }
-    if set(proposal) not in ({"operation", "path", "content"}, {"operation", "path", "content", "requirementId"}) or not isinstance(proposal.get("content"), str):
+    if set(proposal) != {"operation", "path", "content"} or not isinstance(proposal.get("content"), str):
         return None
     if proposal["operation"] == "replace":
         if (
@@ -373,7 +373,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
             or open_file.get("existsOnDisk", True) is not True
         ):
             return None
-        return {**{key: value for key, value in proposal.items() if key != "requirementId"}, "originalContent": open_file["content"]}
+        return {**proposal, "originalContent": open_file["content"]}
 
     entries = project.get("entries") if isinstance(project, dict) else None
     normalized = proposal["path"].replace("\\", "/")
@@ -388,7 +388,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
         or f"directory: {normalized}" in normalized_entries
     ):
         return None
-    return {key: value for key, value in proposal.items() if key != "requirementId"}
+    return proposal
 
 
 def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
@@ -408,7 +408,7 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     command = proposal.get("command") if isinstance(proposal, dict) else None
     if (
         not isinstance(proposal, dict)
-        or set(proposal) not in ({"command"}, {"command", "requirementId"})
+        or set(proposal) != {"command"}
         or not isinstance(command, str)
         or not command.strip()
         or "\0" in command
@@ -417,19 +417,6 @@ def parse_terminal_proposal(answer: Message, payload: Any) -> dict[str, str] | N
     ):
         return None
     return {"command": command.strip()}
-
-
-def action_requirement_id(answer: Message, tool: str) -> str | None:
-    """Read planning metadata without passing it to the executable payload."""
-    pattern = FILE_PROPOSAL_PATTERN if tool == "file" else TERMINAL_PROPOSAL_PATTERN
-    match = pattern.search(answer.content)
-    if match is None:
-        return None
-    try:
-        value = json.loads(match.group(1)).get("requirementId")
-    except (json.JSONDecodeError, AttributeError):
-        return None
-    return value if isinstance(value, str) else None
 
 
 def validate_model_action(
@@ -453,7 +440,7 @@ def validate_model_action(
         return None, None, "The model selected more than one action."
     tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
     if tool is not None:
-        violation = validate_selected_tool(tool, action_requirement_id(answer, tool), payload)
+        violation = validate_selected_tool(tool, next_requirement_id(payload), payload)
         if violation:
             return None, None, violation
     return proposal, command_proposal, None
@@ -517,8 +504,13 @@ def main() -> int:
             answer, payload, proposal, command_proposal
         )
         decision = ({"outcome": "blocked", "reason": violation} if violation else None)
+        if decision is None and proposal is None and command_proposal is None:
+            parsed_decision = parse_task_decision(answer, False)
+            unmet = unmet_required_tool_constraints(payload)
+            if parsed_decision["outcome"] == "completed" and unmet:
+                decision = {"outcome": "blocked", "reason": f"Required tool constraints remain unmet: {', '.join(unmet)}."}
         selected_tool = "file" if proposal is not None else "terminal" if command_proposal is not None else None
-        requirement_id = action_requirement_id(answer, selected_tool) if selected_tool else None
+        requirement_id = next_requirement_id(payload) if selected_tool else None
         write_stdout_response(answer, proposal, command_proposal, decision, requirement_id)
         return 0
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, ProviderError) as exc:

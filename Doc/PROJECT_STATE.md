@@ -21,12 +21,19 @@
   scopes, полученным из строк, пунктов и предложений исходного `goal`. Для каждого scope отдельно
   сохраняются required/forbidden tools; многошаговая задача может последовательно требовать File,
   Terminal и не ограниченный пользователем action без потери или глобализации constraints.
-- Каждый предложенный orchestration action обязан объявить `requirementId`. Backend проверяет этот id
-  и scoped tool policy до approval, удаляет planning metadata из executable payload, но сохраняет id в
-  persisted action history для factual reconciliation следующих turns. Bare mention имени tool не
-  считается выбором: constraint создаётся только из явной affirmative/negative invocation-формы,
-  распознаваемой расширяемыми aliases registry; если пользователь tool не задал, система его не
-  угадывает.
+- Модель больше не выбирает `requirementId`: backend определяет следующий scope только из immutable
+  task contract и persisted completed action history, проверяет его policy, а затем сам присваивает id
+  принятому action. Любой `requirementId` внутри model payload является лишним полем и отклоняется.
+  Поэтому модель не может обойти constrained шаг, сославшись на соседний unconstrained scope;
+  completion также блокируется, пока required-tool scopes не подтверждены связанными completed
+  actions. Association сохраняется в history для factual reconciliation следующих turns.
+- Bare mention имени tool не считается выбором: constraint создаётся только из явной
+  affirmative/negative invocation-формы, распознаваемой расширяемыми aliases registry; если
+  пользователь tool не задал, система его не угадывает.
+- Requirement compiler использует явные верхнеуровневые маркеры списка как границы, а последующие
+  строки считает продолжением/данными предыдущего пункта. Для обычного prose применяются границы
+  предложений. Строки контента больше не сдвигают code-owned policy cursor и не создают фиктивные
+  action scopes.
 - Удалён permissive alias несуществующего Terminal fence. Любой неизвестный `autocoder-*` contract,
   неизвестная File Tool operation, malformed payload, несколько actions или action, недоступный в
   текущем context, превращаются в явный blocked decision и не могут маскироваться одновременным
@@ -34,7 +41,8 @@
 - Сохранена factual reconciliation предыдущих actions: registry ограничивает пространство реально
   исполнимых переходов, а persisted exact payload/result и свежий editor/disk context остаются
   доказательной основой выбора следующего шага и completion. Добавлены regression-тесты tool binding,
-  contract rendering, multi-tool scopes, отрицания и простого упоминания tool, сохранения requirement
+  contract rendering, multi-tool scopes, code-owned requirement assignment, запрета model-supplied
+  id, data continuation lines, отрицания и простого упоминания tool, сохранения requirement
   association, несуществующего fence и операции, конфликтующего completion и validation до approval.
 - Барьер 80% **остаётся непройденным** до повторной packaged Windows проверки.
 

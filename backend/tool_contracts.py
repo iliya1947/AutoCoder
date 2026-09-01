@@ -71,9 +71,24 @@ def _requirement_texts(goal: str) -> list[str]:
     fallback. Empty fragments are discarded and the original wording remains
     available to the model as evidence.
     """
+    lines = [line for line in goal.splitlines() if line.strip()]
+    has_list = any(re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line) for line in lines)
+    if has_list:
+        # Only explicit top-level list markers start scopes. Continuation/data
+        # lines belong to the preceding item and cannot shift action policy.
+        items: list[str] = []
+        for line in lines:
+            marker = re.match(r"^\s*(?:[-*]|\d+[.)])\s+(.*)$", line)
+            if marker:
+                items.append(marker.group(1).strip())
+            elif items:
+                items[-1] += "\n" + line.strip()
+            else:
+                items.append(line.strip())
+        return items
     fragments: list[str] = []
-    for line in goal.splitlines():
-        line = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+    for line in lines:
+        line = line.strip()
         if not line:
             continue
         fragments.extend(part.strip() for part in re.split(r"(?<=[.!?])\s+", line) if part.strip())
@@ -126,7 +141,7 @@ def render_tool_contract(payload: Any) -> str:
     if not available:
         lines.append("- (no executable tools are available in the current context)")
     if requirements:
-        lines.append("Requirement scopes (declare exactly one requirementId in every action):")
+        lines.append("Requirement scopes (the backend, not the model, assigns the next action):")
         for requirement in requirements:
             policy = []
             if requirement.required_tools:
@@ -135,7 +150,8 @@ def render_tool_contract(payload: Any) -> str:
                 policy.append("forbidden=" + ",".join(sorted(requirement.forbidden_tools)))
             lines.append(f'- {requirement.id}; {"; ".join(policy) or "no explicit tool constraint"}; text={requirement.text!r}')
     lines.append("A tool constraint applies only to its requirement scope, never implicitly to the whole task.")
-    lines.append("Any tool, fence, operation, payload, or requirementId outside this contract is invalid and cannot reach approval.")
+    lines.append("Do not emit requirementId; it is trusted orchestration metadata assigned after validation.")
+    lines.append("Any tool, fence, operation, or payload outside this contract is invalid and cannot reach approval.")
     return "\n".join(lines)
 
 
@@ -154,3 +170,44 @@ def validate_selected_tool(tool: str, requirement_id: str | None, payload: Any) 
     if tool in requirement.forbidden_tools:
         return f"Tool '{tool}' is explicitly forbidden for {requirement.id}."
     return None
+
+
+def next_requirement_id(payload: Any) -> str | None:
+    """Select the next scope from trusted history; the model has no input."""
+    requirements = requirement_contracts(payload)
+    if not requirements:
+        return None
+    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
+    actions = orchestration.get("actions", []) if isinstance(orchestration, dict) else []
+    completed = {
+        action.get("requirementId") for action in actions
+        if isinstance(action, dict) and action.get("status") == "completed"
+    }
+    # Pre-migration actions had no association. Consume the corresponding
+    # leading scopes so an upgraded continuation remains monotonic.
+    legacy_count = sum(
+        1 for action in actions
+        if isinstance(action, dict) and not action.get("requirementId")
+        and action.get("status") == "completed"
+    )
+    for index, requirement in enumerate(requirements):
+        if index < legacy_count or requirement.id in completed:
+            continue
+        return requirement.id
+    return requirements[-1].id
+
+
+def unmet_required_tool_constraints(payload: Any) -> tuple[str, ...]:
+    """Required-tool scopes cannot be skipped by a model completion claim."""
+    requirements = requirement_contracts(payload)
+    orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
+    actions = orchestration.get("actions", []) if isinstance(orchestration, dict) else []
+    satisfied = {
+        action.get("requirementId") for action in actions
+        if isinstance(action, dict) and action.get("status") == "completed"
+        and action.get("tool") in next(
+            (requirement.required_tools for requirement in requirements if requirement.id == action.get("requirementId")),
+            frozenset(),
+        )
+    }
+    return tuple(requirement.id for requirement in requirements if requirement.required_tools and requirement.id not in satisfied)

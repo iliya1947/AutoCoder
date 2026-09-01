@@ -274,19 +274,16 @@ class BackendTests(unittest.TestCase):
                 "status": "thinking", "actions": [],
             },
         }
-        answer = Message(
+        first_answer = Message(
             "assistant",
-            '```autocoder-file\n{"requirementId":"requirement-2","operation":"replace","path":"artifact.txt","content":"new"}\n```',
+            '```autocoder-file\n{"operation":"replace","path":"artifact.txt","content":"new"}\n```',
         )
-        file_proposal = parse_file_proposal(answer, payload)
-
         proposal, command, violation = backend_main.validate_model_action(
-            answer, payload, file_proposal, None
+            first_answer, payload, parse_file_proposal(first_answer, payload), None
         )
-
-        self.assertIsNone(proposal)
+        self.assertIsNotNone(proposal)
         self.assertIsNone(command)
-        self.assertIn("required: terminal", violation)
+        self.assertIsNone(violation)
         contract_prompt = parse_request(payload)[0].content
         self.assertIn("requirement-1; required=file", contract_prompt)
         self.assertIn("requirement-2; required=terminal", contract_prompt)
@@ -294,9 +291,23 @@ class BackendTests(unittest.TestCase):
         self.assertIn("operations=create,replace,delete", contract_prompt)
         self.assertIn("operations=execute", contract_prompt)
 
+        payload["orchestration"]["actions"] = [{
+            "id": "task-bound:action:1", "tool": "file", "requirementId": "requirement-1",
+            "status": "completed", "payload": {"operation": "replace", "path": "artifact.txt", "content": "new"},
+        }]
+        wrong_answer = Message(
+            "assistant", '```autocoder-file\n{"operation":"replace","path":"artifact.txt","content":"wrong"}\n```'
+        )
+        proposal, _, violation = backend_main.validate_model_action(
+            wrong_answer, payload, parse_file_proposal(wrong_answer, payload), None
+        )
+        self.assertIsNone(proposal)
+        self.assertIn("required: terminal", violation)
+        self.assertEqual(backend_main.unmet_required_tool_constraints(payload), ("requirement-2",))
+
         terminal_answer = Message(
             "assistant",
-            '```autocoder-command\n{"requirementId":"requirement-2","command":"build artifact"}\n```',
+            '```autocoder-command\n{"command":"build artifact"}\n```',
         )
         _, command, violation = backend_main.validate_model_action(
             terminal_answer, payload, None, parse_terminal_proposal(terminal_answer, payload)
@@ -314,12 +325,39 @@ class BackendTests(unittest.TestCase):
         self.assertIn("requirement-1; forbidden=file", prompt)
         self.assertIn("requirement-2; no explicit tool constraint", prompt)
 
-        answer = Message("assistant", '```autocoder-command\n{"requirementId":"requirement-2","command":"run tests"}\n```')
+        answer = Message("assistant", '```autocoder-command\n{"command":"run tests"}\n```')
         _, command, violation = backend_main.validate_model_action(
             answer, payload, None, parse_terminal_proposal(answer, payload)
         )
         self.assertEqual(command, {"command": "run tests"})
         self.assertIsNone(violation)
+
+    def test_model_cannot_choose_a_convenient_requirement_id(self):
+        goal = "1. Use Terminal Tool for the migration.\n2. Summarize the result."
+        payload = {
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {"id": "task-owned", "goal": goal, "status": "thinking", "actions": []},
+        }
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"requirementId":"requirement-2","operation":"create","path":"x","content":"x"}\n```',
+        )
+        proposal = parse_file_proposal(answer, payload)
+        proposal, _, violation = backend_main.validate_model_action(answer, payload, proposal, None)
+        self.assertIsNone(proposal)
+        self.assertIn("payload contract", violation)
+
+    def test_list_data_lines_do_not_create_policy_scopes(self):
+        goal = "1. Create a document with this content:\nalpha\nbeta\n2. Update it via Terminal Tool."
+        payload = {
+            "context": {"project": {"name": "demo", "entries": []}},
+            "orchestration": {"id": "task-data", "goal": goal, "status": "thinking", "actions": []},
+            "messages": [{"role": "user", "content": goal}],
+        }
+        prompt = parse_request(payload)[0].content
+        self.assertIn("requirement-1; no explicit tool constraint; text='Create a document with this content:\\nalpha\\nbeta'", prompt)
+        self.assertIn("requirement-2; required=terminal", prompt)
+        self.assertNotIn("requirement-3", prompt)
 
     def test_nonexistent_file_operation_cannot_be_hidden_by_completed_decision(self):
         payload = {
