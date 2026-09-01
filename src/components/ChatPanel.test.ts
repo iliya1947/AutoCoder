@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress, terminalResultMatchesAction } from "./ChatPanel";
-import { startTask, stopTask, taskSnapshot } from "../types/orchestration";
+import { proposeAction, recordResult, startTask, stopTask, taskSnapshot } from "../types/orchestration";
 
 describe("chat request", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "Explain this file" }];
@@ -17,6 +17,23 @@ describe("chat request", () => {
     ));
 
     expect(request.orchestration?.autonomy).toEqual({ mode: "step_by_step" });
+  });
+
+  it("sends factual action payloads and results in the orchestration snapshot", () => {
+    const initial = startTask("task-history", "Append the requested line");
+    const proposed = proposeAction(initial, "terminal", { command: "echo actual payload" }).task;
+    const completed = recordResult(proposed, {
+      id: "result-1", actionId: "task-history:action:1", tool: "terminal", outcome: "completed",
+      content: "Command: echo actual payload\nStatus: exit code: 0",
+    });
+
+    expect(taskSnapshot(completed).actions).toEqual([{
+      id: "task-history:action:1", tool: "terminal", payload: { command: "echo actual payload" }, status: "completed",
+      result: {
+        id: "result-1", actionId: "task-history:action:1", tool: "terminal", outcome: "completed",
+        content: "Command: echo actual payload\nStatus: exit code: 0",
+      },
+    }]);
   });
 
   it("invalidates chat context when the saved disk baseline changes", () => {
