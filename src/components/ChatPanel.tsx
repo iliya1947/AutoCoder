@@ -22,7 +22,7 @@ type SelectionContext =
 export type ChatRequest = {
   messages: ChatMessage[];
   context: {
-    openFile?: { path: string; content: string; savedContent: string };
+    openFile?: { path: string; content: string; savedContent: string; existsOnDisk?: boolean };
     selection?: SelectionContext;
     project?: { name: string; entries: string[] };
   } | null;
@@ -64,7 +64,7 @@ export function taskProgress(task: OrchestrationTask, requestActive: boolean, re
 export function chatContextKey(openFile: OpenedFile | null, selection: string | null, project: ProjectTree | null): string {
   return JSON.stringify([
     project ? [project.name, projectEntries(project.children)] : null,
-    openFile ? [openFile.path, openFile.content, openFile.savedContent] : null,
+    openFile ? [openFile.path, openFile.content, openFile.savedContent, openFile.existsOnDisk ?? true] : null,
     selection,
   ]);
 }
@@ -208,7 +208,12 @@ export function buildChatRequest(
   orchestration?: OrchestrationSnapshot,
 ): ChatRequest {
   const context: NonNullable<ChatRequest["context"]> = {};
-  if (openFile) context.openFile = { path: openFile.path, content: openFile.content, savedContent: openFile.savedContent };
+  if (openFile) context.openFile = {
+    path: openFile.path,
+    content: openFile.content,
+    savedContent: openFile.savedContent,
+    ...(openFile.existsOnDisk === false ? { existsOnDisk: false } : {}),
+  };
   if (openFile) {
     context.selection = selection
       ? { state: "active", path: openFile.path, content: selection }

@@ -13,7 +13,7 @@ export function selectedText<T>(model: { getValueInRange: (selection: T) => stri
 
 export function Editor({ file, status, error, saving, onChange, onSelectionChange, onSave }: { file: OpenedFile | null; status: EditorStatus; error?: string; saving: boolean; onChange: (content: string) => void; onSelectionChange: (content: string | null) => void; onSave: () => void }) {
   const { t } = useTranslation();
-  const isDirty = file !== null && file.content !== file.savedContent;
+  const isDirty = file !== null && (file.content !== file.savedContent || file.existsOnDisk === false);
   const changeCallback = useRef(onChange);
   const selectionCallback = useRef(onSelectionChange);
   const listenerDisposer = useRef<(() => void) | null>(null);

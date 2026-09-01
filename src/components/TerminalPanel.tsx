@@ -50,7 +50,7 @@ export function navigateTerminalHistory(
   return { command: nextIndex === history.length ? draft : history[nextIndex], index: nextIndex, draft };
 }
 
-export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { projectOpen: boolean; proposedCommand?: { command: string; actionId?: string } | null; onCompleted?: (transcript: TerminalTranscript) => void }) {
+export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { projectOpen: boolean; proposedCommand?: { command: string; actionId?: string } | null; onCompleted?: (transcript: TerminalTranscript) => void | Promise<void> }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
   const [execution, setExecution] = useState<TerminalExecution>({ status: "idle" });

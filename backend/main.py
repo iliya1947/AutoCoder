@@ -11,8 +11,13 @@ from provider import Message, OllamaProvider, ProviderError
 
 ALLOWED_ROLES = {"system", "user", "assistant"}
 OPEN_FILE_PROMPT = """The user currently has this project file open in AutoCoder.
-Use its path and content as context for the user's request.
+Use its path and editor content as context for the user's request. Disk state: {disk_state}.
+The saved baseline below is the latest content read from disk; editor content may contain protected unsaved changes.
 Path: {path}
+
+<saved_disk_content>
+{saved_content}
+</saved_disk_content>
 
 <open_file>
 {content}
@@ -204,16 +209,23 @@ def parse_request(payload: Any) -> list[Message]:
         if not isinstance(open_file, dict):
             raise ValueError("Open file context must be an object.")
         path, content, saved_content = open_file.get("path"), open_file.get("content"), open_file.get("savedContent")
+        exists_on_disk = open_file.get("existsOnDisk", True)
         if (
             not isinstance(path, str)
             or not path.strip()
             or not isinstance(content, str)
             or not isinstance(saved_content, str)
+            or not isinstance(exists_on_disk, bool)
         ):
             raise ValueError("Open file context needs a path, text content, and saved content.")
         context_messages.append(Message(
             role="system",
-            content=OPEN_FILE_PROMPT.format(path=path, content=content),
+            content=OPEN_FILE_PROMPT.format(
+                path=path,
+                content=content,
+                saved_content=saved_content,
+                disk_state="exists" if exists_on_disk else "deleted/missing (the editor buffer is retained only to protect unsaved changes)",
+            ),
         ))
         context_messages.append(Message(role="system", content=FILE_PROPOSAL_PROMPT))
 
@@ -282,6 +294,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
             or not isinstance(open_file.get("content"), str)
             or not isinstance(open_file.get("savedContent"), str)
             or open_file["content"] != open_file["savedContent"]
+            or open_file.get("existsOnDisk", True) is not True
         ):
             return None
         return {
@@ -296,6 +309,7 @@ def parse_file_proposal(answer: Message, payload: Any) -> dict[str, str] | None:
             not isinstance(open_file, dict)
             or proposal["path"] != open_file.get("path")
             or not isinstance(open_file.get("content"), str)
+            or open_file.get("existsOnDisk", True) is not True
         ):
             return None
         return {**proposal, "originalContent": open_file["content"]}

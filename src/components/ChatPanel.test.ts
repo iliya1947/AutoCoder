@@ -103,6 +103,18 @@ describe("chat request", () => {
     });
   });
 
+  it("tells the model when Terminal deleted a file whose dirty buffer was protected", () => {
+    const request = buildChatRequest(messages, {
+      name: "notes.txt", path: "notes.txt", content: "unsaved draft", savedContent: "disk before deletion", existsOnDisk: false,
+    }, null, { name: "project", children: [] });
+
+    expect(request.context?.openFile).toEqual({
+      path: "notes.txt", content: "unsaved draft", savedContent: "disk before deletion", existsOnDisk: false,
+    });
+    expect(chatContextKey({ name: "notes.txt", path: "notes.txt", content: "unsaved draft", savedContent: "disk before deletion" }, null, null))
+      .not.toBe(chatContextKey({ name: "notes.txt", path: "notes.txt", content: "unsaved draft", savedContent: "disk before deletion", existsOnDisk: false }, null, null));
+  });
+
   it("includes the read-only project structure", () => {
     expect(buildChatRequest(messages, null, null, {
       name: "AutoCoder",

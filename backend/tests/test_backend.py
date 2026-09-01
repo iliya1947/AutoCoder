@@ -220,6 +220,21 @@ class BackendTests(unittest.TestCase):
         }}}
         self.assertIsNone(parse_file_proposal(answer, dirty_payload))
 
+    def test_deleted_dirty_editor_context_is_factual_and_cannot_be_replaced(self):
+        payload = {"context": {"openFile": {
+            "path": "notes.txt", "content": "unsaved draft",
+            "savedContent": "old disk text", "existsOnDisk": False,
+        }, "project": {"name": "project", "entries": []}}}
+        messages = parse_request({**payload, "messages": [{"role": "user", "content": "continue"}]})
+        open_file_message = next(message for message in messages if "<open_file>" in message.content)
+        self.assertIn("deleted/missing", open_file_message.content)
+        self.assertIn("unsaved draft", open_file_message.content)
+        answer = Message(
+            "assistant",
+            '```autocoder-file\n{"operation":"replace","path":"notes.txt","content":"new"}\n```',
+        )
+        self.assertIsNone(parse_file_proposal(answer, payload))
+
     def test_extracts_new_file_proposal_for_an_absent_project_path(self):
         answer = Message(
             "assistant",
