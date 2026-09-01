@@ -49,6 +49,7 @@ Only propose delete for the currently open file, and only when its current conte
 This is only a proposal for user review. Never claim that you changed or saved the file."""
 FILE_PROPOSAL_PATTERN = re.compile(r"```autocoder-file\s*\n(.*?)\n```", re.DOTALL)
 TERMINAL_PROPOSAL_PROMPT = """When the user explicitly asks you to run or suggest a project command, you may propose one command.
+On Windows, AutoCoder executes the command in cmd.exe with the effective contract `cmd.exe /D /A /S /C`, in the project root, after selecting UTF-8 code page 65001. Generate cmd.exe-compatible commands: use Windows commands such as `type` rather than Unix-only commands such as `cat`, and use cmd.exe quoting (normally double quotes; single quotes are literal characters, not quoting syntax). Built-in cmd.exe text redirected to a file is therefore written as UTF-8 rather than UTF-16LE.
 Keep your explanation outside the block and emit exactly one block in this exact form (the fence name is `autocoder-command`, not `autocoder-terminal`):
 ```autocoder-command
 {"command": "the complete command to run in the project root"}

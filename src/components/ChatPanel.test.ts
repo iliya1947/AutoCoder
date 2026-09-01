@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress } from "./ChatPanel";
+import { buildChatRequest, buildLineDiff, canApplyProposal, chatContextKey, chatRequestError, ChatMessage, formatActionLifecycleResult, formatFileToolResult, formatTerminalResultDraft, formatTerminalToolResult, isChatResponseCurrent, messagesForCurrentContext, taskProgress, terminalResultMatchesAction } from "./ChatPanel";
 import { startTask, stopTask, taskSnapshot } from "../types/orchestration";
 
 describe("chat request", () => {
@@ -45,6 +45,15 @@ describe("chat request", () => {
     expect(terminalFeedback).toContain("AutoCoder Terminal Tool result");
     expect(terminalFeedback).toContain("Status: exit code: 0");
     expect(terminalFeedback).toContain("propose exactly one next File Tool or Terminal Tool action");
+  });
+
+  it("accepts a terminal result only for its exact action and executed command", () => {
+    const action = { id: "task:action:2", tool: "terminal" as const, payload: { command: "type README.md" }, status: "running" as const, contextKey: "context" };
+    const exact = { id: 4, actionId: action.id, tool: "terminal" as const, command: "type README.md", content: "result" };
+
+    expect(terminalResultMatchesAction(exact, action)).toBe(true);
+    expect(terminalResultMatchesAction({ ...exact, actionId: "task:action:1" }, action)).toBe(false);
+    expect(terminalResultMatchesAction({ ...exact, command: "echo stale" }, action)).toBe(false);
   });
 
   it("summarizes persisted task transitions without treating declined actions as completed", () => {

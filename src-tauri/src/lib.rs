@@ -1143,10 +1143,11 @@ fn run_project_command(
     #[cfg(windows)]
     let mut process = {
         let mut process = Command::new("cmd.exe");
-        // /U makes cmd.exe's own redirected output UTF-16LE. External programs
-        // still write their own bytes to the inherited pipe handles, so output
-        // decoding also accepts UTF-8 below.
-        process.args(["/D", "/U", "/S", "/C", command]);
+        // /A prevents cmd.exe built-ins redirected by the user's command from
+        // silently writing UTF-16LE. Code page 65001 makes that byte output
+        // compatible with the UTF-8 project files AutoCoder edits.
+        let utf8_command = format!("chcp 65001>nul & {command}");
+        process.args(["/D", "/A", "/S", "/C", &utf8_command]);
         process
     };
     #[cfg(not(windows))]
@@ -2309,6 +2310,29 @@ mod tests {
         assert!(result.stderr.contains("Русский stderr"));
         assert!(!result.stdout.contains('�'));
         assert!(!result.stderr.contains('�'));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_cmd_append_preserves_utf8_file_encoding() {
+        let (directory, file) = project();
+        fs::write(&file, "existing UTF-8: Привет\r\n").unwrap();
+        let lifecycle = ProcessLifecycle::new().unwrap();
+
+        let result = run_project_command(
+            directory.path(),
+            "echo appended UTF-8: мир>>notes.txt",
+            &lifecycle,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        let bytes = fs::read(file).unwrap();
+        let text = std::str::from_utf8(&bytes).expect("cmd append must remain valid UTF-8");
+        assert!(text.contains("existing UTF-8: Привет"));
+        assert!(text.contains("appended UTF-8: мир"));
+        assert!(!bytes.windows(2).any(|pair| pair == [b'a', 0]));
     }
 
     #[cfg(windows)]

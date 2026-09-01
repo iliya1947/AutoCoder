@@ -333,7 +333,10 @@ function App() {
   return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
     <section className="center-workspace"><Editor key={`${projectSession}:${openFile?.path ?? ""}`} file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
-    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={(transcript) => setToolResult({ id: ++nextToolResultId.current, content: formatTerminalToolResult(transcript) })} /></section>
+    <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={(transcript) => {
+      if (!transcript.actionId) return;
+      setToolResult({ id: ++nextToolResultId.current, actionId: transcript.actionId, tool: "terminal", command: transcript.command, content: formatTerminalToolResult(transcript) });
+    }} /></section>
     <ChatPanel key={projectSession} openFile={openFile} selection={selection} project={project} toolResult={toolResult} onReviewCommand={setProposedCommand} onApplyProposal={async (proposal) => {
       if (applyingFileProposal.current) return;
       applyingFileProposal.current = true;

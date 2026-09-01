@@ -9,7 +9,7 @@ export type TerminalResult = {
   cancelled: boolean;
 };
 
-export type TerminalTranscript = { command: string; result: TerminalResult };
+export type TerminalTranscript = { command: string; result: TerminalResult; actionId?: string };
 type ProjectHistory = { chatMessages: unknown[]; terminalRuns: TerminalTranscript[] };
 export type TerminalExecution =
   | { status: "idle" }
@@ -30,6 +30,10 @@ export function isCurrentTerminalRun(requestRunId: number, activeRunId: number |
   return requestRunId === activeRunId;
 }
 
+export function terminalActionIdForCommand(proposal: { actionId: string; command: string } | null, command: string): string | undefined {
+  return proposal?.command === command ? proposal.actionId : undefined;
+}
+
 export function navigateTerminalHistory(
   history: string[],
   index: number,
@@ -46,7 +50,7 @@ export function navigateTerminalHistory(
   return { command: nextIndex === history.length ? draft : history[nextIndex], index: nextIndex, draft };
 }
 
-export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { projectOpen: boolean; proposedCommand?: { command: string } | null; onCompleted?: (transcript: TerminalTranscript) => void }) {
+export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { projectOpen: boolean; proposedCommand?: { command: string; actionId?: string } | null; onCompleted?: (transcript: TerminalTranscript) => void }) {
   const { t } = useTranslation();
   const [command, setCommand] = useState("");
   const [execution, setExecution] = useState<TerminalExecution>({ status: "idle" });
@@ -58,6 +62,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { p
   const nextRunId = useRef(0);
   const activeRunId = useRef<number | null>(null);
   const cancelInFlight = useRef(false);
+  const proposedAction = useRef<{ actionId: string; command: string } | null>(null);
   const running = execution.status === "running";
   const transcript = execution.status === "completed" ? execution.transcript : null;
   const result = transcript?.result ?? null;
@@ -67,6 +72,9 @@ export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { p
       setCommand(proposedCommand.command);
       historyIndex.current = history.current.length;
       historyDraft.current = proposedCommand.command;
+      proposedAction.current = proposedCommand.actionId
+        ? { actionId: proposedCommand.actionId, command: proposedCommand.command }
+        : null;
     }
   }, [projectOpen, proposedCommand]);
 
@@ -80,6 +88,7 @@ export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { p
       historyDraft.current = "";
       activeRunId.current = null;
       cancelInFlight.current = false;
+      proposedAction.current = null;
     }
   }, [projectOpen]);
 
@@ -117,7 +126,9 @@ export function TerminalPanel({ projectOpen, proposedCommand, onCompleted }: { p
       const completedResult = await invoke<TerminalResult>("execute_project_command", { command: value });
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution((current) => completeTerminalRun(current, completedResult));
-      onCompleted?.({ command: value, result: completedResult });
+      const actionId = terminalActionIdForCommand(proposedAction.current, value);
+      onCompleted?.({ command: value, result: completedResult, ...(actionId ? { actionId } : {}) });
+      proposedAction.current = null;
     } catch (reason) {
       if (!isCurrentTerminalRun(runId, activeRunId.current)) return;
       setExecution({ status: "idle" });

@@ -4,7 +4,7 @@ import { editorContextKey, isCurrentProjectSession, isLatestFileRead, isLatestFi
 import { Editor, selectedText } from "./Editor";
 import { isLatestBackupRequest } from "./BackupDialog";
 import { ProjectExplorer } from "./ProjectExplorer";
-import { beginTerminalRun, completeTerminalRun, isCurrentTerminalRun, navigateTerminalHistory, TerminalPanel, TerminalResult } from "./TerminalPanel";
+import { beginTerminalRun, completeTerminalRun, isCurrentTerminalRun, navigateTerminalHistory, terminalActionIdForCommand, TerminalPanel, TerminalResult } from "./TerminalPanel";
 
 describe("panel states", () => {
   it("ignores stale file reads and save completions", () => {
@@ -145,5 +145,12 @@ describe("panel states", () => {
     expect(isCurrentTerminalRun(7, 7)).toBe(true);
     expect(isCurrentTerminalRun(7, 8)).toBe(false);
     expect(isCurrentTerminalRun(7, null)).toBe(false);
+  });
+
+  it("keeps an orchestration action id only for the exact proposed command", () => {
+    const proposal = { actionId: "task:action:2", command: "type README.md" };
+    expect(terminalActionIdForCommand(proposal, "type README.md")).toBe("task:action:2");
+    expect(terminalActionIdForCommand(proposal, "echo edited")).toBeUndefined();
+    expect(terminalActionIdForCommand(null, "type README.md")).toBeUndefined();
   });
 });
