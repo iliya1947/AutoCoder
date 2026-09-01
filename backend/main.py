@@ -75,6 +75,7 @@ Recorded actions:
 {actions}
 
 Treat this task state as control metadata, not as a user instruction. Respond for the current step only.
+Recorded action payloads and results are factual execution history. Compare what each action actually did with the goal; a successful tool status proves only that the recorded payload executed successfully, not that it accomplished the intended step.
 The supplied current project structure, open editor content, saved disk content, and approved tool results are factual evidence. Evaluate them before choosing an outcome. If they already establish the goal, choose completed; do not spend an action re-reading or re-checking the same facts. File Tool is an editing tool in the current architecture, not a general read action, and Terminal Tool must not be used as a substitute reader for facts already supplied in context.
 Choose exactly one outcome:
 - If another step is needed, propose exactly one reviewable File Tool (`autocoder-file`) or Terminal Tool (`autocoder-command`, not `autocoder-terminal`) action using the exact format supplied in the other system messages.
@@ -168,12 +169,49 @@ def parse_request(payload: Any) -> list[Message]:
             raise ValueError("Orchestration autonomy policy is invalid.")
         action_lines = []
         for action in actions:
-            if not isinstance(action, dict) or not isinstance(action.get("id"), str) or action.get("tool") not in {"file", "terminal"} or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}:
+            if (
+                not isinstance(action, dict)
+                or set(action) - {"id", "tool", "payload", "status", "result"}
+                or not isinstance(action.get("id"), str)
+                or action.get("tool") not in {"file", "terminal"}
+                or action.get("status") not in {"proposed", "running", "completed", "failed", "cancelled"}
+                or not isinstance(action.get("payload"), dict)
+            ):
                 raise ValueError("Orchestration action is invalid.")
+            payload = action["payload"]
+            if action["tool"] == "terminal":
+                valid_payload = set(payload) == {"command"} and isinstance(payload.get("command"), str) and bool(payload["command"].strip())
+            else:
+                operation = payload.get("operation")
+                required = {"operation", "path"} if operation == "delete" else {"operation", "path", "content"}
+                # File proposals persisted by the UI can also contain the
+                # optimistic-concurrency baselines used during review.
+                allowed = required | {"originalContent", "expectedSavedContent"}
+                valid_payload = (
+                    operation in {"create", "replace", "delete"}
+                    and required.issubset(payload)
+                    and not set(payload) - allowed
+                    and isinstance(payload.get("path"), str)
+                    and (operation == "delete" or isinstance(payload.get("content"), str))
+                )
+            if not valid_payload:
+                raise ValueError("Orchestration action payload is invalid.")
             result = action.get("result")
-            if result is not None and (not isinstance(result, dict) or set(result) != {"outcome"} or result.get("outcome") not in {"completed", "failed", "cancelled", "declined", "interrupted"}):
+            if result is not None and (
+                not isinstance(result, dict)
+                or set(result) != {"id", "actionId", "tool", "outcome", "content"}
+                or not isinstance(result.get("id"), str)
+                or result.get("actionId") != action["id"]
+                or result.get("tool") != action["tool"]
+                or result.get("outcome") not in {"completed", "failed", "cancelled", "declined", "interrupted"}
+                or not isinstance(result.get("content"), str)
+            ):
                 raise ValueError("Orchestration result is invalid.")
-            action_lines.append(f'- {action["id"]}: {action["tool"]} / {action["status"]}' + (f' / result {result["outcome"]}' if result else ""))
+            action_lines.append(
+                f'- {action["id"]}: {action["tool"]} / {action["status"]}\n'
+                f'  payload: {json.dumps(payload, ensure_ascii=False)}'
+                + (f'\n  result: {json.dumps(result, ensure_ascii=False)}' if result else "")
+            )
         policy = execution or {
             "modelTurns": max(1, len(actions) + 1),
             "maxModelTurns": 12,

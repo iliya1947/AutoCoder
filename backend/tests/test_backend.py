@@ -68,7 +68,9 @@ class BackendTests(unittest.TestCase):
                 "status": "awaiting_ai",
                 "actions": [{
                     "id": "task-1:action:1", "tool": "terminal", "status": "completed",
-                    "result": {"outcome": "completed"},
+                    "payload": {"command": "append requested text"},
+                    "result": {"id": "result-1", "actionId": "task-1:action:1", "tool": "terminal",
+                               "outcome": "completed", "content": "Command: append requested text\nStatus: exit code: 0"},
                 }],
             },
         }
@@ -171,7 +173,9 @@ class BackendTests(unittest.TestCase):
                 "id": "task-1", "goal": "Fix the file and run the tests", "status": "awaiting_ai",
                 "actions": [{
                     "id": "task-1:action:1", "tool": "file", "status": "completed",
-                    "result": {"outcome": "completed"},
+                    "payload": {"operation": "replace", "path": "package.json", "content": "{}"},
+                    "result": {"id": "result-1", "actionId": "task-1:action:1", "tool": "file",
+                               "outcome": "completed", "content": "Status: completed"},
                 }],
             },
         }
@@ -402,7 +406,9 @@ class BackendTests(unittest.TestCase):
                 "execution": {"modelTurns": 2, "maxModelTurns": 12, "maxActions": 8},
                 "actions": [{
                     "id": "task-1:action:1", "tool": "terminal", "status": "completed",
-                    "result": {"outcome": "completed"},
+                    "payload": {"command": "npm test"},
+                    "result": {"id": "result-1", "actionId": "task-1:action:1", "tool": "terminal",
+                               "outcome": "completed", "content": "Command: npm test\nStatus: exit code: 0"},
                 }],
             },
         })
@@ -410,7 +416,10 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Task id: task-1", messages[0].content)
         self.assertIn("Autonomy mode: step_by_step", messages[0].content)
         self.assertIn("model turn 2/12; actions 1/8", messages[0].content)
-        self.assertIn("task-1:action:1: terminal / completed / result completed", messages[0].content)
+        self.assertIn("task-1:action:1: terminal / completed", messages[0].content)
+        self.assertIn('payload: {"command": "npm test"}', messages[0].content)
+        self.assertIn('"outcome": "completed"', messages[0].content)
+        self.assertIn("successful tool status proves only", messages[0].content)
         self.assertIn("Choose exactly one outcome", messages[0].content)
         self.assertIn('state "blocked"', messages[0].content)
 
@@ -456,12 +465,14 @@ class BackendTests(unittest.TestCase):
                 "id": "task-1", "goal": "Fix", "status": "awaiting_ai",
                 "actions": [{
                     "id": "action-1", "tool": "file", "status": "cancelled",
-                    "result": {"outcome": "declined"},
+                    "payload": {"operation": "create", "path": "new.txt", "content": "new"},
+                    "result": {"id": "result-1", "actionId": "action-1", "tool": "file",
+                               "outcome": "declined", "content": "The user declined it"},
                 }],
             },
         })
         self.assertIn("Autonomy mode: supervised", messages[0].content)
-        self.assertIn("result declined", messages[0].content)
+        self.assertIn('"outcome": "declined"', messages[0].content)
 
     def test_accepts_project_with_no_entries_and_open_file_together(self):
         messages = parse_request(

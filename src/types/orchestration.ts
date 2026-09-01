@@ -42,7 +42,7 @@ export type OrchestrationTask = {
 
 export type OrchestrationSnapshot = Pick<OrchestrationTask, "id" | "status" | "goal" | "conclusion" | "execution"> & {
   autonomy: { mode: AutonomyMode };
-  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "status"> & { result?: Pick<OrchestrationResult, "outcome"> }>;
+  actions: Array<Pick<OrchestrationAction, "id" | "tool" | "payload" | "status"> & { result?: OrchestrationResult }>;
 };
 
 export function startTask(id: string, goal: string, mode: AutonomyMode = "supervised"): OrchestrationTask {
@@ -108,7 +108,10 @@ export function taskSnapshot(task: OrchestrationTask): OrchestrationSnapshot {
     execution: normalizedExecution(task),
     autonomy: normalizedAutonomy(task),
     ...(task.conclusion ? { conclusion: task.conclusion } : {}),
-    actions: task.actions.map(({ id, tool, status, result }) => ({ id, tool, status, ...(result ? { result: { outcome: result.outcome } } : {}) })),
+    // The backend prompt needs the action evidence, not only lifecycle labels:
+    // an exit code cannot tell the model what command actually ran, and a
+    // completed file action does not identify the content that was applied.
+    actions: task.actions.map(({ id, tool, payload, status, result }) => ({ id, tool, payload, status, ...(result ? { result } : {}) })),
   };
 }
 
