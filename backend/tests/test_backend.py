@@ -45,6 +45,47 @@ class BackendTests(unittest.TestCase):
         self.assertIn("`type` rather than Unix-only commands such as `cat`", TERMINAL_PROPOSAL_PROMPT)
         self.assertIn("single quotes are literal", TERMINAL_PROPOSAL_PROMPT)
 
+    def test_orchestration_treats_current_context_as_sufficient_factual_evidence(self):
+        payload = {
+            "messages": [
+                {"role": "user", "content": "Append the requested second line to the document"},
+                {"role": "user", "content": (
+                    "AutoCoder Terminal Tool result (this is factual output):\n"
+                    "Command: append requested text\nStatus: exit code: 0"
+                )},
+            ],
+            "context": {
+                "project": {"name": "demo", "entries": ["file: notes.txt"]},
+                "openFile": {
+                    "path": "notes.txt",
+                    "content": "first line\nsecond line\n",
+                    "savedContent": "first line\nsecond line\n",
+                    "existsOnDisk": True,
+                },
+            },
+            "orchestration": {
+                "id": "task-1", "goal": "Append the requested second line to the document",
+                "status": "awaiting_ai",
+                "actions": [{
+                    "id": "task-1:action:1", "tool": "terminal", "status": "completed",
+                    "result": {"outcome": "completed"},
+                }],
+            },
+        }
+
+        messages = parse_request(payload)
+        orchestration_prompt = messages[0].content
+
+        self.assertIn("saved disk content", orchestration_prompt)
+        self.assertIn("If they already establish the goal, choose completed", orchestration_prompt)
+        self.assertIn("Terminal Tool must not be used as a substitute reader", orchestration_prompt)
+        tool_result_prompt = next(
+            message.content for message in messages
+            if message.role == "system" and "trusted factual feedback" in message.content
+        )
+        self.assertIn("without a File Tool or Terminal Tool action", tool_result_prompt)
+        self.assertIn("Do not propose a tool action merely to re-read", tool_result_prompt)
+
     @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")
