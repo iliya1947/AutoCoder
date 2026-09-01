@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diagnose_chat import PAYLOAD, byte_report
 import main as backend_main
-from main import TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_task_decision, parse_terminal_proposal
+from main import TERMINAL_PROPOSAL_PROMPT, TOOL_RESULT_PROMPT, parse_file_proposal, parse_messages, parse_request, parse_task_decision, parse_terminal_proposal
 from provider import Message, OllamaProvider, OllamaRuntime, ProviderError
 
 
@@ -39,6 +39,12 @@ def ready_ollama(request_or_url, **_kwargs):
 
 
 class BackendTests(unittest.TestCase):
+    def test_terminal_prompt_describes_the_real_windows_shell_contract(self):
+        self.assertIn("cmd.exe /D /A /S /C", TERMINAL_PROPOSAL_PROMPT)
+        self.assertIn("code page 65001", TERMINAL_PROPOSAL_PROMPT)
+        self.assertIn("`type` rather than Unix-only commands such as `cat`", TERMINAL_PROPOSAL_PROMPT)
+        self.assertIn("single quotes are literal", TERMINAL_PROPOSAL_PROMPT)
+
     @patch("provider.request.urlopen", side_effect=ready_ollama)
     def test_utf8_stdin_preserves_cyrillic_through_request_and_ollama_payload(self, urlopen):
         stdin_bytes = json.dumps(PAYLOAD, ensure_ascii=False).encode("utf-8")

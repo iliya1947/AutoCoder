@@ -2,11 +2,28 @@
 
 ## Дата состояния
 
-31 августа 2026 (исправляется дефект terminal proposal contract, найденный на 80% acceptance).
+1 сентября 2026 (исправлен связанный дефект Terminal Tool, найденный на 80% acceptance).
 
 ## Текущий этап
 
 **Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
+
+### Windows shell и точная привязка Terminal result (1 сентября 2026)
+- Модель теперь получает фактический Windows contract: `cmd.exe /D /A /S /C`, UTF-8 code page 65001,
+  правила quoting `cmd.exe` и прямое указание не предлагать Unix-only `cat`. Это соответствует
+  реальному execution path, а не абстрактному «терминалу».
+- Удалён `/U`, из-за которого встроенный `cmd.exe echo` при перенаправлении дописывал UTF-16LE в
+  UTF-8 файл. Перед пользовательской командой выбирается code page 65001, а `/A` сохраняет обычный
+  byte output; Windows regression проверяет append кириллицы в существующий UTF-8 файл и отсутствие
+  UTF-16LE-фрагмента.
+- Terminal proposal получает id конкретного orchestration action. Завершение передаёт этот id только
+  если реально выполненная команда точно совпала с предложенной; Chat принимает result лишь при
+  совпадении tool, action id и command с активным action. Ручные команды и поздний result предыдущего
+  action больше не могут продвинуть следующий action.
+- Существующие approval, cancellation, owned-process lifecycle, command serialization и выполнение в
+  project root не изменены. Добавлены frontend/backend/Rust regression-тесты для shell prompt,
+  action/command correlation и безопасного Windows UTF-8 append.
+- Барьер 80% **остаётся непройденным** до повторного packaged Windows acceptance-теста.
 
 ### Устойчивый terminal proposal contract после tool result (31 августа 2026)
 - Packaged Windows acceptance на барьере 80% **пока не пройден**. В реальном многошаговом сценарии

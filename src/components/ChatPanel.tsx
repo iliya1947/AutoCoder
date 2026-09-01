@@ -13,8 +13,8 @@ export type FileProposal =
   | { operation: "create"; path: string; content: string }
   | { operation: "delete"; path: string; originalContent: string; expectedSavedContent: string };
 export type DiffLine = { kind: "context" | "removed" | "added"; content: string; oldLine: number | null; newLine: number | null };
-export type TerminalProposal = { command: string };
-export type ToolResult = { id: number; content: string };
+export type TerminalProposal = { command: string; actionId?: string };
+export type ToolResult = { id: number; content: string; actionId?: string; tool?: ToolKind; command?: string };
 type ChatResponse = { message: ChatMessage; proposal?: FileProposal | null; commandProposal?: TerminalProposal | null; taskDecision: { outcome: "next_action" | "completed" | "blocked"; reason: string }; projectKey: string };
 type SelectionContext =
   | { state: "active"; path: string; content: string }
@@ -122,6 +122,13 @@ export function formatTerminalToolResult(transcript: TerminalTranscript): string
     formatTerminalResultDraft(transcript),
     "Continue the task from this result. If another action is needed, propose exactly one next File Tool or Terminal Tool action for review.",
   ].join("\n\n");
+}
+
+export function terminalResultMatchesAction(toolResult: ToolResult, action: OrchestrationTask["actions"][number]): boolean {
+  return action.tool === "terminal"
+    && toolResult.tool === "terminal"
+    && toolResult.actionId === action.id
+    && toolResult.command === (action.payload as TerminalProposal).command;
 }
 
 export function formatActionLifecycleResult(tool: ToolKind, outcome: "declined" | "interrupted"): string {
@@ -359,7 +366,10 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
       updateTask(nextTask);
       setMessages(completedMessages);
       setProposal(nextTask.status === "awaiting_approval" ? response.proposal ?? null : null);
-      setCommandProposal(nextTask.status === "awaiting_approval" ? response.commandProposal ?? null : null);
+      const proposedTerminalAction = nextTask.actions.at(-1);
+      setCommandProposal(nextTask.status === "awaiting_approval" && response.commandProposal && proposedTerminalAction?.tool === "terminal"
+        ? { ...response.commandProposal, actionId: proposedTerminalAction.id }
+        : null);
       if (nextTask.status === "blocked" && responseAction && !canProposeAction(requestTask)) setError(nextTask.conclusion?.reason ?? null);
     } catch (error) {
       if (requestId !== latestRequest.current) return;
@@ -377,10 +387,11 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
 
   useEffect(() => {
     if (!toolResult || sending || consumedToolResult.current === toolResult.id) return;
-    consumedToolResult.current = toolResult.id;
     const activeTask = currentTask.current;
     const activeAction = activeTask?.actions.at(-1);
     if (!activeTask || isTaskFinished(activeTask) || !activeAction || !["proposed", "running"].includes(activeAction.status)) return;
+    if (toolResult.tool === "terminal" && !terminalResultMatchesAction(toolResult, activeAction)) return;
+    consumedToolResult.current = toolResult.id;
     const outcome = toolResult.content.includes("Status: failed") ? "failed" : toolResult.content.includes("Status: cancelled") ? "cancelled" : "completed";
     const withResult = recordResult(markActionRunning(activeTask, activeAction.id), {
       id: `${activeAction.id}:result`, actionId: activeAction.id, tool: activeAction.tool, outcome, content: toolResult.content,
@@ -478,7 +489,7 @@ export function ChatPanel({ openFile, selection, project, toolResult, onApplyPro
           }}>{t("chat.resume_task")}</button>}
           {canReview && <button type="button" onClick={() => {
             if (action?.tool === "file") setProposal(action.payload as FileProposal);
-            if (action?.tool === "terminal") setCommandProposal(action.payload as TerminalProposal);
+            if (action?.tool === "terminal") setCommandProposal({ ...(action.payload as TerminalProposal), actionId: action.id });
             setRecoveredTask(null);
           }}>{t("chat.review_recovered")}</button>}
           {!canResume && !canReview && <button type="button" onClick={() => void finishWithoutExecution(action?.status === "running" ? "interrupted" : "declined")}>{t("chat.continue_safely")}</button>}
