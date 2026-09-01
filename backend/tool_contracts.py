@@ -164,7 +164,7 @@ def validate_selected_tool(tool: str, requirement_id: str | None, payload: Any) 
         return None
     requirement = next((item for item in requirements if item.id == requirement_id), None)
     if requirement is None:
-        return "The model action must declare a requirementId from the current task contract."
+        return "No active requirement is available for another executable action."
     if requirement.required_tools and tool not in requirement.required_tools:
         return f"Tool '{tool}' contradicts {requirement.id}; required: {', '.join(sorted(requirement.required_tools))}."
     if tool in requirement.forbidden_tools:
@@ -173,41 +173,30 @@ def validate_selected_tool(tool: str, requirement_id: str | None, payload: Any) 
 
 
 def next_requirement_id(payload: Any) -> str | None:
-    """Select the next scope from trusted history; the model has no input."""
+    """Select the active scope from user-approved semantic transitions."""
     requirements = requirement_contracts(payload)
     if not requirements:
         return None
     orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
-    actions = orchestration.get("actions", []) if isinstance(orchestration, dict) else []
-    completed = {
-        action.get("requirementId") for action in actions
-        if isinstance(action, dict) and action.get("status") == "completed"
+    transitions = orchestration.get("requirementTransitions", []) if isinstance(orchestration, dict) else []
+    satisfied = {
+        transition.get("requirementId") for transition in transitions
+        if isinstance(transition, dict) and transition.get("status") == "approved"
     }
-    # Pre-migration actions had no association. Consume the corresponding
-    # leading scopes so an upgraded continuation remains monotonic.
-    legacy_count = sum(
-        1 for action in actions
-        if isinstance(action, dict) and not action.get("requirementId")
-        and action.get("status") == "completed"
-    )
-    for index, requirement in enumerate(requirements):
-        if index < legacy_count or requirement.id in completed:
+    for requirement in requirements:
+        if requirement.id in satisfied:
             continue
         return requirement.id
-    return requirements[-1].id
+    return None
 
 
-def unmet_required_tool_constraints(payload: Any) -> tuple[str, ...]:
-    """Required-tool scopes cannot be skipped by a model completion claim."""
+def unmet_requirement_transitions(payload: Any) -> tuple[str, ...]:
+    """No semantic scope can be skipped by a model completion claim."""
     requirements = requirement_contracts(payload)
     orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
-    actions = orchestration.get("actions", []) if isinstance(orchestration, dict) else []
+    transitions = orchestration.get("requirementTransitions", []) if isinstance(orchestration, dict) else []
     satisfied = {
-        action.get("requirementId") for action in actions
-        if isinstance(action, dict) and action.get("status") == "completed"
-        and action.get("tool") in next(
-            (requirement.required_tools for requirement in requirements if requirement.id == action.get("requirementId")),
-            frozenset(),
-        )
+        transition.get("requirementId") for transition in transitions
+        if isinstance(transition, dict) and transition.get("status") == "approved"
     }
-    return tuple(requirement.id for requirement in requirements if requirement.required_tools and requirement.id not in satisfied)
+    return tuple(requirement.id for requirement in requirements if requirement.id not in satisfied)

@@ -128,5 +128,10 @@
   "chat.step_ready": "The tool result is recorded. Review it, then resume when you are ready.",
   "task.status_stopped": "Stopped by user",
   "task.next_new": "Choose a mode and start a new task",
-  "task.stop": "Stop task"
+  "task.stop": "Stop task",
+  "task.waiting_requirement": "Requirement review",
+  "task.next_requirement": "Confirm semantic completion",
+  "chat.requirement_review": "Review requirement completion",
+  "chat.requirement_approve": "Mark satisfied",
+  "chat.requirement_decline": "Keep active"
 }

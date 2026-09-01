@@ -128,5 +128,10 @@
   "chat.step_ready": "תוצאת הכלי נשמרה. יש לבדוק אותה ולהמשיך את המשימה כשמתאים.",
   "task.status_stopped": "נעצרה על ידי המשתמש",
   "task.next_new": "בחירת מצב והתחלת משימה חדשה",
-  "task.stop": "עצירת המשימה"
+  "task.stop": "עצירת המשימה",
+  "task.waiting_requirement": "בדיקת דרישה",
+  "task.next_requirement": "אישור השלמה סמנטית",
+  "chat.requirement_review": "בדיקת השלמת דרישה",
+  "chat.requirement_approve": "סמן כהושלם",
+  "chat.requirement_decline": "השאר פעיל"
 }
