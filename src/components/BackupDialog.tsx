@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../diagnostics";
 import { useTranslation } from "../hooks/useTranslation";
 import { ProjectTree } from "../types/project";
 import { operationError } from "../utils/invokeError";

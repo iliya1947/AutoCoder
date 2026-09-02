@@ -2,6 +2,7 @@
 
 ## Дата состояния
 
+2 сентября 2026 (добавлен базовый Development Diagnostics / Observability слой).
 1 сентября 2026 (LLM → orchestration переведён на typed structured output).
 
 ## Текущий этап
@@ -1234,3 +1235,13 @@ backlog, а не обычным пользовательским acceptance bloc
 - следующую конкретную задачу.
 
 Не менять подтверждённые факты без основания.
+
+
+## Development Diagnostics / Observability — 2 сентября 2026
+
+- Добавлено локальное append-only JSONL diagnostics-хранилище с сохранением прошлых запусков, rotation/retention, лимитами события, рекурсивной sanitization/redaction и fail-open записью.
+- Все фактические frontend → Tauri вызовы проходят через общий instrumented boundary и получают session/operation correlation, duration, safe input/result shape и rejection. Поэтому автоматически охватываются workspace/editor/filesystem, persistence, backup/restore, Chat/orchestration, File/Terminal tools, process cancellation и recovery команды без ручного списка вызовов.
+- Добавлен coverage report: статический реестр обязательных архитектурных boundary сопоставляется с фактически наблюдаемыми subsystem/component. Формат пригоден для будущей кнопки AI Diagnostics Review; LLM-аудит намеренно пока не реализован.
+- Добавлен Development Diagnostics UI: timeline, severity filter, full-text search, structured details, связанные parent/trace events, errors/rejections и локальный export bundle.
+- Rust unit tests покрывают correlation/structured transition, recursive redaction, failure isolation, bounded retention и readable bundle.
+- Текущий acceptance Part 1 bug намеренно не исправлялся. Статус 80% acceptance остаётся **FAIL** и должен быть повторён после merge уже с полной трассой.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./diagnostics";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import { ChatPanel, formatFileToolResult, formatTerminalToolResult } from "./components/ChatPanel";
@@ -13,6 +13,7 @@ import { useTranslation } from "./hooks/useTranslation";
 import { FileReadResult, OpenedFile, OpenProjectResult, ProjectNode, ProjectTree, RefreshProjectResult, RestoredWorkspace } from "./types/project";
 import { transformProjectTree } from "./utils/projectTree";
 import { operationError } from "./utils/invokeError";
+import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 
 export function isLatestFileRead(requestId: number, latestRequestId: number): boolean {
   return requestId === latestRequestId;
@@ -69,6 +70,7 @@ function App() {
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [proposedCommand, setProposedCommand] = useState<TerminalProposal | null>(null);
   const [toolResult, setToolResult] = useState<ToolResult | null>(null);
   const latestFileRead = useRef(0);
@@ -379,7 +381,7 @@ function App() {
     }
   };
 
-  return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><main className="workspace">
+  return <div className="app-shell"><WorkspaceHeader onOpenBackups={() => setBackupsOpen(true)} backupsDisabled={!project} /><button className="diagnostics-launch" onClick={() => setDiagnosticsOpen(true)}>Diagnostics</button><main className="workspace">
     <ProjectExplorer project={project} status={projectStatus} error={projectError} activePath={openFile?.path} onOpenProject={handleOpenProject} onRefreshProject={handleRefreshProject} onOpenFile={handleOpenFile} onCreate={handleCreateEntry} onRename={handleRenameEntry} onDelete={handleDeleteEntry} />
     <section className="center-workspace"><Editor key={`${projectSession}:${openFile?.path ?? ""}`} file={openFile} status={editorStatus} error={editorError} saving={saving} onChange={(content) => setOpenFile((current) => current ? { ...current, content } : current)} onSelectionChange={setSelection} onSave={handleSave} />
     <TerminalPanel key={projectSession} projectOpen={project !== null} proposedCommand={proposedCommand} onCompleted={handleTerminalCompleted} /></section>
@@ -437,7 +439,7 @@ function App() {
         applyingFileProposal.current = false;
       }
     }} />
-  </main><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || confirm(t("editor.discard_confirm"), { title: "AutoCoder", kind: "warning" })} /></div>;
+  </main><DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} /><BackupDialog key={projectSession} open={backupsOpen} onClose={() => setBackupsOpen(false)} onRestored={(backup, updated) => handleRestored(backup, updated, projectSession)} canRestore={() => !isDirty || confirm(t("editor.discard_confirm"), { title: "AutoCoder", kind: "warning" })} /></div>;
 }
 
 export default App;

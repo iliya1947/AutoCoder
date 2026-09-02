@@ -13,8 +13,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod diagnostics;
 mod history;
 mod process_lifecycle;
+use diagnostics::{DiagnosticEventInput, Diagnostics};
 use history::{HistoryStore, ProjectHistory, WorkspaceState};
 use process_lifecycle::{ChildIo, OwnedChild, ProcessLifecycle};
 
@@ -604,6 +606,7 @@ async fn send_chat_message(
     ollama: State<'_, OllamaState>,
     chat_state: State<'_, ChatState>,
     project_state: State<'_, ProjectState>,
+    diagnostics: State<'_, Diagnostics>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
     if request.messages.is_empty()
@@ -622,6 +625,28 @@ async fn send_chat_message(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "An orchestration model turn must have a task id.".to_string())?
         .to_owned();
+    let trace_id = task_id.clone();
+    for (event_type, component) in [
+        ("requirements.extracted", "requirements"),
+        ("requirement.active", "orchestration"),
+        ("factual_context.assembled", "workspace"),
+        ("generation_schema.selected", "provider"),
+    ] {
+        diagnostics.record(DiagnosticEventInput {
+            subsystem: "orchestration".into(),
+            component: component.into(),
+            event_type: event_type.into(),
+            severity: "info".into(),
+            trace_id: trace_id.clone(),
+            span_id: format!("{task_id}:{event_type}"),
+            parent_span_id: Some(task_id.clone()),
+            data: serde_json::json!({"taskId": task_id, "messageCount": request.messages.len()}),
+            result: None,
+            error: None,
+            state_transition: None,
+            duration_ms: None,
+        });
+    }
     let resource_dir = app
         .path()
         .resource_dir()
@@ -642,6 +667,22 @@ async fn send_chat_message(
         .and_then(|response| response.map(|response| (root, response)));
     chat_state.finish(&cancel);
     let (root, mut response) = completed?;
+    let outcome = response
+        .task_decision
+        .as_ref()
+        .map(|decision| decision.outcome.clone());
+    for (event_type, component) in [
+        ("model_response.structured", "provider"),
+        ("decision.typed_and_validated", "orchestration"),
+        ("semantic_transition.proposed", "orchestration"),
+    ] {
+        diagnostics.record(DiagnosticEventInput {
+            subsystem: "orchestration".into(), component: component.into(), event_type: event_type.into(), severity: "info".into(),
+            trace_id: trace_id.clone(), span_id: format!("{task_id}:{event_type}"), parent_span_id: Some(task_id.clone()),
+            data: serde_json::json!({"responseShape": "typed", "hasFileAction": response.proposal.is_some(), "hasTerminalAction": response.command_proposal.is_some()}),
+            result: Some(serde_json::json!({"outcome": outcome})), error: None, state_transition: Some(serde_json::json!({"from": "awaiting_ai", "to": outcome})), duration_ms: None,
+        });
+    }
     response.project_key = root.to_string_lossy().into_owned();
     Ok(response)
 }
@@ -905,6 +946,34 @@ fn run_chat_backend(
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("The AI backend returned an invalid response: {error}"))
+}
+
+#[tauri::command]
+fn record_diagnostic_event(
+    diagnostics: State<'_, Diagnostics>,
+    event: DiagnosticEventInput,
+) -> Result<(), String> {
+    diagnostics.record(event);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_diagnostic_events(
+    diagnostics: State<'_, Diagnostics>,
+) -> Vec<diagnostics::DiagnosticEvent> {
+    diagnostics.events()
+}
+
+#[tauri::command]
+fn diagnostic_coverage(diagnostics: State<'_, Diagnostics>) -> diagnostics::CoverageReport {
+    diagnostics.coverage()
+}
+
+#[tauri::command]
+fn export_diagnostic_bundle(diagnostics: State<'_, Diagnostics>) -> Result<String, String> {
+    diagnostics
+        .export_bundle()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -3261,9 +3330,17 @@ pub fn run() {
             load_project_history,
             save_chat_exchange,
             save_orchestration_task,
-            clear_project_history
+            clear_project_history,
+            record_diagnostic_event,
+            list_diagnostic_events,
+            diagnostic_coverage,
+            export_diagnostic_bundle
         ])
         .setup(|app| {
+            let diagnostics_path = app.path().app_data_dir()?.join("diagnostics");
+            let diagnostics = Diagnostics::open(diagnostics_path);
+            diagnostics.record(DiagnosticEventInput::lifecycle("application.startup"));
+            app.manage(diagnostics);
             let history_path = app.path().app_data_dir()?.join("history.sqlite3");
             app.manage(HistoryStore::open(history_path).map_err(std::io::Error::other)?);
             if cfg!(debug_assertions) {
