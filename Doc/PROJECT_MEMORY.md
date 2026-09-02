@@ -39,7 +39,8 @@ AutoCoder должен быть:
 - фактически наблюдаемым и диагностируемым;
 - сохраняющим целостность пользовательского проекта и позволяющим откатить собственные изменения;
 - устойчивым к перезапускам, сбоям, отмене задач и поздним результатам;
-- способным объяснить, какие действия были выполнены и на основании каких фактов задача считается завершённой.
+- способным объяснить, какие действия были выполнены и на основании каких фактов задача считается завершённой;
+- не зависящим архитектурно от конкретного SDK, протокола, AI-провайдера, parser/indexer engine или другого заменяемого внешнего компонента.
 
 AutoCoder является универсальным инструментом разработки. Архитектура проекта не должна вводить искусственные ограничения на то, какие обычные программные проекты пользователь может создавать. Permissions, confirmations, diagnostics, process ownership и backup существуют для управления действиями самого AutoCoder и целостности workspace, а не как content-based ограничения на назначение создаваемого ПО.
 
@@ -47,13 +48,52 @@ AutoCoder является универсальным инструментом �
 
 ---
 
-## 3. Целевая архитектура
+## 3. Главный принцип владения архитектурой
+
+**Архитектура AutoCoder принадлежит AutoCoder.**
+
+Сторонняя библиотека, runtime, SDK или внешний протокол может использоваться как реализация отдельной commodity-функции, но не должен становиться владельцем внутренней архитектуры продукта.
+
+Целевая модель:
+
+AutoCoder-owned abstractions / contracts
+→ replaceable adapters
+→ сторонние реализации, системные сервисы, протоколы или provider APIs.
+
+Примеры:
+
+- Persistence architecture принадлежит AutoCoder; SQLite — текущая реализация локального store;
+- Provider Runtime принадлежит AutoCoder; Ollama — один из provider/runtime adapters;
+- Project Intelligence принадлежит AutoCoder; Tree-sitter, LSP, SCIP и другие источники могут подключаться через adapters;
+- Diagnostics принадлежит AutoCoder; OpenTelemetry используется как совместимая модель/ориентир, а не как обязательный владелец diagnostics pipeline;
+- Capability Runtime принадлежит AutoCoder; MCP может быть внешним interoperability adapter;
+- Editor architecture принадлежит AutoCoder; Monaco — текущий editor engine;
+- Durable Execution semantics принадлежит AutoCoder; Temporal, Restate и DBOS являются источниками проверенных идей, а не фундаментальными runtime dependencies.
+
+### 3.1. Replacement readiness
+
+Если сторонний компонент используется непосредственно, он должен по возможности находиться за AutoCoder-owned interface/adapter таким образом, чтобы его замена не требовала переписывания Orchestration Core или других несвязанных подсистем.
+
+Заменяемость означает:
+
+- contract AutoCoder не копирует внутреннюю модель сторонней библиотеки без необходимости;
+- сторонние типы не растекаются по всему приложению;
+- provider/parser/indexer/runtime-specific данные нормализуются на boundary;
+- lifecycle и error semantics внешнего компонента переводятся в общие AutoCoder contracts;
+- тесты AutoCoder проверяют собственный contract отдельно от конкретной реализации;
+- новая реализация может быть подключена через тот же порт/adapter.
+
+Не нужно создавать абстракцию ради абстракции. Граница нужна там, где компонент действительно является сменной реализацией или внешней системой.
+
+---
+
+## 4. Целевая архитектура
 
 Целевая архитектура AutoCoder строится из отдельных слоёв с чёткой ответственностью:
 
 1. UI.
 2. Orchestration Core.
-3. Execution Ledger.
+3. Durable Execution Engine + Execution Ledger.
 4. Project Intelligence.
 5. Provider Runtime.
 6. Model Council / Multi-Model Deliberation.
@@ -63,6 +103,7 @@ AutoCoder является универсальным инструментом �
 10. Runtime Supervisor.
 11. Diagnostics / Introspection Plane.
 12. System Model / Self-Model.
+13. Interoperability / Protocol Adapters.
 
 Все слои опираются на общие основы:
 
@@ -72,9 +113,11 @@ AutoCoder является универсальным инструментом �
 - capability / permission model;
 - structured errors;
 - versioned persistence schema;
-- restart-safe semantics.
+- restart-safe semantics;
+- explicit durable-step semantics для недетерминированных и side-effect операций;
+- AutoCoder-owned internal contracts, не завязанные на конкретный внешний SDK.
 
-### 3.1. UI
+### 4.1. UI
 
 UI отображает фактическое состояние системы и передаёт пользовательские intents.
 
@@ -93,7 +136,7 @@ UI не должен быть владельцем orchestration state machine.
 
 UI может содержать локальное представление состояния для рендеринга, но источник истины для жизненного цикла автономной задачи должен находиться в Orchestration Core.
 
-### 3.2. Orchestration Core
+### 4.2. Orchestration Core
 
 Orchestration Core — единственный логический владелец жизненного цикла AI-задачи.
 
@@ -114,7 +157,11 @@ Orchestration Core — единственный логический владе�
 
 Frontend, provider, tools и persistence не должны независимо решать, какое состояние orchestration task является текущим или какой переход допустим.
 
-### 3.3. Execution Ledger
+---
+
+## 5. Durable Execution Engine и Execution Ledger
+
+### 5.1. Execution Ledger
 
 Жизненный цикл orchestration должен храниться как **append-only последовательность фактов**, а не только как постоянно перезаписываемый JSON snapshot.
 
@@ -134,6 +181,8 @@ Frontend, provider, tools и persistence не должны независимо 
 - CaptainSelected;
 - ActionProposed;
 - ActionApproved / ActionDeclined;
+- DurableStepStarted;
+- DurableStepCompleted / DurableStepFailed / DurableStepInterrupted;
 - ToolStarted;
 - ToolCompleted / ToolFailed / ToolInterrupted;
 - WorkspaceChanged;
@@ -147,9 +196,45 @@ Frontend, provider, tools и persistence не должны независимо 
 
 Event sourcing не требуется распространять на всё приложение. Он нужен прежде всего там, где критична доказуемая причинность: orchestration, execution lifecycle, recovery и replay.
 
-### 3.4. Project Intelligence
+### 5.2. Durable Step semantics
 
-Project Intelligence — отдельный слой понимания пользовательского проекта.
+Недетерминированная или выполняющая внешний side effect операция должна иметь явный durable execution contract.
+
+К таким операциям относятся, например:
+
+- model/provider call;
+- Tool execution;
+- network research;
+- user approval / external signal;
+- workspace mutation;
+- запуск внешнего процесса;
+- другие операции, которые нельзя безопасно повторять вслепую после crash/restart.
+
+Для такого шага система должна уметь фиксировать как минимум:
+
+intent
+→ step identity
+→ started
+→ фактический result / failure / interruption
+→ committed completion state.
+
+После restart/replay AutoCoder не должен автоматически повторять уже подтверждённый side effect только потому, что orchestration process был перезапущен.
+
+Если исход операции неизвестен, система должна явно считать его неизвестным и применять специальную reconciliation/recovery логику, а не угадывать.
+
+### 5.3. Собственная реализация
+
+Durable Execution Engine должен быть AutoCoder-owned модулем поверх Execution Ledger и Persistence.
+
+**Ориентиры / решения, которые нужно изучать, но не принимать как фундаментальную зависимость:** Temporal, Restate, DBOS и другие durable-workflow systems. Из них полезны идеи durable steps, journal/history, idempotency, recovery, replay, external signals и controlled retries.
+
+Цель — перенести проверенные принципы в собственную архитектуру AutoCoder, не отдавая внешнему workflow engine владение orchestration state machine и не вводя обязательный отдельный server/runtime без необходимости.
+
+---
+
+## 6. Project Intelligence
+
+Project Intelligence — AutoCoder-owned слой понимания пользовательского проекта.
 
 Он должен со временем уметь:
 
@@ -161,15 +246,48 @@ Project Intelligence — отдельный слой понимания поль
 - находить тесты и связанные файлы;
 - учитывать фактические изменения workspace;
 - использовать semantic retrieval и специализированные knowledge sources;
+- получать точные language-intelligence facts из внешних источников;
 - подготавливать ограниченный, релевантный контекст для модели.
 
 Контекст модели не должен бесконтрольно собираться внутри UI-компонента или одного prompt builder.
 
+### 6.1. Источники Project Intelligence
+
+Project Intelligence должен быть агрегатором нескольких источников, а не единым жёстко пришитым parser/indexer engine.
+
+Возможные источники:
+
+- собственный filesystem/text/search index;
+- syntax/AST parser adapter;
+- language-server adapter;
+- persistent code-index adapter;
+- Git/history adapter;
+- debugger/runtime facts adapter;
+- semantic/vector retrieval;
+- специализированные knowledge sources.
+
+**Актуальные ориентиры / возможные сменные реализации:**
+
+- Tree-sitter — быстрый incremental syntax/AST parsing engine;
+- LSP — стандартный источник language intelligence;
+- SCIP — language-agnostic формат точного code index;
+- DAP — стандартный интерфейс к debugger/runtime facts на более позднем этапе.
+
+AutoCoder не должен строить внутреннюю архитектуру вокруг Tree-sitter, конкретного LSP server, SCIP indexer или debug adapter. Они должны подключаться через собственные interfaces/adapters.
+
+Если Tree-sitter или другой parser используется как библиотека, parser-specific AST/types не должны бесконтрольно проникать в Orchestration Core или UI. Project Intelligence нормализует нужные факты в свои contracts.
+
+LSP и DAP являются interoperability protocols. Их adapter может быть реализован самим AutoCoder по спецификации без обязательной зависимости от конкретного SDK.
+
+Конкретные language servers, grammars, SCIP indexers и debug adapters являются отдельными сторонними компонентами и проверяются по версии, совместимости и лицензии перед включением в дистрибутив.
+
 COMSOL Knowledge Engine в будущем должен использовать общий Project Intelligence / retrieval слой, а не создавать параллельную архитектуру.
 
-### 3.5. Provider Runtime
+---
 
-Модели подключаются через provider abstraction.
+## 7. Provider Runtime
+
+Модели подключаются через AutoCoder-owned provider abstraction.
 
 Provider Runtime отвечает за:
 
@@ -190,13 +308,17 @@ Provider не должен определять orchestration state machine.
 
 Provider Runtime должен поддерживать как локальные LLM, так и API-модели. Orchestration Core не должен быть архитектурно привязан к Ollama или любому конкретному API.
 
+Ollama является текущим local model runtime/provider adapter, а не фундаментальной частью внутренней модели AutoCoder. Его замена на другой local runtime не должна требовать изменения Orchestration Core.
+
 ---
 
-## 4. Model Council / Multi-Model Deliberation
+## 8. Model Council / Multi-Model Deliberation
 
 AutoCoder должен поддерживать не только выбор одной модели, но и **совместную работу произвольного количества локальных LLM и облачных API-моделей над одной задачей**.
 
 Это одна из ключевых возможностей конечного продукта.
+
+Council Engine является AutoCoder-owned subsystem. Он не должен зависеть от стороннего multi-agent framework как от владельца deliberation semantics.
 
 Council Engine не должен иметь искусственного архитектурного лимита на количество участников. Практические пределы определяются только:
 
@@ -210,7 +332,7 @@ Council Engine не должен иметь искусственного арх�
 
 AutoCoder должен предупреждать пользователя о потенциальной нагрузке в месте настройки Council Profile, но не вводить искусственный hard limit на число моделей.
 
-### 4.1. Участники совета
+### 8.1. Участники совета
 
 Каждый участник совета должен иметь собственную конфигурацию.
 
@@ -228,7 +350,7 @@ AutoCoder должен предупреждать пользователя о п
 
 Точная внутренняя семантика сущности `Participant` должна быть отдельно спроектирована после фиксации целевой архитектуры и повторного аудита проекта. Не следует преждевременно закреплять, что `Participant` навсегда равен одному provider/model instance.
 
-### 4.2. Раунды обсуждения
+### 8.2. Раунды обсуждения
 
 Пользователь задаёт **максимальное число deliberation rounds**.
 
@@ -244,7 +366,7 @@ AutoCoder должен предупреждать пользователя о п
 
 Если используется пороговый, а не полный консенсус, AutoCoder обязан явно показать пользователю оставшиеся различия между позициями. Нельзя представлять частичное согласие как полное единодушие.
 
-### 4.3. Базовый deliberation cycle
+### 8.3. Базовый deliberation cycle
 
 Базовый цикл должен поддерживать:
 
@@ -259,7 +381,7 @@ proposal
 
 Deliberation не является отдельным чат-шоу. Его результат должен быть связан с фактической задачей, Project Intelligence, tools, tests, execution results и другими проверяемыми источниками системы.
 
-### 4.4. Internet Research внутри раунда
+### 8.4. Internet Research внутри раунда
 
 В deliberation должна быть возможность фактической проверки утверждений через интернет.
 
@@ -274,7 +396,7 @@ Deliberation не является отдельным чат-шоу. Его ре
 
 Research results должны сохранять фактические источники и время получения, чтобы участники могли ссылаться на одни и те же evidence, а Diagnostics могла восстановить причинную цепочку решения.
 
-### 4.5. Команды и масштабирование совета
+### 8.5. Команды и масштабирование совета
 
 Для больших Council Profiles должна поддерживаться настраиваемая topology.
 
@@ -305,7 +427,7 @@ Research results должны сохранять фактические исто
 
 Нагрузка должна быть объяснена пользователю предупреждением в месте конфигурации Council Profile, а не искусственным запретом.
 
-### 4.6. Капитаны и капитанские раунды
+### 8.6. Капитаны и капитанские раунды
 
 В Team / Hierarchical Council после завершения командного этапа должен определяться победитель/капитан команды.
 
@@ -321,7 +443,7 @@ Research results должны сохранять фактические исто
 
 Отдельный обязательный Judge-модуль не является фундаментальным требованием архитектуры.
 
-### 4.7. Position Stability Analysis
+### 8.7. Position Stability, diversity и calibration
 
 AutoCoder должен уметь анализировать, насколько позиция участника изменилась между раундами после критики, evidence и ответов других участников.
 
@@ -332,11 +454,22 @@ AutoCoder должен уметь анализировать, насколько
 - анализа convergence;
 - объяснения пользователю, как совет пришёл к результату.
 
-Стабильность позиции не должна автоматически означать правильность. Она является одним из сигналов совместно с evidence, factual verification, результатами инструментов и convergence других участников.
+Стабильность позиции не должна автоматически означать правильность. Она является одним из сигналов совместно с:
 
-Точная модель `Position`, алгоритм смыслового сравнения и weighting этих сигналов остаются отдельной архитектурной задачей после повторного аудита проекта.
+- factual evidence;
+- результатами инструментов и тестов;
+- convergence других участников;
+- разнообразием исходных позиций;
+- confidence/calibration signal, если он доступен и имеет смысл для конкретной модели/метода оценки;
+- отсутствием или наличием существенных нерешённых возражений.
 
-### 4.8. Передача информации между командами и уровнями
+Council Engine должен сохранять **diversity of viewpoints** там, где преждевременное усреднение может скрыть ошибку. Разные роли и custom prompts могут использоваться как один из механизмов создания независимых исходных подходов.
+
+Self-reported confidence модели не является доказательством правильности. Любой confidence signal должен рассматриваться как дополнительный сигнал и по возможности калиброваться/проверяться фактическими результатами.
+
+Точная модель `Position`, алгоритм смыслового сравнения и weighting сигналов остаются отдельной архитектурной задачей после повторного аудита проекта.
+
+### 8.8. Передача информации между командами и уровнями
 
 Это отдельная важная архитектурная задача.
 
@@ -349,13 +482,14 @@ AutoCoder должен уметь анализировать, насколько
 - team results;
 - positions;
 - captain-level context;
-- ссылок на исходные ответы.
+- ссылок на исходные ответы;
+- diversity/confidence metadata, если они используются.
 
 Цель — сохранять фактические аргументы и причинность, не заставляя большие советы бесконтрольно дублировать полный сырой контекст всех участников.
 
 Эта схема должна проектироваться **после PROJECT_MEMORY и повторного аудита фактического проекта**, а не фиксироваться преждевременно.
 
-### 4.9. Экспериментальная topology: Rotating / Overlapping Teams
+### 8.9. Экспериментальная topology: Rotating / Overlapping Teams
 
 Сохранить как экспериментальную идею, не как обязательный конечный алгоритм.
 
@@ -380,7 +514,7 @@ Shift 2:
 
 До исследований нельзя считать её обязательной частью MVP или основной topology.
 
-### 4.10. Council Profiles
+### 8.10. Council Profiles
 
 Пользователь должен иметь возможность сохранять reusable Council Profiles.
 
@@ -404,9 +538,9 @@ AutoCoder может поставлять предустановленные п�
 
 ---
 
-## 5. Tool / Capability Runtime
+## 9. Tool / Capability Runtime
 
-Инструменты должны регистрироваться через общую Capability Registry / Tool Manifest, а не через набор разрозненных условных конструкций.
+Инструменты должны регистрироваться через AutoCoder-owned Capability Registry / Tool Manifest, а не через набор разрозненных условных конструкций.
 
 Tool Manifest должен со временем описывать:
 
@@ -424,9 +558,19 @@ Orchestration Core спрашивает registry, какие capabilities реа
 
 File и Terminal являются первыми реализациями Tool Runtime, но не определяют архитектуру всех будущих инструментов.
 
+### 9.1. MCP как внешний compatibility target
+
+Внутренний Tool Runtime **не должен строиться на MCP как на своём core protocol**.
+
+При необходимости AutoCoder должен иметь собственный MCP-compatible adapter, который переводит внешние MCP tools/resources/capabilities в AutoCoder Tool Manifest / capability contracts и обратно там, где это имеет смысл.
+
+**Ориентир:** Model Context Protocol (MCP) — актуальный внешний стандарт для связи agent ↔ tools/data. Перед реализацией проверяется текущая официальная спецификация.
+
+Предпочтительный подход — реализовать нужную совместимость по спецификации самостоятельно либо изолировать SDK внутри adapter. Замена SDK или версии протокола не должна требовать изменения Orchestration Core.
+
 ---
 
-## 6. Workspace ChangeSet / Transaction
+## 10. Workspace ChangeSet / Transaction
 
 AI должна изменять **workspace**, а редактор должен отображать workspace.
 
@@ -449,9 +593,11 @@ ChangeSet должен поддерживать как минимум create / m
 
 Git может использоваться как дополнительный механизм diff/history, но не как обязательная зависимость backup/rollback.
 
+Workspace Transaction является AutoCoder-owned subsystem. Реализация filesystem/backup primitives может меняться без изменения orchestration semantics.
+
 ---
 
-## 7. Workspace identity
+## 11. Workspace identity
 
 Нужен first-class stable WorkspaceId / ProjectSessionId.
 
@@ -472,7 +618,7 @@ Workspace identity должен проходить через:
 
 ---
 
-## 8. Runtime Supervisor и backend process model
+## 12. Runtime Supervisor и backend process model
 
 Целевой runtime — Rust-supervised long-lived AutoCoder Backend Runtime.
 
@@ -501,7 +647,7 @@ Backend Runtime должен быть долгоживущим сервисом,
 
 Переход на long-lived backend не должен уничтожать существующую fault isolation. Она должна обеспечиваться supervision/restart и protocol boundaries.
 
-### 8.1. Ollama lifecycle
+### 12.1. Ollama lifecycle
 
 Нужно сохранять принцип **один ресурс — один физический lifecycle owner**.
 
@@ -512,21 +658,23 @@ Backend Runtime должен быть долгоживущим сервисом,
 
 Текущая Python-side логика запуска Ollama может существовать как compatibility/standalone fallback во время миграции, но после перехода на long-lived supervised backend не должна случайно превращаться во второго независимого владельца одного и того же desktop process lifecycle.
 
-Это не отменяет поддержку разных local/API providers. Наоборот, Ollama должен стать одним provider adapter среди многих.
+Это не отменяет поддержку разных local/API providers. Наоборот, Ollama должен стать одним provider adapter среди многих и должен быть заменяемым.
 
 ---
 
-## 9. Schema-first internal protocol
+## 13. Schema-first internal protocol
 
 Ключевые cross-layer contracts должны быть versioned и schema-first.
 
 В частности:
 
 - task state/events;
+- durable steps;
 - actions/results;
 - tool manifests;
 - provider capabilities;
 - provider responses;
+- council positions/results;
 - workspace changesets/results;
 - structured errors;
 - diagnostics events;
@@ -544,9 +692,75 @@ TypeScript, Rust и Python representations должны либо генерир�
 
 Несовместимые версии должны обнаруживаться до начала автономного выполнения, а не через случайную ошибку отсутствующего поля в середине задачи.
 
+### 13.1. Внутренний протокол не равен внешним стандартам
+
+AutoCoder internal protocol должен оставаться собственным и отражать фактические потребности AutoCoder.
+
+MCP, ACP, A2A, LSP, DAP и другие внешние protocols не должны диктовать внутреннюю модель задачи, tool lifecycle, workspace transaction, Council или persistence.
+
+Внешняя совместимость обеспечивается adapters на границе системы.
+
 ---
 
-## 10. Provider capabilities и Model Execution Profile
+## 14. Interoperability / Protocol Adapters
+
+AutoCoder должен уметь взаимодействовать с внешней экосистемой через сменные protocol adapters без превращения этих протоколов в архитектурное ядро.
+
+Целевая модель:
+
+AutoCoder internal contracts
+→ protocol adapter
+→ внешний стандарт / external agent / tool / editor / language service.
+
+### 14.1. MCP adapter
+
+Назначение: external tools/data/capabilities ↔ AutoCoder Capability Runtime.
+
+**Ориентир:** Model Context Protocol.
+
+Adapter должен переводить внешние schemas/capabilities/results в AutoCoder-owned Tool Manifest / action/result contracts.
+
+### 14.2. ACP adapter
+
+Назначение: совместимость coding agent ↔ editor/IDE.
+
+**Ориентир:** Agent Client Protocol (ACP).
+
+В перспективе AutoCoder может:
+
+- подключать внешний ACP-compatible coding agent к своему UI;
+- при необходимости предоставлять часть собственного agent runtime другому ACP-compatible editor.
+
+ACP не должен становиться внутренним orchestration protocol AutoCoder.
+
+### 14.3. A2A adapter
+
+Назначение: взаимодействие с независимыми внешними agent systems.
+
+**Ориентир:** Agent2Agent Protocol (A2A).
+
+Внутренний Model Council не должен реализовываться через A2A только ради стандарта. Но внешний agent/system потенциально может быть представлен как отдельный `ExternalAgentParticipant` через A2A adapter.
+
+### 14.4. LSP / DAP adapters
+
+LSP и DAP используются как внешние compatibility boundaries для language intelligence и debugging/runtime facts.
+
+AutoCoder может реализовать protocol clients/adapters самостоятельно по спецификациям. Конкретные language servers/debug adapters остаются сменными external implementations.
+
+### 14.5. Реализация adapters
+
+Предпочтение:
+
+1. собственная небольшая реализация protocol adapter по официальной спецификации, если объём и сложность разумны;
+2. либо SDK, полностью изолированный внутри adapter, если самостоятельная реализация невыгодна.
+
+В обоих случаях внутренние AutoCoder contracts важнее структуры SDK.
+
+Перед реализацией проверяются актуальные официальные спецификации, версии, compatibility и лицензии.
+
+---
+
+## 15. Provider capabilities и Model Execution Profile
 
 Provider/model capabilities должны быть first-class data.
 
@@ -578,9 +792,11 @@ Provider envelope должен по возможности сохранять п
 
 ---
 
-## 11. State / Persistence
+## 16. State / Persistence
 
-SQLite остаётся базовым локальным persistent store.
+SQLite остаётся базовым локальным persistent store на текущем этапе.
+
+Persistence architecture должна принадлежать AutoCoder и быть отделена от SQLite-specific деталей настолько, насколько это оправдано. Замена storage engine в будущем не должна требовать переписывания Orchestration Core.
 
 Нужна versioned schema / migrations. Изменения структуры БД не должны зависеть от неявного совпадения версии приложения и старой базы.
 
@@ -598,7 +814,7 @@ Persistence отвечает за надёжное хранение данных
 
 ---
 
-## 12. Structured errors
+## 17. Structured errors
 
 Ошибки между подсистемами должны эволюционировать от плоских строк к structured error contract.
 
@@ -624,9 +840,9 @@ Graceful degradation в UI не должна означать потерю фа�
 
 ---
 
-## 13. Diagnostics / Introspection Plane
+## 18. Diagnostics / Introspection Plane
 
-Diagnostics — фундаментальная platform capability, а не локальная отладка отдельного бага.
+Diagnostics — AutoCoder-owned fundamental platform capability, а не локальная отладка отдельного бага.
 
 Цель: по одному run можно восстановить причинную цепочку от пользовательского intent до фактического результата.
 
@@ -641,19 +857,32 @@ Run
 → decision
 → validator
 → approval
+→ durable step
 → tool execution
 → OS operation
 → filesystem mutation
 → reconciliation
 → persisted state.
 
-### 13.1. Runtime Trace
+### 18.1. OpenTelemetry-compatible conceptual model
 
-Diagnostics должна использовать trace/span/context-like модель причинности, а не только текстовый log.
+Diagnostics должна использовать trace/span/context модель причинности и быть **семантически совместимой с актуальными OpenTelemetry concepts/conventions там, где это полезно**, но не зависеть архитектурно от OpenTelemetry Collector или конкретного OTel SDK.
+
+Предпочтительная модель:
+
+Trace
+→ Span
+→ correlated structured logs/events
+→ metrics
+→ artifact/payload references.
 
 Каждое существенное событие должно иметь stable correlation identifiers, чтобы можно было связать cross-process и cross-language цепочку.
 
-### 13.2. Architecture Inventory
+**Ориентир / решение, которое частично заменяется своим модулем:** OpenTelemetry. AutoCoder берёт проверенные concepts, naming/semantic conventions и возможность будущего compatible export, но хранение, replay, coverage и local diagnostics UI остаются собственными.
+
+Если OpenTelemetry SDK используется технически, он должен находиться за diagnostics adapter/export boundary и быть заменяемым.
+
+### 18.2. Architecture Inventory
 
 Diagnostics должна автоматически строить фактический inventory компонентов и boundaries насколько это возможно из реальной архитектуры:
 
@@ -666,11 +895,12 @@ Diagnostics должна автоматически строить фактич�
 - stores;
 - spawned processes;
 - IPC boundaries;
-- protocols/versions.
+- protocols/versions;
+- protocol adapters.
 
 Нельзя полагаться только на ручное правило «не забудь зарегистрировать новый модуль в diagnostics».
 
-### 13.3. Runtime Discovery
+### 18.3. Runtime Discovery
 
 Runtime traces должны автоматически обнаруживать реально участвующие:
 
@@ -680,11 +910,13 @@ Runtime traces должны автоматически обнаруживать 
 - tools;
 - IPC calls;
 - model turns;
+- council rounds;
 - database operations;
 - workspace operations;
-- task transitions.
+- task transitions;
+- external protocol boundaries.
 
-### 13.4. Coverage Audit
+### 18.4. Coverage Audit
 
 Coverage Auditor сравнивает:
 
@@ -694,11 +926,11 @@ Coverage Auditor сравнивает:
 
 Он должен находить blind spots и непокрытые boundaries.
 
-Новый Tauri command, Tool, Provider, spawned process или другой значимый boundary не должен бесшумно появляться вне наблюдаемой архитектуры.
+Новый Tauri command, Tool, Provider, spawned process, protocol adapter или другой значимый boundary не должен бесшумно появляться вне наблюдаемой архитектуры.
 
 В CI/build должен существовать Diagnostics Coverage Gate, который способен обнаруживать новые непокрытые компоненты/границы и заставлять разработчика осознанно решить, как они наблюдаются.
 
-### 13.5. Replay
+### 18.5. Replay
 
 Diagnostics должна позволять воспроизводить captured causal chain без повторного недетерминированного model call.
 
@@ -707,11 +939,14 @@ Diagnostics должна позволять воспроизводить capture
 - parsing;
 - validation;
 - orchestration transition logic;
+- council evaluation logic;
 - reconciliation logic.
+
+Replay использует сохранённые durable-step results там, где side effect уже был выполнен.
 
 Replay не должен автоматически повторять destructive tool side effects.
 
-### 13.6. Diagnostics UI / Bundle
+### 18.6. Diagnostics UI / Bundle
 
 Development diagnostics UI должна позволять:
 
@@ -727,7 +962,7 @@ Development diagnostics UI должна позволять:
 
 Diagnostic bundle должен содержать достаточно безопасной информации, чтобы другой разработчик или AI мог восстановить проблему без ручного сбора десятков скриншотов и сообщений.
 
-### 13.7. AI Diagnostics Review
+### 18.7. AI Diagnostics Review
 
 После появления надёжного System Model, coverage audit и runtime traces AutoCoder должен получить отдельный AI Diagnostics / Architecture Review.
 
@@ -746,7 +981,7 @@ LLM должна анализировать **достоверные диагн�
 
 Сначала строится рабочая diagnostics infrastructure; AI review является слоем поверх неё.
 
-### 13.8. Diagnostics invariants
+### 18.8. Diagnostics invariants
 
 Diagnostics должна быть пассивным наблюдателем:
 
@@ -763,7 +998,7 @@ Diagnostics должна быть пассивным наблюдателем:
 
 ---
 
-## 14. System Model / Self-Model
+## 19. System Model / Self-Model
 
 AutoCoder должен иметь machine-readable factual System Model собственного устройства.
 
@@ -777,6 +1012,8 @@ AutoCoder должен иметь machine-readable factual System Model собс
 - processes;
 - capabilities;
 - protocol versions;
+- protocol adapters;
+- replaceable implementations;
 - diagnostics coverage.
 
 System Model должен строиться из фактических registries, runtime discovery, protocols и других проверяемых источников, а не вручную поддерживаемого списка, который легко забыть обновить.
@@ -785,7 +1022,7 @@ System Model должен строиться из фактических registr
 
 ---
 
-## 15. Permissions, credentials и технические границы
+## 20. Permissions, credentials и технические границы
 
 Технические permissions должны управлять тем, какие реальные ресурсы и capabilities доступны конкретному runtime/action. Они не должны превращаться в искусственные ограничения на назначение создаваемого пользователем программного обеспечения.
 
@@ -804,7 +1041,7 @@ Diagnostics обязана централизованно редактирова
 
 ---
 
-## 16. Offline-first
+## 21. Offline-first
 
 AutoCoder после установки должен полноценно запускаться и выполнять локальные функции без интернета.
 
@@ -821,15 +1058,17 @@ AutoCoder после установки должен полноценно зап
 
 Runtime-загрузки этих компонентов из интернета запрещены.
 
-Исключение — явно выбранные пользователем сетевые AI/API providers и другие внешние capabilities, для которых сеть является их явной функцией.
+Исключение — явно выбранные пользователем сетевые AI/API providers, internet research и другие внешние capabilities, для которых сеть является их явной функцией.
 
 Локальный Ollama должен работать без интернета после установки требуемой модели.
 
 Build-time установки npm/cargo/pip не являются runtime dependency установленного приложения.
 
+Никакой interoperability adapter не должен превращать интернет в скрытую обязательную runtime dependency.
+
 ---
 
-## 17. AI autonomy semantics
+## 22. AI autonomy semantics
 
 AutoCoder должен эволюционировать от режима подтверждений к более высокой автономности без перестройки ядра.
 
@@ -844,11 +1083,12 @@ AutoCoder должен эволюционировать от режима под
 - completion требует фактических доказательств;
 - cancelled/stopped/blocked/completed — разные состояния;
 - restart не должен незаметно повторять действие с неизвестным результатом;
-- late result не может незаконно изменить уже терминальное состояние задачи.
+- late result не может незаконно изменить уже терминальное состояние задачи;
+- durable step с подтверждённым side effect не повторяется автоматически при replay/recovery.
 
 ---
 
-## 18. Мультиязычность
+## 23. Мультиязычность
 
 Мультиязычность учитывается архитектурно с начала проекта.
 
@@ -864,7 +1104,7 @@ UI-строки не должны жёстко зашиваться в комп�
 
 ---
 
-## 19. Git и backup
+## 24. Git и backup
 
 Git не является обязательной зависимостью AutoCoder.
 
@@ -876,7 +1116,7 @@ AutoCoder может в будущем использовать Git/GitHub ка�
 
 ---
 
-## 20. Первая специализация — COMSOL только после универсального ядра
+## 25. Первая специализация — COMSOL только после универсального ядра
 
 COMSOL не является текущим этапом развития архитектуры.
 
@@ -914,12 +1154,12 @@ COMSOL Knowledge Engine должен опираться на общий Project 
 
 ---
 
-## 21. Предварительный стек
+## 26. Предварительный стек и сменные реализации
 
 Текущий базовый стек:
 
 - Desktop/UI: Tauri 2 + React + TypeScript;
-- Editor: Monaco Editor;
+- Editor engine: Monaco Editor;
 - OS/process/file layer: Rust/Tauri;
 - AI/backend orchestration services: Python;
 - Local database: SQLite;
@@ -927,11 +1167,40 @@ COMSOL Knowledge Engine должен опираться на общий Project 
 
 Стек не является самоцелью. Конкретный компонент можно заменить, если фактические требования проекта этого потребуют, но архитектурные границы и инварианты должны сохраняться.
 
-Перед использованием быстро меняющихся API, библиотек и инструментов необходимо проверять актуальную официальную документацию, версии, совместимость и лицензии.
+Особенно сменными должны считаться:
+
+- local/cloud model providers;
+- local model runtime;
+- parser engines;
+- language servers;
+- code indexers;
+- debug adapters;
+- protocol SDKs;
+- diagnostics exporters;
+- search/retrieval backends;
+- storage engine там, где AutoCoder-owned persistence contract позволяет замену.
+
+### 26.1. Ориентиры для отдельных функций
+
+Рядом с собственными модулями сохраняются наводки на проверенные внешние решения, чтобы при проектировании не изобретать уже известные механизмы вслепую:
+
+- Durable Execution Engine → изучать Temporal / Restate / DBOS;
+- Diagnostics / tracing semantics → изучать OpenTelemetry;
+- syntax parsing → рассматривать Tree-sitter как сменный engine;
+- language intelligence → LSP и конкретные language servers как сменные sources;
+- persistent code intelligence → SCIP как формат/источник и сменные indexers;
+- debugger integration → DAP и сменные debug adapters;
+- external tools/data → MCP-compatible adapter;
+- editor/coding-agent interoperability → ACP-compatible adapter;
+- external agent systems → A2A-compatible adapter.
+
+Эти наводки не означают обязательное включение соответствующей библиотеки в продукт.
+
+Перед использованием быстро меняющихся API, библиотек, протоколов и инструментов необходимо проверять актуальную официальную документацию, версии, совместимость и лицензии.
 
 ---
 
-## 22. Лицензии
+## 27. Лицензии и dependency policy
 
 Проект потенциально коммерческий.
 
@@ -942,11 +1211,35 @@ COMSOL Knowledge Engine должен опираться на общий Project 
 - Apache-2.0;
 - другим совместимым permissive licenses.
 
-Лицензии значимых зависимостей проверяются фактически перед включением в production architecture.
+Лицензии значимых зависимостей проверяются фактически перед включением в production architecture и дистрибутив.
+
+### 27.1. Protocol ≠ implementation
+
+Разрешение использовать протокол архитектурно не означает автоматического разрешения включать любой SDK/server/indexer/adapter, реализующий этот протокол.
+
+Отдельно проверяются:
+
+- protocol/specification terms;
+- конкретный SDK;
+- Tree-sitter grammar;
+- language server;
+- SCIP indexer;
+- debug adapter;
+- provider client/runtime;
+- transitive dependencies;
+- обязательные NOTICE/attribution requirements.
+
+Если AutoCoder реализует protocol adapter самостоятельно по публичной спецификации, это предпочтительно там, где разумно по сложности и стоимости поддержки. При этом нельзя без необходимости копировать чужой исходный код или большие фрагменты лицензированной документации.
+
+### 27.2. Непермиссивные фундаментальные зависимости
+
+Компоненты с restrictive/source-available/business-source/copyleft условиями не должны становиться фундаментом AutoCoder без отдельного сознательного архитектурного и лицензионного решения.
+
+Если такой компонент полезен только как источник идей, его решения изучаются, а нужная семантика реализуется своим модулем.
 
 ---
 
-## 23. Принцип развития архитектуры
+## 28. Принцип развития архитектуры
 
 Главный принцип:
 
@@ -963,28 +1256,37 @@ COMSOL retrieval не нужно реализовывать заранее, но
 
 AI Diagnostics Review не нужно строить раньше рабочей diagnostics infrastructure, но System Model и coverage architecture должны позволять добавить его естественно.
 
+MCP/ACP/A2A support не нужно реализовывать до реальной необходимости, но internal contracts не должны мешать добавить соответствующие adapters без перестройки ядра.
+
+Не нужно заранее заменять все сторонние библиотеки собственными аналогами. Сначала создаётся правильная ownership boundary; собственная реализация появляется там, где она даёт контроль, снижает фундаментальную зависимость или нужна для уникальной логики AutoCoder.
+
 ---
 
-## 24. Правила архитектурной ответственности
+## 29. Правила архитектурной ответственности
 
 Устойчивые инварианты проекта:
 
 - один subsystem / resource lifecycle — один логический владелец;
 - Orchestration Core — единственный владелец task state machine;
+- Durable Execution Engine + Execution Ledger — владелец durable-step/history semantics, но не бизнес-цели задачи;
 - Rust supervisor — владелец физических AutoCoder-owned child processes;
 - Provider Runtime — владелец AI-provider semantics, но не OS process ownership desktop runtime;
+- Council Engine — владелец deliberation/topology/position semantics, но не фактической истины о выполнении tools;
+- Project Intelligence — владелец нормализованного project knowledge/context, но не конкретный parser/LSP/indexer;
 - Workspace Transaction — владелец фактического применения AI-изменений;
 - Editor отображает workspace, но не заменяет его;
 - Tool Runtime исполняет capability, но не объявляет semantic completion задачи;
 - Persistence хранит факты/state, но не решает business transitions;
 - UI отправляет intents и отображает state, но не является главным orchestration engine;
-- Diagnostics наблюдает систему, но не участвует в принятии business decisions.
+- Diagnostics наблюдает систему, но не участвует в принятии business decisions;
+- interoperability adapters переводят внешние protocols в AutoCoder contracts, но не определяют внутреннюю архитектуру;
+- сторонняя библиотека не должна становиться скрытым владельцем доменной семантики AutoCoder.
 
 Если новая функция нарушает эти границы, сначала пересматривается архитектура, а не добавляется ещё одна локальная защита.
 
 ---
 
-## 25. Проектная память и состояние
+## 30. Проектная память и состояние
 
 `PROJECT_MEMORY.md` содержит только устойчивые сведения:
 
@@ -1008,7 +1310,7 @@ AI Diagnostics Review не нужно строить раньше рабочей
 
 ---
 
-## 26. Принципы работы над AutoCoder
+## 31. Принципы работы над AutoCoder
 
 - Фактический repository state важнее памяти модели.
 - Подтверждённое поведение Windows build важнее предположений.
@@ -1019,19 +1321,22 @@ AI Diagnostics Review не нужно строить раньше рабочей
 - Существенные архитектурные изменения должны оставлять приложение в рабочем состоянии после каждого этапа миграции.
 - Не переписывать рабочие механизмы без причины: существующий код нужно либо перенести под новую границу ответственности, либо заменить только когда он нарушает целевую архитектуру.
 - Один законченный технический пакет должен решать связанный архитектурный результат, а не только ближайший симптом.
+- При проектировании новой внутренней функции сначала изучаются зрелые внешние реализации/стандарты, после чего решается: реализовать семантику своим модулем, подключить сменную реализацию через adapter или использовать библиотеку напрямую за изолированной boundary.
 - COMSOL остаётся финишной специализацией после универсального ядра.
 
 ---
 
-## 27. Открытые архитектурные вопросы после фиксации памяти
+## 32. Открытые архитектурные вопросы после фиксации памяти
 
 После принятия этого PROJECT_MEMORY отдельно спроектировать и проверить на фактическом repository state:
 
 1. точную семантику `Participant` в Model Council;
 2. сложную настраиваемую схему передачи информации между командами, уровнями и раундами;
-3. формальную модель `Position` и Position Stability Analysis;
+3. формальную модель `Position`, Position Stability Analysis, diversity и calibration signals;
 4. хранение deliberation data между Execution Ledger, Diagnostics и persistent stores;
-5. точный migration order от текущей архитектуры к целевой без переписывания проекта с нуля;
-6. критерии и механизмы автоматического architecture/diagnostics coverage discovery.
-
-Эти вопросы нельзя закрывать предположениями до повторного аудита фактического проекта после обновления PROJECT_MEMORY.
+5. точный durable-step contract, idempotency/reconciliation semantics и связь с replay;
+6. точный migration order от текущей архитектуры к целевой без переписывания проекта с нуля;
+7. критерии и механизмы автоматического architecture/diagnostics coverage discovery;
+8. границы Project Intelligence adapters и минимальный собственный normalized fact model;
+9. какие interoperability adapters реально нужны первыми и какой минимальный поднабор каждого протокола поддерживать;
+10. dependency/replacement map: какие текущие и будущие third-party components остаются сменными реализациями, а какие действительно оправданно считать частью platform stack.
