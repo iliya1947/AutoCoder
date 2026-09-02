@@ -402,3 +402,7 @@ API-ключи нельзя хранить непосредственно в п�
 - Автоматизация должна сокращать ручную работу.
 - Безопасность должна быть пропорциональна текущему этапу.
 - Работать последовательно, одним законченным этапом за раз.
+
+## 20. Development Diagnostics / Observability
+
+AutoCoder имеет пассивный локальный structured-event слой. Correlation строится как `session/run → operation → task/turn/action/tool/process`; события содержат component/subsystem, type/severity, parent identifiers, безопасное представление данных, result/error, transition и duration. Frontend автоматически инструментирует Tauri boundaries, а реестр ожидаемых boundary-категорий сравнивается с наблюдаемыми компонентами для coverage-аудита. Хранилище переживает restart, применяет централизованные redaction/size limits и bounded rotation; диагностические ошибки не могут менять результат бизнес-операции. Bundle остаётся локальным и никогда автоматически не отправляется. Карта coverage и structured bundle являются стабильным входом для будущего, но пока не реализованного AI Diagnostics Review.

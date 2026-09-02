@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../diagnostics";
 import { useTranslation } from "../hooks/useTranslation";
 
 export type TerminalResult = {
