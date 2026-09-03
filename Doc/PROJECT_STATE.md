@@ -2,1235 +2,153 @@
 
 ## Дата состояния
 
-1 сентября 2026 (LLM → orchestration переведён на typed structured output).
+3 сентября 2026.
 
 ## Текущий этап
 
-**Этап 4 — завершается универсальное ядро; COMSOL отложен до практически готового общего приложения.**
-
-### Typed generation contract для orchestration decision (1 сентября 2026)
-- Packaged Windows acceptance после #102 снова подтвердил FAIL: File action исполнился, но на
-  следующем turn модель напечатала несуществующий fence `autocoder-terminal`. Closed-world backend
-  validation правильно остановил action до approval, однако Markdown оставался ненадёжным control
-  channel на самой границе генерации.
-- Проверен актуальный официальный Ollama API: `/api/chat` поддерживает JSON Schema в поле `format`
-  (structured outputs), а native tool calling передаёт function definitions в `tools` и возвращает
-  `message.tool_calls`. Для AutoCoder выбран structured output: один discriminated outcome должен
-  охватывать не только два executable tools, но также semantic requirement transition, `completed`
-  и `blocked`; моделирование последних как фиктивных tools смешало бы lifecycle и исполнение. Native
-  tool calls остаются подходящим будущим механизмом для provider-side исполнения функций, но не
-  являются единым contract текущей orchestration state machine.
-- `ModelProvider` теперь явно предоставляет `structured_chat`; Ollama adapter отправляет code-owned
-  JSON Schema через `format` и декодирует только JSON object. Обычный `chat` сохранён для
-  conversational turns и будущие providers могут реализовать тот же capability своим API.
-- Schema строится из authoritative tool registry и текущей factual availability. Exhaustive variants:
-  `file_action` с operation enum реального File Tool, `terminal_action`,
-  `requirement_satisfied`, `completed`, `blocked`. Tool/fence/contract name вообще не является полем
-  executable proposal. `displayText` отделён от control data и остаётся обычным пользовательским
-  текстом; Markdown больше не парсится на orchestration turns.
-- После constrained generation сохранена независимая backend защита: response повторно проверяется
-  как точный tagged shape, File path/operation/content проходят прежние safety/concurrency rules,
-  Terminal payload и factual availability проверяются отдельно, active requirement назначает backend,
-  required-tool evidence и unmet transitions продолжают блокировать ложный semantic/completed outcome.
-- Regression coverage проверяет schema registry binding, отсутствие полей `tool`/`fence`, передачу
-  schema в Ollama `format`, успешный Terminal proposal без Markdown и отказ неизвестного outcome
-  `autocoder-terminal`/несуществующей File operation на response → typed-decision boundary.
-- Барьер 80% **остаётся FAIL** до новой packaged Windows проверки.
-
-### Closed-world contract выбора orchestration action (1 сентября 2026)
-- Полный путь ревизии показал разрыв ответственности: backend подробно объяснял модели форматы в
-  prompt, но executable contract был размазан между regex/parser/UI, а compatibility parser даже
-  принимал несуществующий fence `autocoder-terminal`. Семантический выбор модели после parsing не
-  проходил общей проверкой против явно названного пользователем инструмента.
-- Добавлен backend registry реальных инструментов. Для каждого tool он задаёт стабильный id,
-  канонический fence, конечный набор операций, aliases и проверяемое условие доступности из текущего
-  factual context. Один и тот же registry формирует closed-world model context и является источником
-  pre-approval validation; это расширяемая граница для будущих tools, а не правило acceptance-теста.
-- Пользовательские tool constraints теперь привязаны не ко всей task, а к стабильным requirement
-  scopes, полученным из строк, пунктов и предложений исходного `goal`. Для каждого scope отдельно
-  сохраняются required/forbidden tools; многошаговая задача может последовательно требовать File,
-  Terminal и не ограниченный пользователем action без потери или глобализации constraints.
-- Модель больше не выбирает `requirementId`: backend определяет active scope из immutable task
-  contract и отдельно persisted, явно одобренных semantic transitions, проверяет policy, а затем сам
-  присваивает id принятому action. Любой `requirementId` внутри model payload является лишним полем и
-  отклоняется, поэтому модель не может сослаться на соседний unconstrained scope.
-- `completed` tool action означает только исполнение конкретного payload и никогда не двигает
-  requirement cursor. В одном active scope допускается любое число File/Terminal actions, включая
-  исправление предыдущего результата. Когда модель считает requirement фактически выполненным, она
-  может предложить отдельный `autocoder-requirement` transition; backend привязывает его к active
-  scope, а пользователь отдельно подтверждает или отклоняет смысловое завершение. Только approved
-  transition меняет active scope. Task completion блокируется, пока transition не одобрен для каждого
-  scope, включая условия, которым не требовался отдельный tool action.
-- Для constrained scope semantic approval является необходимым, но недостаточным условием перехода:
-  backend отдельно вычисляет factual tool evidence из persisted actions, связанных с тем же
-  requirement, и принимает только `status=completed` с согласованным result (`actionId`, tool,
-  `outcome=completed`). Каждый tool из `required_tools` обязан иметь такое доказательство; coordinated
-  формулировки с несколькими явно требуемыми tools сохраняются как conjunctive set, а не `any-of`.
-- `autocoder-requirement` proposal не создаётся до наличия всех required-tool evidence. При загрузке
-  snapshot backend повторно проверяет proposed/approved transitions и отклоняет состояние, которое
-  пытается закрыть constrained requirement без фактов. Active cursor и final completion используют
-  только effective transition = user-approved semantic transition + полный required-tool evidence.
-- Bare mention имени tool не считается выбором: constraint создаётся только из явной
-  affirmative/negative invocation-формы, распознаваемой расширяемыми aliases registry; если
-  пользователь tool не задал, система его не угадывает.
-- Requirement compiler использует явные верхнеуровневые маркеры списка как границы, а последующие
-  строки считает продолжением/данными предыдущего пункта. Для обычного prose применяются границы
-  предложений. Строки контента больше не сдвигают code-owned policy cursor и не создают фиктивные
-  action scopes.
-- Удалён permissive alias несуществующего Terminal fence. Любой неизвестный `autocoder-*` contract,
-  неизвестная File Tool operation, malformed payload, несколько actions или action, недоступный в
-  текущем context, превращаются в явный blocked decision и не могут маскироваться одновременным
-  заявлением модели о completion.
-- Сохранена factual reconciliation предыдущих actions: registry ограничивает пространство реально
-  исполнимых переходов, а persisted exact payload/result и свежий editor/disk context остаются
-  доказательной основой выбора следующего шага и completion. Добавлены regression-тесты tool binding,
-  contract rendering, multi-tool scopes, нескольких actions и repair в одном scope, отдельного
-  user-reviewed semantic transition, code-owned requirement assignment, запрета model-supplied id,
-  data continuation lines, отрицания и простого упоминания tool, сохранения requirement association,
-  несуществующего fence и операции, конфликтующего completion и validation до approval.
-- Барьер 80% **остаётся непройденным** до повторной packaged Windows проверки.
-
-### Семантическая reconciliation многошаговой задачи (1 сентября 2026)
-- Очередной 80% packaged Windows acceptance показал, что одного наличия action payload/result в
-  context недостаточно: после успешного, но семантически неверного append модель предложила повторно
-  вывести уже известное содержимое вместо исправления фактического состояния файла.
-- Каждый orchestration turn теперь получает исходный пользовательский запрос как явно размеченный
-  неизменный task contract и обязан заново сопоставить все его требования и условия конечного
-  состояния с точными action payloads, factual results и самым новым editor/saved-disk context.
-  Успех action означает только исполнение payload; смысловой шаг считается выполненным лишь при
-  подтверждённом соответствии фактического результата требованию.
-- Decision policy явно различает satisfied, unsatisfied и genuinely unknown. При частично неверном
-  результате следующий action должен исправлять или продвигать состояние к невыполненному требованию;
-  повторное чтение или отображение уже присутствующего factual context запрещено. Completion допустим
-  только когда доказано выполнение каждого условия конечного состояния.
-- Проверка формата показала, что отдельное сгенерированное моделью резюме требований не требуется и
-  было бы менее надёжным источником истины: persisted `goal` уже содержит полный исходный запрос без
-  потерь, а snapshot сохраняет его вместе с точными payload/result каждого action. Prompt теперь явно
-  закрепляет `goal` как durable semantic contract, включая порядок, содержимое, ограничения и проверки,
-  поэтому следующий turn не зависит от восстановленного chat history и не угадывает смысл шагов.
-- Добавлен backend regression-тест с успешными actions и не соответствующим цели актуальным файлом:
-  он проверяет передачу полного многострочного contract, payloads и обязательной repair/completion
-  policy без правил для конкретного acceptance-файла, его строк или shell-команд.
-- Барьер 80% **остаётся непройденным** до повторной проверки пункта 1 packaged Windows acceptance.
-
-### Фактическая история orchestration actions в model context (1 сентября 2026)
-- Повторный 80% packaged Windows acceptance выявил архитектурный дефект: persisted task хранил полный
-  action payload и tool result, но перед отправкой следующего model turn `taskSnapshot` отбрасывал их
-  и оставлял модели только `tool/status/outcome`. Поэтому успешный exit code мог ошибочно считаться
-  выполнением смыслового шага, хотя реально исполненная команда делала другое.
-- Orchestration snapshot теперь передаёт для каждого action полный фактический payload, а для
-  завершённого действия — связанный result с action id, tool, outcome и фактическим content. Backend
-  строго проверяет форму и связь этих данных, сериализует их в orchestration prompt и отдельно требует
-  сопоставлять реально выполненное действие с исходной целью: успешный status доказывает исполнение
-  payload, но не достижение намерения.
-- Решение общее для Terminal и File Tool и не содержит правил для конкретного acceptance-файла,
-  текста или shell-команды. Regression-тесты доказывают сохранение команды и полного результата во
-  frontend snapshot и их присутствие в следующем backend model context.
-- Барьер 80% **остаётся непройденным** до повторной проверки пункта 1 packaged Windows acceptance.
-
-### Завершение задачи по актуальному factual context (1 сентября 2026)
-- Orchestration prompt теперь требует до предложения следующего action оценить уже переданные
-  актуальные project/editor/saved-disk данные и результаты подтверждённых инструментов. Если эти
-  факты уже доказывают достижение цели, модель должна завершить task без дополнительного action.
-- Запрещено тратить Terminal action на повторное чтение, вывод или перепроверку сведений, уже
-  достоверно присутствующих в текущем context. Правило общее и не привязано к имени файла или
-  конкретной shell-команде.
-- Зафиксирована текущая архитектурная граница: File Tool является инструментом изменений, а не
-  универсальным read tool; Terminal Tool не должен искусственно подменять чтение уже доступного
-  context. Новый regression-тест проверяет передачу этой decision policy после успешного tool result.
-- Барьер 80% **остаётся непройденным** до повторной проверки пункта 1 packaged Windows acceptance.
-
-### Согласование Terminal Tool с диском перед следующим model turn (1 сентября 2026)
-- После завершения любой Terminal-команды frontend заново получает дерево проекта и содержимое
-  открытого файла через `refresh_project`. Только после применения этого snapshot публикуется
-  Terminal result, который продолжает orchestration task, поэтому следующий model turn видит
-  фактическое состояние диска, а не старое содержимое Monaco.
-- Для чистого редактора внешнее изменение загружается в Monaco, а удалённый файл закрывается. Если
-  пользовательский buffer dirty, его текст не уничтожается: новая версия диска становится отдельным
-  saved baseline; при удалении buffer остаётся открытым с явным `existsOnDisk: false`. Этот disk state
-  входит в context key и prompt модели, а File Tool не может заменить или удалить отсутствующий файл.
-- Согласование также выполняется для ручной Terminal-команды. Смена открытого файла во время чтения
-  приводит к повторному чтению актуального пути; при ошибке refresh orchestration намеренно не
-  продолжается со stale context.
-- Добавлены frontend/backend regression-тесты для изменения, удаления и отсутствия изменений на
-  диске, защиты dirty buffer и явного deleted/missing context.
-- Барьер 80% **остаётся непройденным** до повторной проверки пункта 1 packaged Windows acceptance.
-
-### Windows shell и точная привязка Terminal result (1 сентября 2026)
-- Модель теперь получает фактический Windows contract: `cmd.exe /D /A /S /C`, UTF-8 code page 65001,
-  правила quoting `cmd.exe` и прямое указание не предлагать Unix-only `cat`. Это соответствует
-  реальному execution path, а не абстрактному «терминалу».
-- Удалён `/U`, из-за которого встроенный `cmd.exe echo` при перенаправлении дописывал UTF-16LE в
-  UTF-8 файл. Перед пользовательской командой выбирается code page 65001, а `/A` сохраняет обычный
-  byte output; Windows regression проверяет append кириллицы в существующий UTF-8 файл и отсутствие
-  UTF-16LE-фрагмента.
-- Terminal proposal получает id конкретного orchestration action. Завершение передаёт этот id только
-  если реально выполненная команда точно совпала с предложенной; Chat принимает result лишь при
-  совпадении tool, action id и command с активным action. Ручные команды и поздний result предыдущего
-  action больше не могут продвинуть следующий action.
-- Существующие approval, cancellation, owned-process lifecycle, command serialization и выполнение в
-  project root не изменены. Добавлены frontend/backend/Rust regression-тесты для shell prompt,
-  action/command correlation и безопасного Windows UTF-8 append.
-- Барьер 80% **остаётся непройденным** до повторного packaged Windows acceptance-теста.
-
-### Устойчивый terminal proposal contract после tool result (31 августа 2026)
-- Packaged Windows acceptance на барьере 80% **пока не пройден**. В реальном многошаговом сценарии
-  после успешного File Tool model turn назвал следующий Terminal Tool fence `autocoder-terminal`,
-  хотя канонический backend-контракт ожидает `autocoder-command`. Семантически корректное действие
-  не распозналось, и task ошибочно завершилась как `blocked` с причиной отсутствия следующего action.
-- Prompt теперь во всех orchestration/tool-result инструкциях явно связывает Terminal Tool с точным
-  каноническим fence `autocoder-command` и отдельно предупреждает не использовать display-derived
-  имя `autocoder-terminal`.
-- Parser сохраняет `autocoder-command` каноническим форматом, но совместимо принимает единственный
-  `autocoder-terminal` fence от реальной модели. Для alias действует тот же строгий JSON shape
-  `{ "command": string }`, проверка непустой команды, открытого проекта, запрет совмещения с File
-  Tool и прежний approval workflow; два terminal-блока отклоняются вместо неявного выбора одного.
-- Backend regression воспроизводит последовательность успешный File Tool result → следующий model
-  turn с `autocoder-terminal` → распознанный `next_action`, а также доказывает отклонение лишних полей
-  и дублирующих canonical/alias proposals. После автоматических проверок требуется повторить 80%
-  packaged Windows acceptance; до этого барьер остаётся непройденным.
-
-### Безопасная отмена незавершённой orchestration work (31 августа 2026)
-- После сохранения terminal state `stopped` frontend адресно отменяет активный model turn этой task.
-  Tauri отслеживает единственный Python bridge по `task_id`, выставляет cancellation token и завершает
-  принадлежащее AutoCoder дерево bridge-процесса через общий `ProcessLifecycle`. Закрытие bridge также
-  закрывает ожидающий HTTP-запрос Python к Ollama/provider, поэтому генерация не продолжает расходовать
-  ресурсы до обычного завершения; общий процесс Ollama при этом не убивается.
-- Если последний action является действительно запущенным Terminal Tool, Stop использует уже
-  существующую отмену дерева terminal-процессов. File Tool не получает ложного cancelled-result:
-  уже начатая операция сохраняет существующие backup/atomic-write guarantees, а её позднее уведомление
-  не принимается остановленной task. Предложенные, но не запущенные actions просто остаются частью
-  исторического stopped snapshot.
-- Persisted `stopped` остаётся источником истины на двух уровнях: frontend инвалидирует request id и
-  игнорирует поздние model/tool callbacks, а SQLite транзакционно отвергает позднюю запись с тем же
-  `task_id`, если она попыталась бы заменить stopped state или дописать соответствующий Chat exchange.
-  Новая task с новым id по-прежнему может быть сохранена в той же истории.
-- Добавлены Rust regression-тесты task-scoped chat cancellation и защиты stopped persistence, включая
-  последовательность stopped task-1 → current task-2 → поздняя запись task-1 и отбрасывание её Chat
-  exchange. Следующий шаг — проверить полный Stop workflow в установленной
-  Windows-сборке на ближайшем плановом acceptance-барьере вместе с уже накопленными lifecycle checks.
-
-### Явная остановка orchestration task (31 августа 2026)
-- Пользователь может остановить любую незавершённую задачу, включая ожидание модели, подтверждения,
-  результата инструмента или ручного продолжения. Остановка сохраняется как отдельные `status` и
-  `conclusion.outcome = stopped`; она не подменяет completion/block, tool failure или decline action.
-- Остановка инвалидирует ожидаемый model response, убирает review/recovery UI и не позволяет позднему
-  ответу дописать Chat или перезаписать terminal state. Фактическая отмена model/terminal work теперь
-  реализована следующим отдельным этапом, описанным выше.
-- После остановки становятся доступны выбор режима автономности и отправка новой задачи без очистки
-  Chat. SQLite теперь одновременно хранит текущую task и обновляемый архив по `task_id`, поэтому запуск
-  следующей задачи не уничтожает последний persisted action/result/conclusion state предыдущей.
-- Добавлены локализованные stopped-state, следующий шаг и кнопка остановки. Unit-тесты frontend,
-  backend-тесты и production/offline build проходят; Rust persistence test добавлен, но его запуск в
-  Linux-контейнере по-прежнему зависит от отсутствующей системной `glib-2.0`.
-
-### Настраиваемый режим автономности orchestration task (31 августа 2026)
-- Перед запуском новой задачи пользователь выбирает один из двух понятных режимов: базовый
-  `С подтверждением` сохраняет прежнее автоматическое продолжение model turn после результата, но
-  по-прежнему требует явного подтверждения каждого File Tool и Terminal Tool действия; `Пошаговый`
-  дополнительно останавливает задачу после каждого сохранённого tool result до явной команды
-  пользователя продолжить.
-- Режим является типизированной частью persisted orchestration task, передаётся модели в task snapshot
-  и показывается в карточке текущей задачи. Старые сохранённые задачи безопасно нормализуются в
-  базовый режим `supervised`; режим активной задачи нельзя изменить посреди выполнения. Структура
-  допускает добавление новых mode-policy без изменения action/result/conclusion переходов.
-- Автоматический запуск инструментов не добавлялся: review/approval, stale-context guards, backup,
-  execution limits, restart recovery и process lifecycle остались неизменными.
-- Строгий Python backend contract теперь принимает и отдельно валидирует только политики
-  `autonomy` вида `{ "mode": "supervised" | "step_by_step" }`, а выбранный режим входит в системный
-  orchestration context модели. Regression-проверки покрывают весь контрактный путь: формирование
-  frontend request, прозрачную сериализацию Tauri и Python validation; неизвестные режимы и лишние
-  поля отклоняются.
-- Добавлены локализованные подписи и пояснения на русском, английском и иврите, а также regression-
-  тесты нормализации, persistence snapshot, решения о продолжении и backend contract. `npm test`
-  (53 теста), Python backend suite, `npm run build` и offline runtime check успешно выполнены
-  31 августа 2026.
-- Следующий шаг: на основании этой persisted policy boundary позже можно добавить более самостоятельный
-  режим отдельным явным этапом, предварительно определив его разрешения и не смешивая их с task status.
-
-### Пользовательская индикация orchestration task (31 августа 2026)
-- Под заголовком Chat теперь постоянно показывается компактная карточка последней persisted-задачи:
-  понятный статус `выполняется`/`ожидает`/`завершена`/`заблокирована`, краткая цель, число фактически
-  завершённых действий, текущая причина ожидания и следующий ожидаемый переход. Для terminal state
-  также показывается сохранённая conclusion reason, не дублируя историю сообщений Chat.
-- Представление вычисляется непосредственно из существующих task/action/result/conclusion/execution
-  переходов и обновляется при каждом уже существующем persisted transition. Поэтому после перезапуска
-  оно восстанавливается из SQLite вместе с задачей; прерванное `running` явно показывается как
-  ожидающее безопасного восстановления, а не как всё ещё исполняющееся действие.
-- Существующие recovery-кнопки остались отдельными явными действиями. File proposal по-прежнему
-  требует Apply, Terminal proposal — Review и отдельный Run; context/stale guards, backup и запрет
-  повторного запуска прерванного действия не менялись. Новых разрешений и автоматических переходов нет.
-- Добавлены локализованные строки для английского, русского и иврита, а также regression-тесты
-  представления ожидающего approval, восстановленного running и terminal conclusions. Полный frontend
-  test suite (51 тест), production build и offline-runtime scan успешно выполнены. Следующий шаг —
-  развивать на этой карточке настраиваемый уровень автономности без ослабления safety boundaries.
-
-### Ограниченная политика выполнения orchestration task (31 августа 2026)
-- Единственным источником решения о продолжении остаётся persisted task/action/result/conclusion state:
-  task теперь хранит счётчик и предел model turns (12), а также предел предложенных actions (8).
-  Лимиты передаются модели в orchestration snapshot и проверяются backend вместе с остальным state.
-- Новый model turn автоматически начинается только после записанного результата явно подтверждённого
-  File/Terminal action в текущей живой сессии. Любой новый action снова переводит задачу в
-  `awaiting_approval`; инструменты не запускаются автоматически. После перезапуска `thinking` или
-  `awaiting_ai` требуют явной кнопки Resume, а восстановленный proposal — отдельного Review.
-- Ответ модели с `completed`/`blocked` атомарно сохраняет conclusion и останавливает задачу. При
-  исчерпании любого execution limit frontend не создаёт следующий turn/action, а сохраняет локальный
-  проверяемый conclusion `blocked`. Это исключает бесконтрольную цепочку model turns и оставляет
-  конечные границы для будущего настраиваемого уровня автономности.
-- Старые persisted tasks без execution policy получают те же конечные defaults при snapshot/resume.
-  Добавлены unit-тесты границы model turns и action budget; frontend tests/build и 40 backend tests
-  успешно выполнены. Следующий шаг — показывать пользователю отдельное компактное состояние и
-  прогресс долгой orchestration task без расширения разрешений инструментов.
-
-### Явный результат orchestration turn (31 августа 2026)
-- Контракт ответа модели теперь различает три исхода одного шага: валидный File/Terminal proposal
-  означает `next_action`, а специальный проверяемый `autocoder-task` block сообщает `completed` либо
-  `blocked` с обязательной причиной. Отсутствующий или повреждённый terminal marker больше не
-  считается успехом: задача безопасно фиксируется как `blocked` из-за неоднозначного ответа.
-- Persisted task state дополнена отдельным terminal conclusion `{ outcome, reason }`. Поэтому ошибка
-  отдельного action остаётся фактом action/result, после которого модель может предложить исправление,
-  а невозможность продолжить всю задачу является самостоятельным конечным состоянием `blocked`.
-  Это сохраняет основу task/action/result для будущего автономного цикла без смешения локальной
-  ошибки инструмента с итогом пользовательской задачи.
-- Backend валидирует terminal decision и отдаёт frontend нормализованный `taskDecision`; Tauri bridge
-  сохраняет без потерь и orchestration snapshot запроса, и decision ответа, а frontend сохраняет
-  conclusion атомарно с chat exchange. Завершённые и blocked tasks не предлагаются к Resume
-  после перезапуска. Явное пользовательское подтверждение File Tool и двухступенчатого Terminal Tool,
-  stale/context guards и запрет автоматического запуска инструментов не изменены.
-- Добавлены regression-тесты для completed, blocked, неоднозначного ответа, приоритета следующего
-  action и сохранения blocked conclusion после failed action. Следующий шаг — ввести ограниченную
-  политику автоматического продолжения поверх этих явных переходов, не ослабляя подтверждение tools.
-
-### Явная многошаговая orchestration task/action/result model (31 августа 2026)
-- В frontend введена отдельная типизированная state machine оркестрации: задача имеет стабильный id,
-  исходную цель, статус и монотонную последовательность действий; каждое File/Terminal action имеет
-  собственный id и жизненный цикл `proposed → running → completed/failed/cancelled`, а фактический
-  result ссылается на точный action id. Модель покрыта unit-тестом с двумя последовательными шагами.
-- Новый пользовательский запрос начинает задачу. Ответ AI либо создаёт ровно одно ожидающее
-  подтверждения действие, либо явно переводит задачу в `completed`/`blocked`. После подтверждения существующий
-  безопасный File Tool или двухступенчатый Terminal Tool выполняет действие; фактический результат
-  записывается в state machine и запускает следующий turn той же задачи. Цикл не ограничен одним
-  повторением и завершается проверяемым terminal decision без tool block.
-- Backend теперь получает компактный проверяемый orchestration snapshot как отдельные control data,
-  а не извлекает состояние из текста чата. System context сообщает модели цель, фазу и журнал
-  связанных action/result, требует выбрать ровно один следующий шаг или завершить задачу. Повреждённые
-  task/action/result contracts отклоняются до обращения к provider.
-- Та же task/action/result state machine теперь является единственным сохраняемым источником
-  orchestration state: полная активная задача project-scoped хранится в существующей SQLite history
-  database, а переходы `thinking`, `awaiting_approval`, `running`, result и завершение записываются
-  до следующего внешнего шага. После перезапуска незавершённая задача показывается отдельно и ждёт
-  явного Resume или повторного Review; сохранённое действие никогда не выполняется автоматически.
-- Каждый proposed action сохраняет context key editor/project snapshot. Повторный Review доступен
-  только при точном совпадении текущего контекста. Изменившееся или прерванное `running` действие не
-  запускается повторно: state machine получает связанный `declined` либо `interrupted` result, после
-  чего модель продолжает ту же задачу с актуальным контекстом и без предположения об исполнении.
-- Обычный отказ пользователя от File/Terminal proposal также стал явным result lifecycle event:
-  action покидает `proposed`, задача переходит в `awaiting_ai`, и отказ отправляется следующим turn.
-- Граница подтверждения не менялась: предложение команды только переносится в Terminal и требует
-  отдельного Run, file proposal по-прежнему применим только к актуальному snapshot. Existing backup,
-  expected-content/stale, project/session guards, SQLite chat/terminal persistence, offline provider
-  boundary и process lifecycle не изменены. SQLite по-прежнему изолирует chat, terminal runs и
-  активную orchestration task по каноническому корню проекта.
-- Автоматически проверены frontend state transitions, backend contract/prompt validation, полный
-  regression suite, TypeScript/Vite production build и offline-runtime scan. Следующий целостный шаг —
-  расширять автономность поверх этой сохраняемой state machine, не ослабляя confirmation и stale guards.
-
-### Первый рабочий orchestration loop (31 августа 2026)
-- Chat, File Tool и Terminal Tool теперь образуют повторяемый цикл: модель предлагает ровно одно
-  допустимое действие, пользователь сохраняет существующее явное подтверждение, а фактический
-  результат завершённого действия автоматически отправляется модели следующим turn без ручного
-  копирования вывода. Модель может сразу объяснить результат либо предложить следующий шаг.
-- Введён общий тип события результата инструмента с монотонным id. Продолжение сохраняет историю
-  исходной задачи даже когда подтверждённая файловая операция закономерно изменила editor/project
-  context; обычные пользовательские запросы по-прежнему отсекают историю устаревшего контекста.
-  Результат, пришедший во время другого AI-turn, ожидает его завершения и обрабатывается один раз.
-- File Tool сообщает отдельно create/delete на диске, изменение только editor buffer и отказ
-  безопасной операции. Terminal Tool возвращает фактические command, exit code, stdout, stderr и
-  cancelled. Эти сообщения сохраняются существующей project-scoped Chat persistence вместе с
-  ответом модели.
-- Никакой инструмент не запускается моделью автоматически: file diff/apply и двухступенчатый
-  Terminal review/run сохранены. Existing backup, expected-content/stale, project-session, process
-  lifecycle и offline provider boundaries не ослаблены; новые filesystem/process IPC не добавлены.
-- Packaged Windows acceptance barrier **70% фактически пройден со статусом PASS**. Подтверждены
-  persistence/workspace и ручной Project Explorer/Backup Manager flow; закрытые сценарии удалены из
-  очереди 70%. Следующий acceptance barrier — 80%, а ближайшее развитие ядра — явная модель
-  orchestration state/action/result и несколько последовательных подтверждаемых шагов.
-
-### Целостность Project Explorer, workspace и Backup Manager (31 августа 2026)
-- Восстановление workspace теперь принудительно создаёт актуальную модель Monaco для восстановленного
-  пути в новой project-session: последний доступный текстовый файл открывается с фактическим дисковым
-  содержимым, а существующие backend-проверки канонического корня и допустимости файла сохранены.
-- Подтверждение ручного удаления файла и папки переведено с браузерного `window.confirm` на нативный
-  Tauri dialog. На время обоих подтверждений и самой операции действует единый in-flight guard; dirty
-  открытый файл по-прежнему требует отдельного подтверждения сброса, а stale project-session completion
-  не меняет UI.
-- Backup Manager распознаёт созданные ручным удалением резервные копии папок, показывает их отдельно и
-  восстанавливает полную вложенную структуру без текстового декодирования binary-файлов. Перед
-  публикацией backup повторно валидируется на symlink/special entries, собирается в staging-папке рядом
-  с назначением и атомарно переименовывается; существующее назначение никогда не перезаписывается.
-  Безопасная checked-restore логика текстовых файлов не изменена.
-- Автоматически подтверждены 42 frontend test (включая нативное подтверждение удаления), TypeScript/production/offline build, Rust formatting и
-  `git diff --check`. Добавлен Rust regression полного list/restore дерева с binary-файлом и отказа от
-  повторного восстановления поверх существующей папки; `cargo test` в Linux по-прежнему зависит от
-  отсутствующей системной `glib-2.0 >= 2.70`.
-
-### Ручное управление Project Explorer (30 августа 2026)
-- В Project Explorer добавлены самостоятельные действия создания файла и папки, переименования и
-  удаления выбранного файла или дерева папки. Новые элементы создаются в выбранной папке (либо
-  рядом с выбранным файлом), новый файл сразу открывается в Monaco, а переименование/удаление
-  согласованно обновляет путь либо закрывает затронутый открытый файл.
-- Переименование сохраняет несохранённый Editor под новым путём; удаление затрагивающего dirty-файла
-  сначала требует подтверждения сброса текста. Удаление требует отдельного подтверждения; файлы и целые папки, включая binary,
-  сначала копируются в app-data backup. Backend запрещает абсолютные/traversal/Windows-unsafe пути,
-  symlink и special entries, выход из canonical project root и перезапись существующего назначения.
-- UI и ошибки локализованы для русского, английского и иврита. Дерево заново строится после каждой
-  операции, поэтому Chat получает актуальную read-only структуру проекта, а сохранённый путь
-  переименованного открытого файла обновляется в workspace persistence.
-- Frontend tests (41) и production/offline build проходят. Добавлены Rust regressions создания,
-  rename без overwrite и recursive backup/delete; их запуск в Linux-контейнере блокируется до
-  компиляции отсутствующей системной библиотекой `glib-2.0 >= 2.70`, Rust formatting проходит.
-- Остаточный packaged Windows integration-риск объединён с persistence в barrier 70%; немедленная
-  ручная проверка не требуется. Консервативная оценка готовности общего приложения: **68%**.
-
-### Универсальная persistence/history подсистема (30 августа 2026)
-- В существующей app-data SQLite persistence сохраняются последний успешно открытый канонический
-  project root и последний успешно открытый дисковый файл. При старте проект восстанавливается без
-  folder dialog; допустимый существующий файл перечитывается с диска, исчезнувший файл пропускается,
-  а недоступный проект безопасно оставляет приложение без проекта. Несохранённый Monaco-текст не
-  сохраняется.
-- Добавлена локальная SQLite-база в app data с WAL и схемой для сообщений Chat и завершённых
-  Terminal runs. Данные изолированы каноническим путём проекта, переживают перезапуск и ограничены
-  последними 200 сообщениями Chat и 100 запусками Terminal на проект.
-- При открытии проекта Chat восстанавливает диалог, Terminal — команды для навигации и последний
-  transcript. Новые пользовательские и AI-сообщения, а также результат каждой команды сохраняются;
-  Chat и Terminal можно очищать независимо.
-- Rust regression проверяет запись, повторное открытие базы, изоляцию проектов и независимую очистку.
-  Frontend tests (41), production/offline build и Python tests (33) проходят.
-- Это крупный общий пакет persistence, выбранный вместо преждевременного COMSOL-направления.
-  Он закрывает явный MVP-пробел, но сам по себе не означает достижение 70%.
-- Packaged Windows acceptance SQLite history и восстановления workspace не является немедленным
-  critical test: он включён в единый barrier 70% в `DEFERRED_WINDOWS_TESTS.md`.
-- После следующего пакета ручного Project Explorer flow текущая консервативная оценка обновлена до
-  **68%**. До 70% остаётся объединённый Windows acceptance persistence и файлового управления.
-  COMSOL, плагины, multi-agent, LSP, browser и voice в этот остаток не входят.
-
-Файловый сценарий, backup, Backup Manager, основной AI Chat, минимальный Terminal Tool, AI → Terminal review flow и все три негативных сценария Ollama фактически подтверждены в packaged Windows. Чат передаёт историю, текущий текст открытого файла и read-only структуру проекта через Tauri в минимальный Python-backend и получает ответ локального Ollama; безопасные предложения файловых операций и команды терминала подключены. Команда ИИ только переносится в редактируемое поле Terminal после явного действия пользователя и требует отдельного нажатия «Выполнить». Chat и Terminal теперь сохраняют ограниченную project-scoped историю в SQLite; packaged Windows-поведение новой persistence подсистемы ещё не подтверждено.
-
-## Что подтверждено как сделанное
-
-### Нативное подтверждение Refresh после повторного FAIL 60% acceptance (30 августа 2026)
-- Повторная диагностика подтвердила, что React dirty-state уже был `true`: Save становился активен,
-  а реальная кнопка Explorer была напрямую подключена к `handleRefreshProject`. Ошибочным оказался
-  браузерный `window.confirm`: regression в jsdom подменял его и потому не проверял поведение
-  packaged Tauri WebView2, где это подтверждение не показалось.
-- Refresh теперь до любого `refresh_project` IPC ожидает асинхронный нативный `confirm` официального
-  Tauri 2 dialog plugin. Отдельный guard не допускает параллельные Refresh во время открытого
-  диалога; Cancel завершает handler без IPC и без изменения editor-state.
-- Сквозной frontend regression нажимает реальную кнопку Explorer после подтверждённого dirty-state,
-  проверяет вызов native dialog и точный порядок `open_project → read_project_file → confirm`, а
-  также отсутствие `refresh_project` и сохранность Monaco-текста после Cancel.
-- **60% packaged Windows acceptance подтверждён со статусом PASS**; повторная packaged сборка
-  показала корректное нативное подтверждение и обе ветви Refresh.
-
-### Исправление dirty-state Refresh после FAIL 60% acceptance (30 августа 2026)
-- Packaged Windows acceptance выявил, что после редактирования Monaco действие «Обновить» могло не
-  увидеть dirty-state и без подтверждения заменить несохранённый текст дисковой версией.
-- PR #77 исходил из гипотезы о границе Monaco/React: `Editor` создавал новую inline-функцию `onChange` при
-  каждом render, а `@monaco-editor/react` использует идентичность этой функции как зависимость
-  эффекта подписки `onDidChangeModelContent`. Повторные renders поэтому снимали и заново ставили
-  listener; изменение Monaco в этом промежутке не попадало в `openFile.content`, и вычисляемый в
-  `App` `isDirty` оставался ложным. Новый packaged-факт (активная Save до Refresh) доказал, что эта
-  гипотеза не объясняла наблюдаемый дефект подтверждения.
-- Callback Monaco теперь стабилен на весь lifecycle Editor и делегирует актуальному React callback
-  через ref. Интеграционный frontend regression проходит реальный путь открытия файла, изменения
-  Monaco, появления dirty-state, Refresh, confirmation/Cancel и сохранения текста; отдельно он
-  фиксирует стабильность callback, чтобы не вернуть разрыв подписки.
-- Этот промежуточный FAIL закрыт последующей packaged Windows-проверкой; итог barrier 60% — **PASS**.
-
-### Обновление открытого файла вместе с деревом проекта (30 августа 2026)
-- После PR #75 действие «Обновить» перечитывало дерево, но оставляло в Monaco устаревший текст
-  файла, изменённого или удалённого внешним инструментом. Следующим цельным шагом к 60% выбран
-  полный пользовательский Refresh flow: он закрывает оставшуюся часть MVP-требования отслеживания
-  изменений проекта и не требует SQLite, автономности или повторной общей async/race ревизии.
-- Один Tauri command теперь возвращает новое дерево и актуальное содержимое открытого текстового
-  файла. Monaco принимает внешнее изменение как новую сохранённую базу; если файл исчез, редактор
-  закрывает его. При несохранённом тексте Refresh сначала требует явного подтверждения, а при
-  ошибке backend сохраняет прежние дерево и редактор.
-- Rust regression покрывает внешнюю перезапись и удаление открытого файла; frontend unit regression
-  покрывает принятие новой дисковой базы и закрытие удалённого файла. Frontend tests/build, Python
-  backend tests, Rust formatting и review diff проходят. Немедленный Windows test не нужен:
-  изменение использует уже подтверждённые IPC/read/tree paths и не блокирует следующий этап;
-  короткая интеграционная проверка добавлена в объединённый 60% barrier.
-
-### Явное обновление дерева открытого проекта после 50% barrier (29 августа 2026)
-- После закрытия 50% barrier фактическая сверка MVP roadmap показала следующий недостающий
-  Project Manager flow: дерево обновлялось после собственных create/delete/restore AutoCoder, но
-  пользователь не мог подхватить файлы, добавленные или удалённые внешними инструментами, без
-  повторного folder dialog. Это непосредственно относится к MVP-требованию отслеживания изменений
-  проекта и полезнее преждевременного SQLite, автономности или следующей общей race-ревизии.
-- В Explorer добавлено явное действие «Обновить». Новый Tauri command повторно строит дерево из
-  фактически открытого canonical root без folder dialog, смены project session и сброса session-only
-  Chat/Terminal или открытого Editor. Ошибка обновления сохраняет прежнее дерево и показывает точную
-  backend-причину.
-- Rust regression подтверждает обнаружение внешне добавленного файла при повторном построении дерева;
-  frontend component regression подтверждает доступность Refresh рядом с Open project. Frontend
-  tests/build, backend tests, Rust formatting и review diff проходят; запуск Rust tests в текущем
-  Linux-контейнере останавливается до тестов из-за отсутствующей системной `glib-2.0 >= 2.70`.
-- Изменение использует обычный уже проверенный Tauri IPC/tree path, не меняет Windows-specific
-  filesystem replacement или process lifecycle и не требует немедленного Windows test. При
-  формировании 60% barrier отдельный ручной сценарий добавлять только если останется не закрытый
-  автоматикой platform-specific риск.
-
-### 50% acceptance barrier и Project switch regression (29 августа 2026)
-- Packaged Windows acceptance подтвердил backend-диагностику блокировки смены проекта, но выявил
-  два связанных дефекта frontend: ошибка скрывала дерево фактически текущего проекта, а повторный
-  выбор того же project root создавал новую session-only сессию и очищал Chat/Terminal.
-- Project Explorer теперь показывает диагностическое сообщение вместе с сохранённым текущим
-  деревом. Backend атомарно отличает канонически тот же root от реальной смены и возвращает признак
-  смены сессии; поэтому тот же root не блокируется активной командой и не сбрасывает состояние,
-  тогда как успешный переход на другой root по-прежнему создаёт новую сессию. Отмена folder dialog
-  по-прежнему возвращает `null` и ничего не меняет.
-- Добавлены frontend regression-тесты совместного отображения дерева и ошибки и границы session id,
-  а также Rust-тест повторного открытия текущего root при активной Terminal-команде. Исправленный
-  packaged Windows flow повторно проверен пользователем: отказ A → B сохраняет дерево и точную
-  backend-диагностику, повторный выбор A сохраняет Chat/Terminal, после Cancel переход в B создаёт
-  новую session-only сессию, а отмена folder dialog ничего не меняет. Статус **PASS**.
-- На том же барьере подтверждены точная причина stale Backup Restore, сохранность внешне изменённого
-  файла после отклонённого restore и ранее проверенный stale Save. Весь 50% acceptance barrier имеет
-  итоговый статус **PASS**.
-
-### Комплексная изоляция frontend async/race границ MVP (29 августа 2026)
-- Проведена сквозная ревизия оставшегося frontend MVP-flow: открытие проекта, Chat, применение
-  файловых proposal, Terminal и Backup Manager. Повторные синхронные действия теперь блокируются
-  немедленными ref-guards, а не только запаздывающим React state, поэтому один пользовательский
-  жест не может породить дублирующий IPC-запрос.
-- Chat инвалидирует завершения после unmount, включает `savedContent` в ключ контекста и снимает
-  create/command proposal при любом изменении контекста. Применение proposal остаётся заблокировано
-  до завершения async callback и дополнительно сериализовано на уровне App.
-- Terminal связывает выполнение и отмену с конкретным run id: поздний результат, ошибка или ответ
-  отмены не могут изменить состояние уже закрытой проектной сессии либо следующего запуска.
-  Backup Manager сериализует restore, инвалидирует незавершённый list при его старте и не позволяет
-  позднему списку преждевременно вернуть диалог из состояния восстановления.
-- Добавлены regression-проверки смены сохранённой дисковой базы Chat и актуальности Terminal run;
-  сохранены проверки file/save/project/backup request boundaries. Изменения ограничены frontend,
-  не добавляют автозапуск команд или будущую автономность и не требуют отдельной Windows-проверки.
-
-### Изоляция запросов Backup Manager от закрытия и смены проекта (29 августа 2026)
-- Точечная ревизия оставшегося MVP flow выявила асинхронное окно в Backup Manager: закрытый и
-  повторно открытый диалог мог принять поздний список или результат восстановления от предыдущего
-  открытия, а экземпляр диалога сохранялся при смене проекта.
-- Запросы списка и восстановления теперь получают монотонные идентификаторы и меняют UI только
-  пока остаются актуальными. Закрытие диалога инвалидирует оба запроса, а успешная смена проекта
-  пересоздаёт Backup Manager для новой проектной сессии.
-- Добавлен frontend regression проверки актуальности backup-запроса. IPC/backend не менялись,
-  поэтому отдельная немедленная Windows-проверка не требуется; следующий шаг следует выбирать
-  после новой точечной ревизии MVP.
-
-### Изоляция ошибки Chat-запроса от изменившегося контекста (29 августа 2026)
-- Точечная ревизия асинхронного Chat flow выявила незакрытую ветку прежней защиты: успешный ответ
-  из устаревшего контекста уже отбрасывался, но поздняя ошибка того же IPC-запроса показывала в
-  новом editor-контексте неактуальную backend-диагностику.
-- Ошибка запроса теперь проходит ту же проверку ключа контекста, что и успешный ответ. При смене
-  файла, его содержимого, выделения или структуры проекта Chat предлагает повторить запрос вместо
-  показа причины, относящейся к прежнему состоянию; актуальная backend-ошибка сохраняется без потерь.
-- Frontend regression покрывает обе ветки. IPC/backend не менялись, отдельная немедленная
-  Windows-проверка не требуется; следующий шаг следует выбирать после новой точечной ревизии MVP.
-
-### Изоляция завершения File proposal от смены Editor (29 августа 2026)
-- После проверки проектной границы выявлен более узкий сценарий в рамках одного проекта: пока
-  выполнялось создание или удаление из AI proposal, пользователь мог открыть либо отредактировать
-  другой файл, а позднее завершение операции заменяло или очищало уже новый Editor.
-- Create/delete теперь фиксируют путь и содержимое Editor в момент старта. Актуальное дерево проекта
-  по-прежнему принимается после успешной дисковой операции, но открытый файл, выделение, статус и
-  ошибка Editor меняются только при неизменившемся editor-контексте и текущей проектной сессии.
-- Frontend regression различает неизменившийся контекст, редактирование, другой файл и пустой Editor.
-  IPC/backend не менялись, поэтому отдельная немедленная Windows-проверка не требуется.
-
-### Изоляция завершения Backup restore от смены проекта (29 августа 2026)
-- Точечная ревизия оставшегося MVP flow выявила ещё одну асинхронную границу: пользователь мог
-  запустить восстановление backup проекта A, закрыть диалог и открыть проект B до завершения IPC,
-  после чего поздний frontend-результат показывал дерево и восстановленный файл проекта A в новой
-  сессии.
-- Restore теперь фиксирует номер проектной сессии в момент запуска. Его успешный результат меняет
-  Editor и дерево только пока эта сессия остаётся текущей; backend-восстановление и его проверки
-  дискового состояния не изменялись.
-- Существующий frontend regression границы проектной сессии теперь явно покрывает асинхронные
-  файловые завершения, включая restore. Отдельная немедленная Windows-проверка не требуется:
-  frontend-boundary детерминированно проверена, а IPC/backend не менялись.
-
-### Изоляция завершения File proposal от смены проекта (29 августа 2026)
-- Точечная ревизия оставшегося MVP flow выявила аналогичную асинхронную границу для AI-предложений
-  создания и удаления: операция уже выполнялась с корнем проекта A, но при переключении на проект B
-  её поздний frontend-результат мог показать дерево, файл или ошибку проекта A в новой сессии.
-- Каждая асинхронная файловая операция теперь фиксирует номер проектной сессии. Её успех, ошибка и
-  последующий сброс выделения учитываются только пока эта сессия остаётся текущей; успешное открытие
-  другого проекта синхронно инвалидирует старое завершение.
-- Frontend regression проверяет границу проектной сессии. Backend уже фиксирует корень до файловой
-  операции, поэтому изменение не требует отдельной немедленной Windows-проверки.
-
-### Изоляция завершения Save от смены состояния Editor (29 августа 2026)
-- Точечная ревизия выявила оставшееся окно гонки: после подтверждённой смены проекта во время Save
-  завершение старого запроса могло изменить `savedContent` одноимённого файла нового проекта либо
-  показать в новом проекте старую ошибку. Аналогичный риск существовал при восстановлении backup.
-- Save теперь получает монотонный идентификатор. Успех, ошибка и завершение индикатора учитываются
-  только для актуального запроса; успешная смена проекта и восстановление backup инвалидируют
-  выполнявшийся Save и явно сбрасывают индикатор.
-- Frontend regression проверяет границу актуальности Save. IPC/backend и дисковая операция не
-  менялись, поэтому отдельная немедленная Windows-проверка не требуется.
-
-### Защита Editor от устаревших файловых результатов (29 августа 2026)
-- Точечная ревизия оставшегося MVP flow выявила две асинхронные гонки frontend: более медленное
-  чтение ранее выбранного файла могло заменить результат более нового выбора, а завершение Save
-  могло пометить содержимое уже другого открытого файла как сохранённое.
-- Каждое чтение теперь получает монотонный идентификатор и изменяет Editor только пока остаётся
-  последним запросом. Успешный Save обновляет `savedContent` только у того же пути и той же исходной
-  дисковой версии, с которой он был начат.
-- Добавлен frontend regression для устаревшего чтения, смены пути во время Save и смены исходной
-  сохранённой версии. Изменение не требует немедленной Windows-проверки: IPC/backend и дисковые
-  операции не менялись, а frontend-boundary детерминированно покрыт unit-тестом.
-
-### Защита Chat от ответа для устаревшего контекста (29 августа 2026)
-- Ревизия асинхронного Chat flow выявила следующий минимальный риск: пока Ollama обрабатывал запрос,
-  пользователь мог изменить открытый файл, выделение или структуру проекта, после чего ответ и
-  предложения из прежнего контекста всё равно появлялись в актуальном Chat.
-- Chat теперь фиксирует ключ контекста отправленного запроса и после завершения IPC сравнивает его с
-  текущим состоянием. Ответ, File proposal и Terminal proposal для изменившегося контекста
-  отбрасываются; UI явно предлагает повторить запрос.
-- Regression покрывает неизменившийся контекст, редактирование открытого файла и изменение структуры
-  проекта. Эта проверка не требует отдельного немедленного Windows-прогона: frontend-boundary
-  детерминирован, IPC/backend не менялись, а остаточный риск не блокирует дальнейшую разработку.
-
-### Защита Save от внешнего изменения (29 августа 2026)
-- Ревизия подтвердила отсутствующую expected-content boundary в обычном Save: frontend отправлял
-  только новый текст, поэтому изменение того же файла внешним редактором после открытия могло быть
-  без предупреждения сохранено лишь как backup и затем перезаписано.
-- Frontend теперь передаёт вместе с новым текстом последнюю прочитанную с диска версию. Backend до
-  создания backup сравнивает её с текущими байтами файла, отклоняет stale Save с точной причиной и
-  сохраняет внешнюю версию без изменений. Повторная проверка непосредственно перед атомарной заменой
-  продолжает закрывать изменение во время самого backup/save.
-- Добавлен Rust regression внешнего изменения между открытием и Save: проверяются отказ, сохранность
-  внешнего текста и отсутствие ложного backup. Frontend-тесты, production/offline-сборка, Python-
-  тесты и Rust formatting проходят в Linux; запуск Rust-тестов в текущем контейнере заблокирован
-  отсутствующими системными библиотеками GLib/GTK для Tauri.
-- Пользователь выполнил проверку в packaged Windows со статусом **PASS**: Save после внешнего
-  изменения был отклонён, на диске осталась `EXTERNAL VERSION`, а UI показал
-  `Не удалось сохранить файл. The file changed on disk after it was opened.`. Проверка stale Save
-  завершена и не является pending.
-
-### Политика ручных Windows-тестов (29 августа 2026)
-- Немедленным критическим считается только ручной тест остаточного риска текущего изменения,
-  способного помешать или существенно повлиять на дальнейшую разработку. Перед назначением нужно
-  учесть доказательства кода, review diff и автоматических тестов, определить не закрываемый ими
-  существенный риск и проверить его влияние на следующие этапы.
-- Принадлежность изменения к Save, файловой безопасности, backup/restore, удалению или риску потери
-  данных сама по себе больше не является основанием для немедленного теста. Если разработку можно
-  безопасно и достоверно продолжать, необходимая ручная проверка переносится на ближайший барьер
-  50%, 60%, 70%, 80%, 90% или 100% в `Doc/DEFERRED_WINDOWS_TESTS.md`.
-- Перед acceptance-прогоном барьера накопленный список ревизуется: доказанное автоматикой
-  исключается, obsolete удаляется или помечается, пересечения объединяются; пользователю выдаётся
-  один минимальный copy-paste-ready сценарий.
-
-### Диагностика файловых операций и порядок ручных проверок (29 августа 2026)
-- Фактическая ревизия frontend выявила тот же класс UX-дефекта, который ранее был исправлен только
-  для открытия проекта: ошибки read/save/create/delete и Backup Manager заменялись общими
-  локализованными сообщениями. Это скрывало stale-state причину и recovery-диагностику backend.
-- Добавлен единый formatter Tauri-ошибок; файловые операции и Backup Manager теперь показывают
-  локализованный контекст вместе с точной backend-причиной. Unit regression покрывает строковое
-  rejected IPC value, объект `Error` и пустую диагностику.
-- Создан `Doc/DEFERRED_WINDOWS_TESTS.md`. Некритическая проверка PR #53 и packaged-проверка новой
-  файловой диагностики назначены на ближайший барьер 50%; немедленных критических ручных тестов
-  это изменение не добавляет, поскольку файловая логика записи/удаления/restore не менялась.
-
-### Изоляция Chat и безопасная смена проекта (29 августа 2026)
-- Пользователь подтвердил packaged Windows regression: сообщения и pending proposal проекта A не появляются в проекте B, а при возврате в A прежняя история не восстанавливается. Chat остаётся строго session-only и не использует постоянное хранение.
-- После фактической ревизии найден следующий lifecycle-риск: смена проекта во время работающей Terminal-команды размонтировала бы terminal-панель и лишила пользователя доступной в UI отмены, пока процесс продолжает работать с прежним cwd.
-- Backend теперь сериализует получение project root и регистрацию Terminal-команды с проверкой active command и фиксацией нового project root через единый transition lock. Поэтому запуск команды и смена проекта линейризуются без TOCTOU-окна: команда либо стартует уже в новом проекте, либо остаётся привязана к старому и блокирует смену. Пользователь должен дождаться завершения либо явно отменить её и повторить выбор; отмена системного выбора папки, как и прежде, не меняет текущую сессию.
-- Добавлен конкурентный Rust regression, сто раз одновременно запускающий команду и смену проекта и проверяющий сам инвариант root/switch result, а не только состояние helper.
-- Пользователь подтвердил packaged Windows regression: во время активной команды смена проекта блокируется, Cancel остаётся доступен и корректно отменяет команду, после Cancel другой проект открывается, а отмена системного диалога не сбрасывает текущий проект и его состояние. Статус: **PASS**.
-- Фактическая ревизия после PASS выявила следующий минимальный UX-пробел: frontend скрывал конкретную backend-причину отказа за общей ошибкой открытия. Теперь Project Explorer сохраняет и показывает текст ошибки Tauri рядом с локализованным сообщением; добавлен frontend regression для project-switch guard diagnostic.
-
-### Минимальный Terminal Tool (28 августа 2026)
-- Пользователь подтвердил исправленную packaged Windows-сборку: минимальный Terminal Tool и его regression-сценарии работают на целевой платформе.
-- В центральную рабочую область добавлена минимальная terminal-панель: она доступна только после открытия проекта, принимает одну явную пользовательскую команду и показывает stdout, stderr и exit code.
-- Фактическая Windows-проверка выявила два blocker-а: `std::fs::canonicalize` возвращал локальный путь с extended-length prefix `\\?\`, который `cmd.exe` интерпретировал как неподдерживаемый UNC cwd; stdout/stderr безусловно декодировались как UTF-8, хотя built-ins `cmd.exe` используют Windows console code page. Canonical root остаётся security boundary, но перед `CreateProcessW` только локальный `VerbatimDisk` cwd преобразуется обратно в обычный drive path; настоящий `VerbatimUNC` не преобразуется.
-- `cmd.exe /U` задаёт UTF-16LE только для собственного перенаправленного вывода shell и не перекодирует байты произвольного external executable: дочерний процесс наследует standard handles и сам выбирает записываемую кодировку. Поэтому decoder сначала принимает детерминированный ASCII/UTF-8 external output и распознаёт UTF-16LE только по BOM либо характерной структуре UTF-16LE text, а не по одной чётной длине. Anonymous pipe не содержит encoding metadata, поэтому произвольные legacy code pages и смешение разных кодировок в одном stream без PTY/ConPTY детерминированно не поддерживаются в MVP и декодируются loss-tolerant как UTF-8. Решение основано на официальной документации Microsoft для [`cmd /U`](https://learn.microsoft.com/windows-server/administration/windows-commands/cmd), [standard handles](https://learn.microsoft.com/windows/console/getstdhandle), [handle inheritance](https://learn.microsoft.com/windows/win32/procthread/inheritance), [console code pages](https://learn.microsoft.com/windows/console/console-code-pages) и [extended-length paths](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation).
-- Выполнение по-прежнему вынесено из async runtime thread в blocking task и проходит через тот же общий `ProcessLifecycle`, что Ollama и bundled Python: на Windows скрытый shell назначается существующему Job Object до resume, поэтому команда и descendants завершаются при shutdown AutoCoder без воздействия на внешние процессы. AI не запускает команды автоматически; PTY, persistent session, history, streaming и новая approval-логика не добавлялись.
-- Добавлены regression-тесты built-in ASCII stdout/exit 0, built-in Unicode stdout/stderr, external executable с детерминированными ASCII и UTF-8 stdout/stderr, ненулевого exit code, реального cwd, Unicode project directory, сохранения настоящего UNC-представления и shutdown долгого shell с descendant при сохранении внешнего процесса. Эти сценарии повторно подтверждены пользователем в packaged Windows-сборке.
-
-### Предложение terminal-команды через AI (29 августа 2026)
-- Backend разрешает отдельный структурированный `autocoder-command` только при открытом проекте, отклоняет пустой/повреждённый контракт и не принимает command proposal, совмещённый с file proposal.
-- UI показывает предложенную команду как недоверенное предложение. Первое явное действие переносит её в редактируемое поле Terminal; выполнение остаётся вторым отдельным действием пользователя через существующую кнопку запуска. AI не получает stdout/stderr автоматически и не может утверждать, что команда уже выполнена.
-- Добавлены backend-регрессии разбора, отсутствующего project context и совмещённых предложений; frontend-тесты и production/offline-сборка проходят в Linux.
-- Пользователь подтвердил packaged Windows-сценарий с реальным Ollama: предложение можно отклонить либо перенести в Terminal, отредактировать и только затем отдельно запустить. AI → Terminal review flow считается подтверждённым; автоматический запуск и автоматическая передача результата обратно AI по-прежнему запрещены.
-
-### История команд Terminal (29 августа 2026)
-- После закрытия предыдущего Windows blocker следующим минимальным улучшением выбран локальный recall команд вместо SQLite, автономности или передачи terminal output модели.
-- Отправленные на запуск команды доступны стрелками вверх/вниз; незавершённый текст восстанавливается при возврате за конец истории, а одинаковые соседние команды не дублируются.
-- История очищается при закрытии проекта, не переносит команды между проектами и не сохраняется на диск. Пользователь подтвердил recall истории на packaged Windows.
-
-### Отмена текущей команды Terminal (29 августа 2026)
-- После Windows-подтверждения истории реализован следующий шаг: во время выполнения доступна отдельная кнопка отмены; повторный запуск блокируется, а завершённый результат явно помечается как отменённый.
-- Отмена относится только к текущей terminal-команде. На Windows её shell и descendants помещаются в отдельный вложенный Job Object, поэтому отмена не завершает общий Job Object AutoCoder и принадлежащие приложению Ollama/Python процессы.
-- Общий lifecycle остаётся внешней границей владения и по-прежнему завершает все процессы AutoCoder при shutdown. Пользователь подтвердил на packaged Windows точное завершение дерева команды без воздействия на принадлежащие AutoCoder Ollama/Python процессы. Legacy Windows/OEM output некоторых внешних CLI может отображаться некорректно; это принято как известное ограничение MVP и не блокирует Terminal cancellation flow.
-
-### Явная передача результата Terminal в Chat (29 августа 2026)
-- Следующим минимальным шагом после подтверждения cancellation выбран управляемый пользователем feedback loop: завершённый результат можно перенести в редактируемый черновик Chat отдельной кнопкой.
-- В черновик попадают фактически выполненная команда, статус (exit code либо cancellation), stdout и stderr. Результат не отправляется модели автоматически: пользователь может проверить и отредактировать текст и должен отдельно нажать кнопку отправки Chat.
-- Добавлен frontend-регрессионный тест форматирования успешного/ошибочного и отменённого результата. Автоматические frontend/build-проверки выполнены в Linux.
-- Исправлен blocker review flow: состояние завершённого запуска теперь хранит `{ command, result }` атомарно. Старт следующей команды сразу заменяет transcript состоянием running, поэтому старый result нельзя показать или перенести под именем новой команды; редактирование input также не меняет уже завершённую пару. Regression-тест покрывает completed A, running B без reviewable transcript и cancelled B с правильной командой.
-- Пользователь подтвердил packaged Windows-сценарий: completed result переносится в редактируемый Chat draft, cancelled result содержит правильную фактически выполненную команду, перенос не отправляет запрос модели, а draft можно изменить перед отдельным Send. Terminal → Chat review flow считается подтверждённым.
-
-### Негативная диагностика Ollama (29 августа 2026)
-- Ревизия Tauri startup и Python provider подтвердила, что отсутствующий executable уже выдавал отдельную ошибку без автоматической загрузки, а отсутствие требуемой модели определялось через официальный `GET /api/tags` до chat request и также имело отдельное сообщение.
-- Найден дефект HTTP 503: readiness правильно не считала endpoint готовым, но теряла HTTP status. Tauri после этого пытался запустить второй Ollama, а Python fallback мог ошибочно сообщить об отсутствующем executable. Теперь ответ `/api/version` с не-200 status сохраняется как отдельный результат readiness; HTTP 503 возвращается пользователю явно и не запускает новый процесс.
-- Добавлены regression-тесты Python, подтверждающие HTTP 503 без поиска executable, и Rust, подтверждающий сохранение status 503. Существующие тесты покрывают отсутствующий Ollama, отсутствующую модель и запрет chat request без модели.
-- Пользователь подтвердил все три сценария на packaged Windows: отсутствующий executable дал `Local Ollama was not found. Install Ollama; automatic downloads are disabled.`; отсутствующая `qwen2.5-coder:7b` дала `Required Ollama model 'qwen2.5-coder:7b' is not installed. Install it before using AutoCoder; automatic model downloads are disabled.`; реальный endpoint на `127.0.0.1:11434` ответил HTTP 503 и UI показал `Ollama readiness endpoint /api/version returned HTTP 503.`
-- При HTTP 503 `Get-Process ollama -ErrorAction SilentlyContinue` не вернул процессов: второй `ollama.exe` не запускался. Временный listener после теста завершён, порт 11434 освобождён. Все три negative diagnostics имеют статус **PASS** на packaged Windows.
-- Проверка списка моделей соответствует официальному Ollama API [`GET /api/tags`](https://docs.ollama.com/api/tags), а Windows install path — официальной установке Ollama for Windows: [`%LOCALAPPDATA%\\Programs\\Ollama`](https://docs.ollama.com/windows).
-
-### Изоляция Chat-сессии при смене проекта (29 августа 2026)
-- После закрытия diagnostic boundary ревизия текущего UI выявила следующий минимальный дефект: Terminal уже пересоздавался для каждого открытого проекта, а `ChatPanel` сохранял визуальную переписку, предложения и внутренний контекст от предыдущего проекта до перезапуска приложения.
-- `ChatPanel` теперь привязан к существующему `projectSession` и полностью пересоздаётся только после успешного выбора проекта. Сообщения, ошибки и file/command proposals старого проекта больше не отображаются в новом проекте и не могут быть применены там; отмена диалога выбора проекта текущую сессию не очищает.
-- Это намеренно остаётся session-only поведением: SQLite, постоянная история чата и многошаговая автономность не добавлялись. Автоматизированные frontend/build-проверки выполнены в Linux; отдельный packaged Windows regression ещё не выполнялся.
-
-### Просмотр и безопасное восстановление backup-копий (28 августа 2026)
-- В header добавлен доступный только при открытом проекте менеджер backup-копий: он показывает относящиеся к проекту версии в обратном хронологическом порядке и их текстовое содержимое.
-- Tauri не доверяет идентификатору и metadata backup: принимает только числовой каталог, проверяет принадлежность исходного пути текущему canonical project root, нормализованные Windows-safe компоненты и текстовый формат.
-- Восстановление требует совпадения текущего состояния на диске со снимком, показанным UI. Существующий файл перед заменой получает новую backup-копию и записывается атомарно; удалённый файл создаётся без перезаписи внезапно появившегося файла. После успеха дерево обновляется, а восстановленный файл открывается в редакторе.
-- Для существующего файла expected content теперь авторитетно проверяется внутри checked-save операции: содержимое читается и сравнивается до создания backup, backup записывается именно из проверенных bytes, затем canonical path и содержимое повторно проверяются непосредственно перед atomic replacement. Внешнее изменение в любом из этих промежутков отменяет восстановление и не перезаписывается даже при наличии новой backup-копии.
-- Добавлены Rust-регрессии фильтрации чужих backup, stale-состояния, резервирования заменяемой версии и восстановления удалённого файла. Frontend-тесты и production/offline-сборка проходят в Linux; последующая packaged Windows-проверка также успешно выполнена.
-- Packaged Windows-проверка выполнена пользователем со статусом PASS: подтверждены просмотр backup, восстановление существующего и удалённого файла, backup заменяемой версии, запрет overwrite, stale-state защита, поведение при несохранённых изменениях, открытие восстановленного файла и обновление дерева проекта.
-
-### Безопасное предложение удаления файла (28 августа 2026)
-- AI-контракт поддерживает отдельную операцию `delete` только для текущего открытого файла. Backend отклоняет удаление другого пути и прикрепляет исходное содержимое, чтобы UI мог показать весь файл удалёнными строками и пометить предложение устаревшим после редактирования.
-- Удаление доступно только для clean-файла: Monaco content должен совпадать с сохранённым состоянием. Для dirty-файла UI требует сначала сохранить либо отменить изменения, а backend не принимает delete proposal с различающимися current/saved content.
-- Удаление выполняется только после отдельного нажатия пользователя. Tauri получает ожидаемое сохранённое содержимое, заново разрешает путь внутри проекта и непосредственно сравнивает дисковые bytes с ожидаемыми до backup. Backup записывается именно из проверенных bytes; перед `remove_file` Rust повторно проверяет и canonical path, и содержимое, поэтому внешнее изменение приводит к отказу без удаления файла. Только после успеха обновляется дерево и закрывается редактор.
-- Добавлены frontend-, backend- и Rust-регрессии для clean/dirty/stale proposal, внешнего изменения диска, точного backup и запрета traversal. Последующие просмотр и восстановление backup-копий уже реализованы и подтверждены на Windows.
-
-### Windows-safe имена при создании файла (28 августа 2026)
-- Финальная Rust-проверка create path теперь отклоняет Windows-недопустимые символы и управляющие символы, trailing dot/space, Alternate Data Stream syntax с `:` и зарезервированные DOS device names, включая варианты с расширением. Обычные Unicode-имена разрешены; canonical parent, project-root boundary, существующий parent, `create_new` и cleanup при ошибке сохранены без изменений.
-- Python выполняет такую же предварительную фильтрацию, чтобы заведомо неприменимое предложение не попадало в preview, но security boundary остаётся в Tauri/Rust.
-- Правила сверены с Microsoft `Naming Files, Paths, and Namespaces` и `File Streams`: https://learn.microsoft.com/windows/win32/fileio/naming-a-file и https://learn.microsoft.com/windows/win32/fileio/file-streams.
-
-### Безопасное предложение создания нового файла (28 августа 2026)
-- Контракт AI proposal теперь явно различает `replace` и `create`. Создание доступно при открытом проекте даже без открытого файла; backend принимает только новый относительный путь, отсутствующий в переданной структуре проекта.
-- UI показывает содержимое нового файла как полностью добавленный построчный preview и создаёт файл только после отдельного нажатия пользователя. После успеха дерево проекта обновляется, а новый сохранённый файл открывается в Monaco.
-- Tauri повторно проверяет границу доверия: запрещает абсолютные, пустые, `.`/`..` и иные ненормализованные пути, канонизирует существующий родительский каталог и требует, чтобы он находился внутри проекта. `create_new` не позволяет перезаписать файл, появившийся после предложения; при незавершённой записи частичный новый файл удаляется.
-- Добавлены backend-тесты принятия нового и отклонения существующего/выходящего за проект пути, а также Rust-тест создания без перезаписи и traversal. Frontend-тесты, Python-тесты, production/offline-сборка и Rust formatting проходят в Linux; Rust tests в контейнере ограничены отсутствием системной библиотеки `glib-2.0 >= 2.70`.
-- Безопасное предложение удаления файла с preview и явным подтверждением теперь реализовано отдельной операцией.
-
-### Подтверждённый packaged Windows-сценарий AI Chat (28 августа 2026)
-- Пользователь успешно проверил на реальной packaged Windows-сборке managed Ollama: сервис готов до первого запроса, первый и повторные запросы работают без консольных окон и повторного owned launch.
-- При обычном закрытии и закрытии во время активного запроса принадлежащие AutoCoder `ollama.exe`, `llama-server.exe`, Python/backend/helper processes не остаются. Заранее запущенный внешний Ollama используется без захвата ownership и продолжает работать после закрытия AutoCoder.
-- Подтверждены open-file и selection context, передача несохранённого текста, предложение File Tool и корректный diff. Reject не меняет файл; Apply меняет только Monaco; диск изменяется только после Save. Backup создаётся и содержит предыдущее дисковое содержимое.
-- Отдельные негативные сценарии отсутствующего `ollama.exe`, отсутствующей модели и HTTP 503 readiness вручную не выполнялись. Их нельзя считать подтверждёнными только на основании основного сценария; они остаются отдельной диагностической проверкой, а не блокером следующей функциональности.
-
-### Атомарная запись изменяемого файла (28 августа 2026)
-- После подтверждения безопасного proposal/diff/Apply/Save цикла устранён следующий фактический риск: Save больше не пишет непосредственно в целевой файл. Новое содержимое записывается и синхронизируется во временный файл в том же каталоге, затем атомарно заменяет исходный файл.
-- На Windows `ReplaceFileW` вызывается с отдельным уникальным same-directory safety backup через `lpBackupFileName`; пользовательский backup в app-data по-прежнему создаётся до замены и независимо содержит предыдущую дисковую версию. После успеха внутренний safety backup удаляется. На остальных платформах используется rename в пределах каталога.
-- Обработаны документированные Microsoft partial-failure состояния: 1175 и 1176 с заданным backup сохраняют исходные имена; при 1177 старая версия находится под safety backup именем и восстанавливается в destination до удаления replacement. При неизвестной ошибке replacement удаляется только после фактической проверки существования destination; если восстановление не удалось, recovery copies сохраняются и их пути включаются в ошибку. Источник: https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-replacefilew.
-- Предложения создания и удаления файлов теперь реализованы; следующий отдельный шаг — просмотр и восстановление backup-копий.
-
-### Воспроизводимый Windows-сценарий проверки AI Chat (28 августа 2026)
-- Добавлен единый checklist для packaged Windows-сборки: offline Ollama, bundled Python, Unicode-контекст, выделение, несохранённый текст, сброс отправляемой истории, предложение изменения, построчный diff, backup и применение.
-- В том же сценарии зафиксированы проверки owned/external Ollama, shutdown во время запроса и раздельной диагностики отсутствующего executable, модели и неготового HTTP API.
-- Checklist остаётся воспроизводимой документацией. Основной packaged Windows-сценарий уже выполнен и подтверждён; отдельно не проверены только перечисленные выше негативные diagnostic scenarios.
-
-### История AI Chat привязана к полному контексту (28 августа 2026)
-- Ключ контекстной ветки теперь учитывает не только путь открытого файла, выделение и имя проекта, но также текущий (включая несохранённый) текст файла и полный read-only список элементов проекта.
-- После редактирования файла, применения предложения или изменения структуры проекта следующий запрос не повторяет модели ответы, построенные по устаревшему контексту. История остаётся видимой в UI, но новая ветка отправляется без прежних сообщений.
-- Добавлены регрессионные тесты изменения текста открытого файла и структуры проекта; frontend-тесты и production-сборка проходят в Linux.
-
-### Lossless Windows environment block (28 августа 2026)
-- Win32 `CreateProcessW` launcher больше не преобразует environment keys/values через `to_string_lossy()`: inherited environment и `Command::env`/`env_remove` собираются напрямую из wide `OsStr`/UTF-16 units.
-- Case-insensitive сопоставление и рекомендованная сортировка ключей выполняются Windows `CompareStringOrdinal(..., TRUE)`; добавлен Windows unit test с кириллическим key/value, Hebrew value, case-insensitive override, удалением и `PYTHONUTF8=1`.
-
-### Устранение Windows race до назначения в Job (28 августа 2026)
-- Windows owned launch больше не использует последовательность `std::process::Command::spawn` → `AssignProcessToJobObject`. Минимальный Win32 launcher создаёт процесс через `CreateProcessW` с `CREATE_SUSPENDED`, назначает ещё не исполняющийся процесс в AutoCoder Job и только затем вызывает `ResumeThread`. При ошибке назначения или resume процесс завершается, ожидается и все Win32 handles закрываются.
-- Launcher сохраняет наследуемые stdin/stdout/stderr pipes Python bridge, stderr pipe Ollama, Unicode environment/command line, current directory и production `CREATE_NO_WINDOW`. Добавлена архитектурная проверка обязательного `CREATE_SUSPENDED` flag.
-- Дополнительный Windows manual test: owned fixture должна немедленно создавать child/helper; затем закрытие AutoCoder должно удалить parent и child. Проверить, что child ни на мгновение не появляется вне Job (например, через Process Explorer Job membership). Этот packaged тест ожидает выполнения на целевой Windows-машине.
-
-### Общий lifecycle owned-процессов и HTTP readiness Ollama (28 августа 2026)
-- Добавлена единая desktop-точка запуска owned-процессов `ProcessLifecycle`. На Windows она создаёт Job Object, включает `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, назначает в Job только процессы, запущенные AutoCoder, запрещает новые запуски при shutdown и завершает содержимое Job. Ollama и bundled Python запускаются через этот механизм; внешний Ollama не назначается. Использованы официальные Win32 API: https://learn.microsoft.com/windows/win32/procthread/job-objects, https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject и https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject.
-- Readiness больше не определяется открытым TCP-портом: Rust выполняет bounded `GET /api/version`, требует HTTP 200 и непустое JSON-поле `version`, как описано в https://docs.ollama.com/api-reference/get-version. Python chat bridge не запускается до готовности API.
-- Для managed loopback endpoint startup Ollama инициируется bounded background-потоком во время Tauri setup. Готовый внешний Ollama используется без ownership; owned `ollama serve` запускается только при неготовом API. Модель при startup не загружается, runtime-download и Windows autostart не добавлены.
-- Сохранены `CREATE_NO_WINDOW`, диагностический `AUTOCODER_SHOW_CHILD_CONSOLES` и JSON-over-pipes bridge. Job охватывает Python/Ollama descendants; непосредственный Ollama `Child` дополнительно reaped идемпотентным shutdown.
-- Добавлены тесты HTTP 503 при открытом TCP-порту, успешного `/api/version`, повторных запросов, external/owned Ollama, идемпотентного shutdown и запрета launch после shutdown. `cargo fmt --check` проходит; `cargo check`/`cargo test` в Linux-контейнере ограничены отсутствием `glib-2.0 >= 2.70`.
-
-### Windows packaged manual test — подтверждён пользователем
-На реальной packaged Windows-сборке подтверждены owned/external Ollama и shutdown во время запроса:
-1. **Owned Ollama — PASS:** готов до первого сообщения; первый и повторные запросы проходят без второго launch и console window; после закрытия не остаются owned Ollama, llama-server, Python или helper processes.
-2. **Внешний Ollama — PASS:** существующий API используется без второго процесса и продолжает работать после закрытия AutoCoder.
-3. **Shutdown во время запроса — PASS:** owned Python/Ollama/llama-server/helper processes после закрытия отсутствуют.
-
-Отдельные негативные проверки отсутствующего executable, отсутствующей модели и HTTP 503 вручную не выполнялись и остаются непроверенными diagnostic scenarios.
-
-> Примечание: формулировки «следующий Windows test» ниже являются историей разработки и заменены подтверждённым результатом выше.
-
-### Desktop lifecycle Ollama и Windows child process UX (28 августа 2026)
-- Ownership локального `ollama serve` перенесён из короткоживущего Python chat-процесса в Tauri state. Если порт локального Ollama уже доступен, AutoCoder не запускает и не сохраняет чужой процесс; если AutoCoder запускает процесс сам, хранится именно его `std::process::Child`, без поиска/завершения процессов по имени или PID.
-- На событии `tauri::RunEvent::Exit` AutoCoder проверяет только owned child, завершает его при необходимости и обязательно вызывает `wait`; уже завершившийся owned child безопасно удаляется из state. Это соответствует актуальному Tauri 2 lifecycle API (`Builder::build`, `App::run`, `RunEvent::Exit`).
-- Повторные chat requests используют один managed процесс. Python provider получает признак desktop-managed lifecycle и больше не может независимо породить второй Ollama для стандартного loopback endpoint. Явно настроенные нестандартные/внешние endpoints сохранили прежнее provider-managed поведение.
-- Фактическое видимое окно при каждом сообщении создавал новый bundled `python.exe`, запускаемый Rust bridge без Windows creation flags. Теперь и bundled Python backend, и запускаемый Tauri процесс `ollama serve` получают `CREATE_NO_WINDOW` в release Windows build; shell не используется, stdin/stdout/stderr Python остаются pipe и UTF-8 JSON bridge не изменён. Для диагностики можно задать `AUTOCODER_SHOW_CHILD_CONSOLES=1` в debug/development сценарии; stderr Python и exit status по-прежнему возвращаются программно, stderr Ollama дренируется в runtime log.
-- Добавлены Rust unit tests для внешнего Ollama, остановки и reap owned process, безопасного shutdown уже завершившегося child, отсутствия повторного launch и release Windows `CREATE_NO_WINDOW` policy.
-- Windows manual test для packaged build: (1) запустить Ollama вручную, открыть/закрыть AutoCoder и убедиться, что исходный Ollama продолжает работать; (2) завершить Ollama, запустить AutoCoder, сделать два chat request и убедиться в Диспетчере задач, что существует только один фоновый owned `ollama.exe`, нет всплывающих `python.exe`/terminal окон, а после обычного закрытия AutoCoder owned Ollama исчезает; (3) повторить закрытие после принудительного завершения owned Ollama и убедиться, что AutoCoder закрывается без ошибки. Проверять offline с заранее установленной моделью; autostart и runtime-download не используются.
-
-### Управление локальным Ollama на Windows (28 августа 2026)
-- Перед локальным chat request backend проверяет API через `GET /api/version`. Уже готовый Ollama используется как есть; новый процесс в этом случае не создаётся.
-- Если loopback endpoint недоступен, backend ищет установленный `ollama.exe` сначала в документированном стандартном каталоге `%LOCALAPPDATA%\Programs\Ollama`, затем в пользовательском `PATH`, и запускает абсолютный путь командой `ollama serve` напрямую через `subprocess.Popen` без shell. Текущий рабочий каталог приложения не используется, автозапуск Windows не изменяется, runtime-загрузок нет.
-- Готовность API ожидается не более 20 секунд. Диагностика отдельно сообщает отсутствие установки, системную ошибку запуска с фактическим путём, преждевременное завершение процесса или timeout с endpoint.
-- До chat request список локальных моделей проверяется через `GET /api/tags`. Отсутствие `qwen2.5-coder:7b` выдаётся как отдельная ошибка; автоматическое скачивание модели запрещено.
-- Lifecycle-управление применяется только к loopback URL (`127.0.0.1`, `localhost`, `::1`). Явно настроенный внешний endpoint продолжает вызываться без поиска процесса Ollama и без локальной проверки моделей.
-- Frontend теперь показывает production-текст фактической backend/provider ошибки, а не общее требование вручную запустить Python и Ollama.
-- Решение сверено с официальной документацией Ollama для Windows (стандартный каталог binaries и добавление его installer-ом в user `PATH`), Ollama API (`/api/version`, `/api/tags`) и моделью безопасности Tauri 2: управление процессом остаётся за backend/Tauri bridge, не расширяя frontend capabilities или сетевой доступ.
-- В Linux прошли 26 Python backend-тестов, включая готовый процесс, запуск с ожиданием, отсутствие установки, системную ошибку запуска, timeout, отсутствие модели, отсутствие повторного запуска и внешний endpoint; также прошли 19 frontend-тестов и production/offline build.
-- Следующий обязательный Windows manual test: на установленном packaged AutoCoder отключить интернет, завершить Ollama, убедиться, что модель `qwen2.5-coder:7b` уже установлена, и отправить запрос. Проверить автоматический запуск из `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`, успешный ответ после ожидания и отсутствие второго процесса при следующем сообщении. Затем временно переименовать `ollama.exe` и отдельно удалить/переименовать модель, проверив точные разные сообщения «Ollama не найден» и «модель не установлена»; вернуть файлы после теста.
-
-### Автономный Python runtime для packaged Windows-приложения (27 августа 2026)
-- Причина ошибки AI Chat в установленном приложении подтверждена на Windows: Tauri запускал неявную команду `python`, поэтому результат зависел от системного Python, `PATH` и Windows App Execution Alias. Ручной `AUTOCODER_PYTHON` подтверждал исправность неизменённого `backend/main.py` и JSON-over-stdin/stdout контракта.
-- В соответствии с актуальной документацией Tauri 2 runtime оформлен как bundle resource, а его подготовка выполняется hook-командой `beforeBundleCommand`. Для Windows используется официальный CPython 3.10.11 embeddable package — предназначенный для приватной поставки внутри другого приложения и изолированный от установленных в системе пакетов и реестра.
-- Build-time скрипт загружает официальный `python-3.10.11-embed-amd64.zip`, обязательно проверяет закреплённый SHA-256 и распаковывает runtime перед bundling. Это не runtime-загрузка: установленный AutoCoder не обращается в интернет за Python или компонентами backend.
-- Tauri включает подготовленный runtime в `python-runtime/` рядом с resource `backend/` и на Windows запускает конкретный `resource_dir/python-runtime/python.exe` напрямую через `std::process::Command`, без shell и без поиска по `PATH`. `AUTOCODER_PYTHON` сохранён только как явный development/debug override.
-- Embedded `python310._pth` получает контролируемый относительный путь к соседнему `backend/`; существующие `backend/main.py`, `provider.py` и JSON-over-stdin/stdout контракт не изменены. Для дочернего процесса явно заданы `PYTHONUTF8=1` и `PYTHONIOENCODING=utf-8`.
-- Диагностика теперь различает отсутствие bundle script, отсутствие bundled runtime и ошибку запуска процесса; сообщение содержит фактический путь runtime и системную причину запуска вместо общего `AI backend`.
-- Добавлены Rust-тесты выбора bundled Windows runtime и сохранения явного debug override. В Linux успешно прошли 19 frontend-тестов, production frontend/offline build, Node syntax check, форматирование Rust, `git diff --check` и `npm audit` (0 известных уязвимостей). Полный Cargo test в контейнере по-прежнему ограничен отсутствием системной `glib-2.0 >= 2.70`.
-- Следующий обязательный manual test на Windows: выполнить чистую packaged-сборку с доступом к python.org на build-машине, установить её на систему без Python/без `python` в `PATH` и без `AUTOCODER_PYTHON`, отключить интернет, оставить локальный Ollama с `qwen2.5-coder:7b`, затем проверить кириллический запрос AI Chat. Дополнительно временно переименовать `python-runtime/python.exe` в установленном каталоге и убедиться, что UI показывает точный отсутствующий путь; после этого восстановить файл.
-
-### Разделение production- и test-only TypeScript-проверок (27 августа 2026)
-- Packaged Windows build была заблокирована до запуска нативной Tauri-сборки: `beforeBuildCommand` запускала `npm run build`, а production `tsc` включал Node-based тест `src/offlineRuntime.test.ts` из-за общего `include: ["src"]`.
-- Test-файлы `*.test.ts` и `*.test.tsx` исключены только из production `tsconfig.json`. Browser/Vite-конфигурация не получила глобальные Node types, strict mode не ослаблен, а offline regression test сохранён и по-прежнему обнаруживается Vitest в его test environment.
-- `npm test`, `npm run build`, `npm run check:offline`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` и `git diff --check` успешно выполнены в Linux. `npm run tauri build` теперь успешно проходит `beforeBuildCommand` и доходит до нативной Cargo-сборки, которая в текущем контейнере ожидаемо останавливается из-за отсутствия системной библиотеки `glib-2.0 >= 2.70`.
-- Следующий ручной шаг — повторить packaged Windows build и проверить установленное desktop-приложение; к следующему функциональному этапу до этой проверки не переходить.
-
-### Полностью локальный frontend runtime (27 августа 2026)
-- Offline-first закреплён как обязательное архитектурное требование: установленный AutoCoder не зависит от интернета; исключение составляют только явно настроенные AI/API-провайдеры через backend/provider layer. Локальный Ollama остаётся полностью офлайн-сценарием.
-- Monaco 0.53.0 подключён из установленного ESM-пакета через поддерживаемую `loader.config({ monaco })` интеграцию `@monaco-editor/react` 4.7.0 с Vite. CDN AMD loader больше не используется.
-- Editor, JSON, CSS, HTML и TypeScript/JavaScript workers импортируются через Vite `?worker`, собираются в локальные hashed assets и выбираются через `MonacoEnvironment.getWorker`.
-- Из frontend удалена шаблонная ссылка на отсутствующий Vite icon. Других runtime-загрузок remote scripts, styles, fonts, icons или локализаций не найдено. URL npm/Cargo lock-файлов и metadata относятся к build-time, а локальный Ollama URL — к разрешённому provider layer.
-- CSP не получила внешних доменов: `connect-src` по-прежнему разрешает только Tauri IPC; дополнительно запрещены objects и forms, ограничен base URI. Добавлены source-тест и post-build проверка production assets на CDN references.
-- `npm test`, `npm run build`, JSON/CSP Tauri-конфигурация и Cargo metadata проверены в Linux. Следующая задача не меняется: ручная Windows-проверка установленной desktop-сборки при физически отключённой сети; не переходить к следующему этапу до неё.
-
-### Desktop-конфигурация перед будущей сборкой (27 августа 2026)
-- Шаблонный Tauri identifier `com.tauri.dev` заменён на постоянный `com.iliya1947.autocoder`; Cargo metadata теперь содержит фактическое описание, автора и URL репозитория, а публикация внутреннего desktop crate в crates.io явно отключена.
-- Вместо отключённого CSP задан минимальный allowlist для локального интерфейса, Tauri IPC, встроенных asset/data-ресурсов и blob worker Monaco. Внешние HTTP/WebSocket-подключения frontend не разрешены; Ollama по-прежнему вызывается только Python-backend.
-- JSON-конфигурация, Cargo metadata, frontend-тесты и production-сборка проверены в Linux. Полная Tauri-сборка здесь по-прежнему ограничена отсутствующими системными GTK/WebKit-библиотеками.
-- Следующий обязательный шаг не изменён: вручную проверить чат, предложение замены и diff с реальным Ollama/Tauri на Windows, включая работу Monaco с новым production CSP.
-
-### Управление предложением изменения (27 августа 2026)
-- Безопасный цикл просмотра дополнен явным отклонением: пользователь может убрать как актуальное, так и устаревшее предложение без изменения файла.
-- При отправке нового запроса предыдущее предложение сразу удаляется, поэтому его нельзя применить во время ожидания другого ответа модели.
-- Добавлены локализованные подписи на английском, русском и иврите. Frontend-тесты и production-сборка проходят.
-- Следующий шаг не изменён: вручную проверить полный сценарий с реальным Ollama/Tauri на Windows; до этой проверки не расширять File Tool на создание или удаление файлов.
-
-### Подтверждённая Windows-проверка (25 августа 2026)
-- Пользователь выполнил `cargo test --manifest-path src-tauri/Cargo.toml`: все 7/7 Rust-тестов прошли на Windows.
-- `npm run tauri dev` успешно запускает desktop-приложение с Vite 8.2.2.
-- В AutoCoder вручную подтверждён полный сценарий: выбор проекта, отображение файлов во внутреннем Project Explorer, открытие, редактирование и сохранение файла.
-- Фактически подтверждён backup: `app_data_dir/backups/<timestamp>/content.bak` содержит исходное содержимое, а `metadata.json` — timestamp и корректный `originalPath`.
-- Наблюдавшееся отсутствие файлов относилось к системному Windows folder picker, который выбирает каталог, а не отображает файлы проекта. После выбора каталога файлы штатно появляются во внутреннем Project Explorer.
-- Временная Rust/frontend runtime-диагностика, добавленная только для расследования, удалена.
-
-### Минимальный AI Chat (25 августа 2026)
-- UI-заглушка заменена асинхронным чатом: frontend отправляет текущую историю Tauri-команде и отображает ответ ассистента, ожидание и локализованную ошибку.
-- Добавлен минимальный JSON-контракт Tauri ↔ Python через stdin/stdout и абстракция `ModelProvider` с первым локальным провайдером Ollama. Endpoint, модель и Python executable можно переопределить переменными окружения; секреты не требуются.
-- Python-backend включён в ресурсы Tauri. На этом шаге намеренно не добавлены инструменты, SQLite, контекст проекта и многошаговая автономность.
-- Добавлены 3 unit-теста Python для валидации контракта и Ollama provider; они проходят. Все 5 frontend-тестов и production-сборка проходят.
-- Реальный ответ Ollama и packaged Windows-сборка нового backend-моста ещё требуют ручной Windows-проверки.
-
-### Контекст открытого файла в AI Chat (25 августа 2026)
-- При каждой отправке чат получает относительный путь и актуальный текст открытого в Monaco файла, включая ещё не сохранённые изменения. Если файл не открыт, запрос явно передаётся без контекста.
-- Python-backend валидирует новый контекст и добавляет его перед историей как системное сообщение. Содержимое файла явно помечается как недоверенные данные проекта, а не инструкции.
-- Добавлены 2 frontend-теста формирования запроса и 2 Python-теста валидации/преобразования контекста. Все 7 frontend-тестов, 5 Python-тестов, production-сборка и `cargo fmt --check` проходят.
-- Реальный ответ Ollama с контекстом и packaged Windows-сборка по-прежнему требуют ручной проверки на целевой машине.
-
-### UTF-8 запросы AI Chat на Windows (26 августа 2026)
-- Локализованное искажение русскоязычных сообщений исправлено точечно в Ollama provider: JSON теперь сериализуется с `ensure_ascii=False`, после чего кодируется в UTF-8. Кириллица передаётся в HTTP body реальными UTF-8 байтами, а не ASCII escape-последовательностями `\\uXXXX`.
-- Добавлен регрессионный Python-тест, который проверяет наличие UTF-8 байтов кириллицы, отсутствие escape-последовательности и корректное декодирование тела запроса.
-- Backend-тесты, все frontend-тесты и production-сборка frontend успешно проходят. Повторная ручная проверка реального чата на Windows остаётся следующим целевым подтверждением.
-
-### UTF-8 ответы AI Chat на Windows (26 августа 2026)
-- Подтверждена уязвимость обратного пути: `json.dump(..., sys.stdout, ensure_ascii=False)` отдавал не-ASCII ответ через кодировку текстового `sys.stdout`, которая для Windows pipe не является гарантированно UTF-8, тогда как Rust разбирает полученные bytes через `serde_json::from_slice` как UTF-8 JSON. Это соответствует фактической ошибке `invalid unicode code point` на кириллическом ответе Ollama.
-- Production-ответ теперь симметричен входному контракту: JSON сериализуется с `ensure_ascii=False`, явно кодируется через UTF-8 и записывается с flush в `sys.stdout.buffer`. Зависимость от Windows locale/code page устранена; project context, prompts и Ollama provider не изменялись.
-- Добавлен регрессионный backend-тест с кириллическим assistant response. Он проверяет реальные stdout bytes, отсутствие UTF-8 BOM, успешное строгое UTF-8/JSON-декодирование, сохранность кириллицы без mojibake и тем самым контракт, который принимает Rust `serde_json::from_slice`.
-- Backend/frontend/Rust-проверки выполнены в Linux-среде разработки. Следующее обязательное runtime-подтверждение на Windows: из корня репозитория выполнить `npm run tauri dev`, отправить в реальный Ollama запрос, требующий кириллический ответ, убедиться в корректном отображении ответа и отсутствии `invalid unicode code point` в DevTools Console.
-- Сообщения DevTools `Tracking Prevention blocked access to storage` от Monaco/CDN не связаны с JSON/UTF-8 мостом AI Chat и не относятся к этой неисправности.
-
-### System-контекст AI Chat для Ollama на Windows (26 августа 2026)
-- Последующая реальная Windows-проверка опровергла указанную ниже гипотезу: прямой `/api/chat` с той же директивой, system/user-сообщениями, Unicode-путём и содержимым файла отвечает корректно. Изменение prompt из PR #16 проблему не устранило; считать system-директиву установленной причиной нельзя.
-- В PR #16 директива была заменена на нейтральное указание использовать путь и содержимое открытого файла как контекст запроса. Порядок сообщений остался прежним: `system` с открытым файлом, затем история с текущим `user`-сообщением. Это изменение зафиксировано как выполненное, но не как исправление текущего симптома.
-- Добавлен сквозной регрессионный Python-тест `parse_request` → `OllamaProvider.chat`, фиксирующий фактический JSON `messages`, роли, порядок, Unicode-путь, содержимое, русский запрос и `stream: false`. Временное runtime-логирование не добавлялось, поскольку payload полностью и безопасно перехватывается тестом до HTTP-вызова.
-- Python backend-тесты, frontend-тесты, production-сборка, форматирование Rust и проверка diff проходят. Реальный ответ локальной модели после исправления и packaged Windows-сборку требуется повторно подтвердить на целевой Windows-машине.
-
-### Побайтовая диагностика AI Chat (26 августа 2026)
-- Подтверждённый симптом локализован до Windows-запуска `backend/main.py`, но причина ещё не установлена: исходный PowerShell pipeline сам является возможной границей перекодирования, тогда как Tauri пишет JSON через `serde_json::to_writer` непосредственно в stdin дочернего процесса.
-- Добавлена отдельная диагностика, которая программно формирует reproducer, передаёт в `main.py` явные UTF-8 bytes, перехватывает фактический HTTP POST и проксирует его в реальный Ollama. JSON-отчёт содержит URL, method, headers/Content-Type, точные body bytes и hex, BOM, UTF-8 decode, распарсенный JSON/messages, управляющие символы и ответ backend.
-- Отдельный режим `--capture-stdin` показывает байты, которые фактически передал PowerShell native pipeline. Production-контракт и prompt не изменялись; до получения двух Windows-отчётов новая причина и исправление не объявляются.
-- Автоматические тесты фиксируют сохранность кириллицы при программном UTF-8 stdin и точность отчёта stdin; Rust-тест фиксирует, что реальный сериализатор Tauri создаёт UTF-8 JSON без BOM с неизменными русскими строками.
-
-### Исправление UTF-8 stdin AI Chat на Windows (26 августа 2026)
-- Побайтовая Windows-диагностика подтвердила первопричину: Tauri корректно записывал JSON как UTF-8 без BOM, но production Python-backend читал его через текстовый `sys.stdin`, поэтому Python декодировал корректный UTF-8 stdin системной Windows-кодировкой вместо обязательного UTF-8. PowerShell pipeline, отдельно заменяющий кириллицу на `?`, не является production-путём и внутри приложения не исправлялся.
-- `backend/main.py` теперь читает только bytes из `sys.stdin.buffer`, явно декодирует их как UTF-8 и затем вызывает `json.loads`; ошибка UTF-8 проходит через прежний stderr/ненулевой exit code. Prompt, provider API и архитектура не изменены.
-- Сквозной backend-тест передаёт настоящий UTF-8 byte stream с русским prompt и путём `АвтоКодер_тестовый файл.txt`, запускает production-чтение stdin и `parse_request`, а затем проверяет исходную кириллицу и отсутствие mojibake `РћС` в реальном outgoing Ollama body.
-- После исправления проходят 10 backend-тестов, 7 frontend-тестов, production-сборка frontend и `cargo fmt --check`. `cargo test` в Linux-контейнере по-прежнему останавливается до тестов из-за отсутствующей системной библиотеки `glib-2.0 >= 2.70`; Rust-тест сериализации уже подтверждён пользователем на Windows.
-- Точная повторная проверка через реальный Tauri Chat на Windows: из корня репозитория выполнить `npm run tauri dev`, открыть `АвтоКодер_тестовый файл.txt`, отправить в AI Chat `Ответь дословно только содержимым открытого файла` и проверить ответ Ollama. PowerShell pipeline для формирования stdin в этой проверке использовать не нужно.
-
-### Исправление Project Explorer на Windows (25 августа 2026)
-- Проверка реализации показала: `read_directory` принимал только `file_type().is_file()` и затем дважды фильтровал файлы по списку текстовых расширений — в Rust и повторно во frontend. Это является причиной невидимости неизвестных расширений, файлов без расширения и бинарных файлов. Обычный Unicode-файл с суффиксом `.txt` проходит прежнюю проверку расширения, поэтому именно его отсутствие исходный код не объясняет; добавлен регрессионный тест с точным именем `АвтоКодер_тестовый файл.txt`, а расхождение установленной Windows-сборки/выбранного физического каталога остаётся проверить на целевой машине.
-- Фильтрация файлов по расширению удалена на обоих уровнях. В дерево теперь входят все обычные файлы, включая `.txt`, неизвестные расширения, имена без расширения и бинарные файлы; скрытые/служебные каталоги по-прежнему исключаются.
-- Чтение отделено от видимости: Rust сначала читает байты и отклоняет бинарное содержимое (невалидный UTF-8, NUL и существенное количество управляющих байтов), а текст с любым именем передаётся Monaco. Неизвестное или отсутствующее расширение получает язык `plaintext`.
-- Учтена специфика Windows: `.lnk` является для `std::fs` обычным файлом, а не символической ссылкой. Такие shell-ярлыки, а также reparse points, исключаются из дерева, чтобы виртуальные/системные объекты Windows не становились файлами проекта. Добавлен Windows-only тест `.lnk`; выполнить его можно только на Windows.
-- Добавлены Rust-тесты дерева для обычного Unicode `.txt`, неизвестного расширения, имени без расширения и бинарного файла, а также тесты раздельного чтения текста/отклонения бинарных данных. Frontend-тест подтверждает сохранение файлов всех расширений и `plaintext` fallback.
-- `npm test` и `npm run build` успешно выполнены. `cargo fmt --check` успешно выполнен после форматирования. `cargo test` в Linux-контейнере снова остановлен до компиляции тестов из-за отсутствующей системной библиотеки `glib-2.0 >= 2.70`; нативная Windows-проверка остаётся обязательной.
-
-### Read-only структура проекта в AI Chat (26 августа 2026)
-- В каждый запрос чата при открытом проекте добавляется его имя и плоский список относительных путей с типами `directory`/`file`; содержимое остальных файлов не читается и инструменты не вызываются.
-- Контекст открытого файла остался независимым и по-прежнему содержит актуальный несохранённый текст. Backend принимает любой из двух контекстов или оба вместе и добавляет структуру проекта перед историей как отдельное system-сообщение.
-- Добавлены frontend-тест формирования структуры и backend-тест её валидации и преобразования. Проходят 8 frontend-тестов, 11 backend-тестов, production-сборка frontend и `cargo fmt --check`.
-- Следующая задача после ручного подтверждения реального Ollama/Tauri-сценария на Windows — минимальный File Tool с безопасным циклом предложения изменений, Diff и подтверждения; не давать модели безусловно изменять файлы.
-
-### Выделенный текст в контексте AI Chat (26 августа 2026)
-- Завершён минимальный контекст MVP: Monaco передаёт текущее непустое выделение вместе с относительным путём открытого файла при каждом новом запросе чата. При снятии выделения, открытии другого файла или проекта устаревший фрагмент в запрос не попадает.
-- Полный актуальный текст открытого файла и read-only структура проекта сохранены как независимые части контекста. Backend валидирует выделение отдельно и добавляет его перед историей как system-сообщение с явным приоритетом для запросов о выбранном коде или тексте.
-- Добавлены frontend-тест контракта выделения и backend-тесты преобразования и отклонения пустого выделения. Проходят 9 frontend-тестов, 16 backend-тестов, production-сборка frontend и `cargo fmt --check`.
-- Следующий шаг не изменился: вручную подтвердить полный Ollama/Tauri-сценарий на Windows и затем реализовать минимальный File Tool только через предложение изменения, Diff и явное подтверждение пользователя.
-
-### Исправление stale selection context (27 августа 2026)
-- Установленная причина наблюдаемого ответа AI — не сохранённое значение React `selection`: обработчик Monaco уже преобразовывал пустой range в `null`, а `App.tsx` очищал состояние перед чтением другого файла. Старый выделенный текст оставался в ответе assistant в истории `ChatPanel`, и вся история повторно отправлялась Ollama при следующем запросе. Поэтому модель продолжала видеть `файл номер 2`, даже когда новый `ChatRequest.context.selection` уже отсутствовал.
-- Дополнительно закрыты lifecycle-риски Monaco: callback выделения хранится в актуальном ref, cursor/model listeners имеют явный disposer, событие смены model очищает selection, а смена `file.path` повторно очищает родительское состояние после переключения модели и возможного восстановления Monaco view state.
-- История остаётся видимой в UI, но при изменении project/open-file/selection context следующий запрос начинает новую контекстную ветку и не отправляет сообщения, полученные с предыдущим selection. Сам prompt и остальные части AI context не изменялись.
-- Добавлены регрессионные проверки непустого и снятого выделения, перехода на другой файл и отсутствия selection-derived chat history в следующем запросе. Проходят 12 frontend-тестов, production-сборка и `git diff --check`.
-- Ручная Windows-проверка подтвердила, что старое выделение больше не залипает: новое выделение передаётся корректно, а после его снятия selection-derived история не используется. Проверка одновременно обнаружила отдельную семантическую проблему: без выделения модель использовала независимо переданное содержимое `openFile` как ответ на вопрос о выделении.
-
-### Явное состояние отсутствующего selection context (27 августа 2026)
-- Контракт frontend → Tauri → Python теперь типобезопасно различает два состояния выделения: `{ state: "active", path, content }` и `{ state: "none" }`. При открытом файле frontend всегда передаёт одно из них; если файл не открыт, selection context по-прежнему не создаётся.
-- Python backend преобразует `state: "none"` в отдельное system-сообщение о том, что активного выделения нет и вопросы о выделении не должны интерпретироваться как вопросы о содержимом открытого файла. `openFile` остаётся отдельным system-контекстом и продолжает передаваться целиком.
-- Ветвление истории по context key не изменено. Frontend-регрессии подтверждают active/none состояния, исключение старой selection-derived истории и одновременное сохранение `openFile`; backend-регрессия подтверждает разные AI system-сообщения для отсутствующего выделения и содержимого файла.
-- В Linux-среде проходят 13 frontend-тестов, 17 backend-тестов, production-сборка frontend, `cargo fmt --check` и `git diff --check`. Реальный ответ Ollama с новым явным состоянием отсутствующего выделения ещё требует ручного подтверждения на Windows.
-
-### Минимальное предложение изменения открытого файла (27 августа 2026)
-- Начат безопасный File Tool для уже открытого текстового файла: Ollama получает инструкцию возвращать полную замену в отдельном `autocoder-file` блоке, а backend принимает предложение только при точном совпадении пути с текущим открытым файлом.
-- Чат показывает исходный и предложенный текст раздельно и применяет замену только в редактор, только после явного нажатия пользователя и только если файл не изменился после запроса. Запись на диск остаётся отдельным штатным действием Save, которое создаёт существующий backup; модель не получила прямой записи файлов.
-- Добавлены регрессионные тесты разбора/отклонения предложения и защиты от применения к другому или уже изменённому файлу. В Linux проходят 19 backend-тестов, 14 frontend-тестов, production-сборка, `cargo fmt --check` и `git diff --check`.
-- Следующий шаг — вручную проверить предложение изменения с реальным Ollama/Tauri на Windows, затем заменить упрощённое сравнение полного текста на удобный построчный diff перед расширением File Tool на создание и удаление файлов.
-
-### Построчный просмотр предложения изменения (27 августа 2026)
-- Упрощённое сравнение двух полных текстов заменено единым построчным diff: неизменённые, добавленные и удалённые строки показываются в общем порядке с номерами исходной и новой строки и цветовой маркировкой.
-- Diff строится локально без новой зависимости. Для обычных файлов используется сопоставление строк по наибольшей общей подпоследовательности; для предложения свыше миллиона пар строк предусмотрен ограниченный по памяти fallback, который показывает полное удаление и добавление, не блокируя UI неограниченной таблицей.
-- Добавлены локализованное доступное название diff и регрессионные тесты нумерации, добавления, удаления, неизменного контекста и замены пустого файла. В Linux проходят 16 frontend-тестов, 19 backend-тестов, production-сборка frontend, `cargo fmt --check` и `git diff --check`.
-
-### Исправление восстановления LCS diff (27 августа 2026)
-- Ручная Windows-проверка выявила неверное представление корректного предложения: неизменённые строки могли отображаться внутри крупных блоков удаления/добавления, а замена выводилась как добавление перед удалением.
-- Проверены направление заполнения LCS-таблицы и прямой обход её suffix-значений: результат не требует переворота. При равнозначных шагах reconstruction теперь сначала выбирает удаление, затем добавление, сохраняя общий контекст и привычный порядок замены.
-- Добавлен точный регрессионный frontend-тест с пятью исходными и пятью предложенными русскими строками. Он проверяет всю последовательность context/removed/added и номера обеих версий, включая переход `Пятая строка` с исходной строки 5 на новую строку 4.
-- После исправления frontend-тесты и production-сборка выполнены в Linux. Исправленный diff требуется повторно проверить вручную через реальный Ollama/Tauri на Windows; до этого не переходить к следующему этапу и не расширять File Tool.
-
-### Наблюдаемая ошибка AI Chat после добавления структуры проекта (26 августа 2026)
-- Подтверждено, что `ChatPanel` проглатывал значение ошибки `invoke("send_chat_message", ...)`. Теперь исходный объект выводится через `console.error`, а в debug-сборке его строковое представление показывается рядом с локализованным сообщением. Production UI сохраняет только прежнее пользовательское сообщение.
-- При ненулевом exit code Python-процесса Rust печатает его status и stderr в терминал `tauri dev` и возвращает тот же stderr frontend. Ollama provider теперь сохраняет тело HTTP-ошибки (например, сообщение о размере контекста), вместо сведения диагностики только к status code.
-- Проверен контракт с одновременными optional `openFile`/`project`, включая пустой массив `entries`; дополнительного лимита `entries` ни в TypeScript, ни в Rust, ни в Python сейчас нет. Python-регрессионные тесты подтверждают этот путь и сохранение текста HTTP-ошибки Ollama.
-- Точная причина Windows-сбоя пока не установлена: в Linux-проверках используется mock Ollama, а исходный Windows stderr ранее был потерян. Поэтому provider, prompt и размер project context предположительно не менялись. Следующий шаг — повторить запрос в `npm run tauri dev`, сохранить строку `send_chat_message failed` из DevTools и `AutoCoder chat backend failed` из PowerShell; только после этого выполнить минимальное исправление причины и добавить специфичный регрессионный тест.
-
-### ChatGPT Project
-- Создан проект ChatGPT `AutoCoder`.
-- Для проекта выбрана память «Только в проекте».
-- В проект добавлены пользовательские инструкции AutoCoder.
-
-### Консолидация проектной информации и инструкции
-- Собраны четыре сводки предыдущих чатов.
-- Определена необходимость разделения постоянной памяти и текущего состояния.
-- Созданы текущие файлы `PROJECT_MEMORY.md` и `PROJECT_STATE.md` в рамках этой консолидации.
-- Создан файл `Doc/AGENTS.md` с инструкциями и правилами работы для ИИ-ассистентов (Codex).
-
-### Окружение и Git
-- Проведено исследование локального окружения: инициализирован Git, настроена ветка по умолчанию `main`, добавлен удаленный репозиторий `origin` (`https://github.com/iliya1947/AutoCoder.git`).
-- Созданы базовые файлы репозитория: `.gitignore` (настроен под TypeScript, Python, SQLite, Tauri) и `README.md`.
-- Создан первый (Initial) коммит и зафиксировано исходное состояние проекта.
-
-### Базовый каркас приложения
-- Добавлен frontend на React, TypeScript и Vite.
-- Добавлен Tauri 2 backend на Rust с базовой конфигурацией desktop-приложения и debug-логированием.
-- Изначально был реализован временный экран приложения для проверки запуска интерфейса.
-- Подготовлены JSON-переводы для русского, английского и иврита, а также hook `useTranslation` с сохранением выбранного языка и поддержкой RTL.
-- Временный экран заменён минимальным layout MVP: панель файлов, область редактора-заглушки и панель чата. Переключатель языка использует `useTranslation`; отправленные сообщения показываются в панели чата только в рамках текущей сессии UI.
-- Frontend успешно проверен production-сборкой `npm run build` 24 августа 2026.
-- Проверка Rust `cargo check --manifest-path src-tauri/Cargo.toml` в текущем Linux-контейнере не завершилась: для Tauri отсутствует системная библиотека разработки `glib-2.0`. Это ограничение окружения; целевой платформой остаётся Windows 10/11.
-- Для воспроизводимости Rust-зависимостей добавлен и отслеживается `src-tauri/Cargo.lock`.
-- Реализован первый шаг сценария работы с проектом: команда Tauri открывает нативный диалог выбора папки, хранит выбранный путь только в `Tauri State` и передаёт UI типизированное дерево имён файлов и каталогов без путей и содержимого. При обходе пропускаются `.git`, `node_modules`, `target`, `.venv`, символьные ссылки и недоступные пути.
-- Панель «Проводник» получает дерево выбранного проекта через Tauri-команду и показывает состояния «Проект не открыт», «Загрузка файлов» и «Не удалось открыть проект».
-- Узлы дерева содержат относительные пути; выбор файла вызывает отдельную Tauri-команду чтения. Перед чтением путь канонизируется и проверяется: файл должен находиться строго внутри открытого корневого каталога. Символьные ссылки при построении дерева пропускаются.
-- Подключён Monaco Editor (`monaco-editor` и React-обёртка с permissive MIT-лицензией). Текст выбранного файла передаётся в редактор, а язык подсветки определяется по расширению с резервным режимом `plaintext`.
-- Редактирование выполняется в памяти. Реализованы индикатор несохранённых изменений, кнопка сохранения, состояния сохранения/ошибки и предупреждение перед сбросом несохранённого текста при смене файла или проекта.
-- Сохранение выполняет отдельная Tauri-команда. Она повторно канонизирует и проверяет путь непосредственно перед записью и запрещает запись вне корня проекта.
-- Перед каждой записью исходная версия файла копируется в служебный каталог `app_data_dir/backups/<timestamp>/content.bak`; рядом сохраняется `metadata.json` со временем создания и исходным путём. Механизм backup не использует Git.
-- Новые сообщения редактора добавлены в русскую, английскую и ивритскую локализации.
-- Frontend после интеграции Monaco успешно проверен командой `npm run build` 25 августа 2026. Форматирование Rust проверено `cargo fmt --check`, изменения — `git diff --check`.
-- Полная Rust-проверка `cargo test --manifest-path src-tauri/Cargo.toml` в Linux-контейнере не завершилась из-за отсутствия системной библиотеки разработки `glib-2.0 >= 2.70`; это ограничение окружения, а не подтверждённая ошибка кода.
-- Frontend-структура после подключения реальных файловых данных разделена на компоненты `ProjectExplorer`, `Editor`, `ChatPanel` и `WorkspaceHeader`; `App.tsx` оставлен точкой координации состояния и Tauri-вызовов.
-- Создан общий TypeScript-контракт frontend/Tauri: `ProjectNode`, `ProjectTree`, `OpenedFile` и `FileReadResult`. Команда `read_project_file` теперь возвращает структурированный `FileReadResult` вместо строки.
-- Чистая логика подготовки дерева вынесена отдельно: скрытые и исключённые директории фильтруются, неподдерживаемые бинарные файлы не показываются, оставшиеся узлы рекурсивно преобразуются и сортируются.
-- Для проводника и редактора добавлены локализованные состояния загрузки, ошибок и отсутствия поддерживаемых текстовых файлов на русском, английском и иврите.
-- Подключён Vitest. Добавлены и успешно выполнены 5 frontend-тестов для фильтрации директорий, выбора текстовых файлов, преобразования дерева и отображения состояний загрузки/ошибок. Команды `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` и `git diff --check` успешно выполнены 25 августа 2026.
-- Файловые операции Rust разделены на Tauri-команды и чистые функции разрешения пути, чтения и сохранения, которые можно вызывать в unit-тестах без `Tauri State`/`AppHandle`.
-- Добавлены 4 Rust unit-теста: запрет выхода за корень проекта, чтение файла, сохранение с проверкой содержимого backup и metadata, фильтрация дерева.
-- Backend-фильтрация дерева синхронизирована с frontend: скрытые и служебные каталоги, а также заведомо неподдерживаемые файлы больше не передаются в UI. Frontend сохраняет повторную защитную фильтрацию недоверенного ответа backend.
-- После изменений повторно прошли 5 frontend-тестов и production-сборка. `cargo test` снова остановлен до запуска Rust-тестов из-за отсутствия системной библиотеки `glib-2.0 >= 2.70` в Linux-контейнере; тесты требуется выполнить в Windows-среде разработки.
-
-### GitHub
-Подтверждено создание публичного репозитория:
-
-`iliya1947/AutoCoder`
-
-Разобран и настроен раздел General:
-- Template repository — OFF;
-- Release immutability — OFF;
-- Wikis — OFF;
-- Issues — ON;
-- Sponsorships — OFF;
-- Preserve this repository — OFF;
-- Discussions — OFF;
-- Projects — ON;
-- Pull requests — ON;
-- merge commits — ON;
-- squash merging — ON;
-- rebase merging — ON;
-- Always suggest updating pull request branches — ON;
-- auto-merge — ON;
-- automatic deletion head branches — ON;
-- sign-off web commits — OFF;
-- commit comments — ON;
-- Git LFS objects in archives — OFF;
-- ограничение количества branches/tags в одном push — OFF;
-- auto-close issues linked to merged PR — ON.
-
-### GitHub Rulesets
-Rulesets не создавались.
-
-Не включались:
-- обязательные PR;
-- обязательный review;
-- обязательные status checks;
-- запрет прямого push;
-- другие аналогичные ограничения.
-
-Причина: ранний этап разработки одним человеком с помощью AI; лишние ограничения сейчас мешают скорости работы.
-
-### GitHub Actions
-Раздел Actions → General разобран и настроен.
-
-Подтверждено:
-- Allow all actions and reusable workflows;
-- Require Actions to be pinned to full-length commit SHA — OFF;
-- retention артефактов и логов — 30 дней;
-- approval для fork PR workflows — Require approval for first-time contributors;
-- workflow permissions — Read repository contents and packages permissions;
-- Allow GitHub Actions to create and approve pull requests — OFF.
-
-### GitHub Advanced Security
-Страница просмотрена по фактическому интерфейсу пользователя.
-
-Были замечены:
-- Private vulnerability reporting;
-- Dependency graph;
-- Dependabot alerts;
-- Dependabot security updates;
-- Grouped security updates;
-- Dependabot version updates;
-- CodeQL analysis;
-- Other tools;
-- Copilot Autofix — On;
-- AI findings — Off;
-- Check runs failure threshold;
-- Push protection.
-
-Дополнительная настройка Advanced Security пока не выполнялась.
-
-В частности, пока не вводились дополнительные CodeQL/Dependabot workflows и другие security-процессы.
-
-## Что ещё НЕ подтверждено как завершённое
-
-Не считать завершёнными без отдельной проверки:
-- настройку секретов и variables (на данном этапе не требуются);
-- финальную настройку GitHub Actions для проекта (пока не требуются);
-- структуру Issues/Projects;
-- настройку Dependabot;
-- расширение минимального Python-backend до оркестрации, локального анализа и инструментов;
-- постоянное хранение истории AI Chat;
-- SQLite;
-- COMSOL Knowledge Engine;
-- полное покрытие пользовательского интерфейса локализацией за пределами уже реализованных экранов;
-- тесты за пределами добавленного набора frontend unit/component tests;
-- первую рабочую версию AutoCoder.
-
-## Результат ревизии проекта 25 августа 2026
-
-Код, документация и воспроизводимость сборки сверены с фактическим состоянием репозитория.
-
-Подтверждено:
-- рабочее дерево Git перед ревизией было чистым;
-- `npm ci` устанавливает зависимости из lock-файла;
-- все 5 frontend-тестов проходят;
-- production-сборка frontend и проверка форматирования Rust проходят;
-- Vite обновлён с 5.4.21 до 8.2.2, Vitest — с 2.1.9 до 4.1.11, а `@vitejs/plugin-react` — с 4.7.0 до 6.1.0;
-- Monaco Editor переведён с 0.56.0 на безопасную совместимую ветку 0.53.0: версия 0.56.0 напрямую зависела от уязвимой версии DOMPurify, тогда как актуальная 0.53.0 не содержит этой зависимости;
-- после обновления `npm audit` сообщает о 0 известных уязвимостей, все frontend-тесты и production-сборка повторно проходят;
-- `cargo test` по-прежнему нельзя завершить в текущем Linux-контейнере из-за отсутствующей системной библиотеки `glib-2.0 >= 2.70`; это ограничение окружения, а не результат выполнения Rust-тестов;
-- Rust-тесты (7/7), нативный файловый сценарий Tauri и фактическое содержимое backup подтверждены пользователем на целевой Windows-системе;
-
-Выявленные риски и пробелы в порядке приоритета:
-1. Минимальный Terminal Tool и AI-предложение команды подтверждены в packaged Windows с реальным Ollama.
-2. История Terminal, отмена дерева отдельной команды и явный перенос completed/cancelled результата в редактируемый Chat draft подтверждены на packaged Windows. Автоматический запуск команд и автоматическая отправка результата модели остаются запрещены.
-3. Все три негативных diagnostic scenarios Ollama, основной packaged lifecycle и production CSP с Monaco/Tauri IPC подтверждены. Лицензия самого закрытого коммерческого проекта намеренно не объявлена.
-4. Project Manager теперь явно обновляет дерево после внешних изменений без смены session-only
-   сессии. Чат получает контекст открытого файла, выделения и структуры проекта, но намеренно пока
-   не сохраняет историю между запусками.
-
-## Что требуется сделать
-
-### Этап 1 — завершить действительно необходимые настройки окружения (ВЫПОЛНЕНО)
-- Проверить фактическое состояние репозитория (выполнено);
-- Определить, какие GitHub secrets/variables действительно нужны (выполнено: на данном этапе секреты/переменные не требуются, .env добавлен в .gitignore);
-- Создать только необходимые Actions (выполнено: на данном этапе сборка CI не требуется);
-- При необходимости настроить Issues/Projects (выполнено: включены стандартные Issues);
-- Определить необходимые GitHub-файлы (выполнено: созданы .gitignore, README.md).
-
-### Этап 2 — настроить Codex (ВЫПОЛНЕНО)
-- Создан файл инструкций `Doc/AGENTS.md`, включающий правила работы AI, Git workflow, взаимодействие с проектной памятью, тестирование и ограничения.
-
-### Этап 3 — создать фундамент AutoCoder
-Сделано:
-- актуальная структура React + Vite + Tauri создана;
-- базовая конфигурация frontend и desktop-приложения подготовлена;
-- создана основа локализации.
-
-Текущая граница после PASS 50% barrier:
-- packaged Windows-проверка Terminal project-switch guard выполнена со статусом **PASS**;
-- UI-диагностика PR #53 и исправленный Project switch подтверждены на packaged Windows со статусом
-  **PASS**; устаревшего `RECHECK REQUIRED` больше нет;
-- stale Save в packaged Windows подтверждён со статусом **PASS** и больше не является следующим
-  обязательным шагом;
-- устаревшие AI-ответы и результаты read/save при изменении editor/project context отбрасываются;
-- завершения AI create/delete также не изменяют UI после успешной смены проекта;
-- завершения AI create/delete обновляют дерево, но не заменяют выбранный позднее файл в том же проекте;
-- завершение Backup restore также не изменяет UI после успешной смены проекта;
-- явный Refresh теперь согласованно обновляет дерево и открытый файл после внешней перезаписи или
-  удаления; следующий шаг — ревизовать минимальный состав 60% acceptance и перейти к Этапу 5,
-  не повторяя завершённую общую frontend async/race ревизию;
-- не добавлять автоматический запуск команд, автоматическую отправку результата AI, SQLite или многошаговую автономность.
-
-Предварительный стек:
-React + Tauri + Python + Monaco + SQLite + Ollama.
-
-Совместимость конкретных версий необходимо проверить перед реализацией.
-
-### Этап 4 — реализовать минимально полезный MVP
-Приоритет:
-1. окно приложения;
-2. проект/файлы;
-3. редактор;
-4. чат;
-5. контекст;
-6. File Tool;
-7. Terminal Tool;
-8. Diff;
-9. подтверждение изменений;
-10. Backup.
-
-### Этап 5 — первая специализация COMSOL
-Только после практически полного завершения универсального ядра AutoCoder:
-- локальная база знаний COMSOL;
-- документация;
-- API Reference;
-- Programming Reference;
-- Java API;
-- Java Shell;
-- Methods;
-- примеры;
-- успешные пользовательские проекты;
-- поиск релевантных фрагментов перед генерацией кода.
-
-Целевая версия: COMSOL Multiphysics 6.4.429.
-
-## Что сейчас не делать
-
-Без отдельной необходимости не переходить к:
-- сложной многошаговой автономности;
-- мультиагентам;
-- сложной памяти;
-- плагинам;
-- LSP;
-- голосу;
-- браузеру;
-- сложному планировщику;
-- другим расширенным функциям.
-
-Не вводить преждевременно:
-- обязательные PR;
-- строгую branch protection;
-- Rulesets;
-- обязательный review;
-- избыточные CI/security-процессы.
-
-## Важные ограничения
-
-- Windows 10/11 — текущая целевая платформа.
-- Проект потенциально коммерческий.
-- Предпочтительны permissive-лицензии.
-- API-ключи нельзя помещать в публичный репозиторий.
-- `.env` должен быть исключён из Git.
-- Backup изменяемых файлов обязателен.
-- AutoCoder не должен зависеть от Git для собственной основной функциональности.
-- Архитектура должна оставаться расширяемой.
-- COMSOL API нельзя придумывать: приоритет локальной документации, примеров и рабочего кода пользователя.
-
-## Рабочий процесс
-
-Целевая схема разработки:
-
-Илья
-↓
-задача
-↓
-Codex
-↓
-анализ проекта
-↓
-изменение кода
-↓
-проверки
-↓
-исправление ошибок
-↓
-Git/GitHub
-↓
-результат
-↓
-проверка Ильёй
-
-Один промпт Codex должен соответствовать одной конкретной задаче.
-
-## Главный текущий вывод
-
-Подготовка окружения и базовых правил работы ИИ завершена. Создан базовый каркас React + Vite + Tauri, подтверждена production-сборка frontend и реализован первый сквозной сценарий работы с изменяемым файлом.
-
-Проект перешёл к Этапу 4: файловый сценарий и backup подтверждены на Windows, а UI-заглушка чата заменена минимальным вертикальным Python/Ollama backend.
-
-Основной `Doc/WINDOWS_CHAT_CHECKLIST.md`, Backup Manager, Terminal Tool, AI → Terminal review,
-Terminal → Chat review, три негативных diagnostic scenarios Ollama, изоляция Chat при смене проекта,
-stale Save, stale Backup Restore и исправленный Terminal project-switch flow успешно подтверждены
-пользователем на packaged Windows-сборке. 50% acceptance barrier закрыт со статусом **PASS**.
-Явное обновление проекта теперь также перечитывает открытый файл после внешнего изменения и
-закрывает его после внешнего удаления, не меняя session-only сессию; несохранённый текст защищён
-подтверждением. Диагностические Windows atomic replacement branches 1175–1177 остаются engineering
-backlog, а не обычным пользовательским acceptance blocker.
+**Подготовка clean rewrite завершена; следующий этап — минимальный новый application/runtime
+skeleton по `PROJECT_MEMORY.md`.**
+
+`Doc/PROJECT_MEMORY.md` завершён и заморожен как **FROZEN ARCHITECTURE CONTRACT v1**. Он описывает
+целевую архитектуру, но не состояние текущего runtime. В рамках обычной разработки и clean rewrite
+этот файл не изменяется.
+
+Краткий аудит фактического repository state подтвердил, что более 50% архитектурно значимой
+реализации требует замены. Поэтому принято решение не мигрировать существующее приложение
+постепенными архитектурными refactor-ами: новый AutoCoder будет создан как clean rewrite внутри
+frozen boundaries. Текущая реализация остаётся на месте только как donor/reference implementation.
+Перенос любого donor-механизма требует отдельной проверки его contract, ownership, platform
+поведения и пригодности для новой архитектуры.
+
+Rollback на старую orchestration architecture не планируется. Исторические acceptance-результаты
+доказывают поведение старой реализации только в проверенных сценариях и не делают её фундаментом
+нового runtime.
+
+## Фактически проверенная текущая реализация
+
+Инвентаризация выполнена по текущим исходникам React/TypeScript, Python и Rust/Tauri, а не по
+предыдущему описанию состояния:
+
+- UI собран вокруг `App` и компонентов `ProjectExplorer`, `Editor`, `ChatPanel`, `TerminalPanel`,
+  `BackupDialog` и `WorkspaceHeader`;
+- `ChatPanel` хранит и переводит lifecycle orchestration task, продолжает model turns, связывает
+  tool results и сохраняет task через Tauri;
+- TypeScript-модель orchestration ограничивает `ToolKind` вариантами `file | terminal`, содержит
+  режимы `supervised | step_by_step`, фиксированные пределы model turns/actions и формирует JSON
+  snapshot для backend;
+- Python backend валидирует тот же closed-world набор File/Terminal actions, строит structured-output
+  schema и принимает frontend orchestration snapshot как execution context;
+- SQLite-слой Rust хранит orchestration task целиком как JSON и ключует workspace/history по строке
+  filesystem project path; `workspace_state` представляет один `project_root`;
+- Rust/Tauri содержит низкоуровневые операции с файлами, проверку путей, backup/restore,
+  process supervision и отдельную Windows Job Object реализацию;
+- frontend содержит Monaco integration, Project Explorer и локализацию на русском, английском и
+  иврите;
+- Python provider содержит Ollama HTTP adapter, structured output, model discovery и readiness/start
+  logic.
+
+Это описание фиксирует наличие кода, а не подтверждает его пригодность для переноса без изменений.
+
+## Инвентаризация для clean rewrite
+
+### SALVAGE — потенциальные donors после отдельной проверки
+
+Ни один пункт пока не переносится и не считается частью нового AutoCoder:
+
+1. **Windows process lifecycle / Job Objects** (`src-tauri/src/process_lifecycle.rs`) — полезны
+   suspended-start, assignment в Job, kill-on-close и termination primitives. Перед переносом нужны
+   отдельные Windows tests и привязка к единственному владельцу physical child-process lifecycle —
+   новому Rust supervisor.
+2. **Низкоуровневые filesystem и backup primitives** (`src-tauri/src/lib.rs`) — path validation,
+   checked/atomic replacement, backup metadata, safe directory copy и restore concurrency checks.
+   Их следует извлекать только за новым Workspace Transaction contract, не перенося старую
+   project-path identity и Tauri-command ownership.
+3. **Editor / Monaco integration** (`src/components/Editor.tsx`, `src/monaco.ts`) — model lifecycle,
+   selection и dirty-buffer handling могут быть переиспользованы после проверки нового UI contract.
+4. **Project Explorer UI** (`src/components/ProjectExplorer.tsx`, `src/utils/projectTree.ts`) —
+   rendering/tree utilities являются возможным UI donor, но старое single-root/project-path state
+   не переносится.
+5. **Localization** (`src/hooks/useTranslation.ts`, `src/locales/*.json`) — translation mechanism и
+   существующие строки можно проверить и адаптировать к новому application shell.
+6. **Части Ollama/provider HTTP и readiness logic** (`backend/provider.py`) — HTTP encoding/error
+   handling, local readiness и model presence checks могут стать деталями нового сменного provider
+   adapter. Provider не получает ownership общей task state machine или process lifecycle.
+
+### REWRITE — несовместимо с frozen architecture
+
+1. **Frontend-owned orchestration state machine** (`src/types/orchestration.ts`) и управление ею из
+   `ChatPanel`: целевой владелец task transitions — Orchestration Core, UI отправляет intents и
+   отображает projection.
+2. **`ChatPanel` как владелец task lifecycle** (`src/components/ChatPanel.tsx`), включая model-loop,
+   approval/result transitions, recovery и persistence sequencing.
+3. **Closed-world `file | terminal` tool contract** в TypeScript/Python (`src/types/orchestration.ts`,
+   `backend/tool_contracts.py`, связанные ветви `backend/main.py`): новый capability space должен
+   динамически расширяться и оставаться за AutoCoder-owned contracts/registry.
+4. **Durable orchestration как JSON snapshots** (`src-tauri/src/history.rs` и frontend/backend
+   snapshot exchange): новый runtime требует durable Execution Ledger, versioned transitions,
+   attempts, facts, idempotency/fencing и replay/reconciliation semantics.
+5. **Filesystem path как Workspace identity** и single-root `workspace_state` (`src-tauri/src/history.rs`,
+   связанное состояние `App`): новый Workspace имеет стабильную identity и поддерживает несколько
+   roots/resources без сведения identity к path.
+6. **Смешанные ownership boundaries** текущего `App`/`ChatPanel`/Python/Tauri пути: orchestration,
+   provider semantics, process supervision, persistence и workspace mutation должны быть разведены
+   по владельцам frozen architecture.
+7. **Текущую backend policy/requirement compilation** и semantic completion поверх File/Terminal
+   actions: она привязана к старой модели snapshot и closed-world tools, а не к новому durable core,
+   capability/effect/policy contracts и evidence model.
+
+### OBSOLETE — не переносить в новую реализацию
+
+1. Autonomy semantics `supervised | step_by_step` и соответствующий UI selector. Новая policy model
+   должна выражать authority/approval/autonomy без сохранения этих исторических режимов.
+2. Hardcoded execution ceilings `maxModelTurns = 12` и `maxActions = 8`, включая блокировку task при
+   их достижении. Limits/budgets должны быть policy/settings values, AI-managed или unlimited там,
+   где нет реального технического ограничения.
+3. Compatibility с orchestration task JSON старого runtime как целевая recovery/migration model.
+   Старые snapshots остаются только историческими данными donor-приложения; новый skeleton не должен
+   строить durable semantics вокруг них.
+4. Имена fenced File/Terminal control contracts и assumption, что executable capability заранее
+   обязана входить в этот конечный список.
+5. Старый staged-MVP/acceptance roadmap как план развития новой реализации. Его подтверждённые
+   результаты остаются historical evidence для donor-механизмов, но не задают порядок clean rewrite.
+
+## Решение и границы подготовительного шага
+
+- Существующий runtime-код не удалён и не перемещён.
+- Новый application skeleton на этом шаге не создан.
+- Dependencies и lockfiles не изменены.
+- Массовый refactor не выполнялся.
+- `Doc/PROJECT_MEMORY.md` не изменён.
+- Изменение является только фиксацией нового фактического project state и инвентаризации donors.
+
+## Что не подтверждено
+
+- Ни один `SALVAGE`-компонент ещё не принят в новую реализацию.
+- Новый Orchestration Core, Execution Ledger, Workspace identity/transactions, contracts, IPC и
+  application/runtime composition ещё не реализованы.
+- Windows-specific donor behavior в контексте будущего skeleton на этом шаге не перепроверялось.
+- Clean rewrite пока не имеет runnable application milestone.
+
+## Следующий точный технический шаг
+
+Создать **минимальный новый application/runtime skeleton** рядом со старой donor-реализацией, не
+подключая к нему legacy orchestration. В первом vertical slice нужно:
+
+1. зафиксировать AutoCoder-owned границы модулей и направленные зависимости для Application Shell,
+   Orchestration Core, Execution Ledger, Workspace, Provider Runtime, Rust Process Supervisor,
+   Persistence и Diagnostics;
+2. определить минимальные versioned contracts для `WorkspaceId`, `TaskId`, intent/command и
+   append-only ledger event с optimistic append/idempotency полями;
+3. запустить пустой desktop/runtime composition и доказать одним contract test, что UI может создать
+   task intent, а durable transition выполняет Orchestration Core и записывает Ledger — без
+   File/Terminal tool implementation, Monaco/Explorer donors и Ollama integration;
+4. держать legacy runtime изолированным как reference, без adapter-а, который возвращает ownership
+   lifecycle в `ChatPanel` или filesystem path.
+
+После этого donors следует подключать отдельными проверяемыми slices только через новые boundaries.
 
 ## Правило обновления этого файла
 
-При существенном изменении проекта обновлять этот файл, фиксируя:
-- что было сделано;
-- что реально проверено;
-- какие решения приняты;
-- что больше не актуально;
-- текущий этап;
-- следующую конкретную задачу.
-
-Не менять подтверждённые факты без основания.
+`PROJECT_STATE.md` хранит текущее подтверждённое состояние, проверки, blockers и ближайший шаг.
+Исторические подробности старой реализации доступны в Git history и не должны затенять актуальный
+clean-rewrite milestone. Frozen target architecture хранится только в `PROJECT_MEMORY.md`.
