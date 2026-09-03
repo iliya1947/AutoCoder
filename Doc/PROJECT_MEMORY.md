@@ -383,13 +383,13 @@ Replay не должен заново читать современное сос
 Evidence, используемое для `RequirementSatisfied` или `TaskCompleted`, должно по мере зрелости системы сохранять достаточный provenance, например:
 
 - requirement/action/execution identity;
-- релевантный WorkspaceRevision или набор входных revisions/hashes;
+- релевантный `WorkspaceId` и WorkspaceRevision либо набор затронутых workspace-root/resource revisions/hashes;
 - environment/tool/provider version, если это влияет на достоверность;
 - время и источник результата.
 
 После изменения релевантных входов соответствующее evidence больше нельзя автоматически считать доказательством текущего состояния. Система должна либо доказать, что изменение не затронуло область применимости evidence, либо выполнить актуальную проверку.
 
-На раннем этапе допустима более консервативная workspace-wide revision model; более точная dependency-aware freshness может быть добавлена позже без изменения общего принципа.
+На раннем этапе допустима более консервативная workspace-wide revision model; более точная root/resource/dependency-aware freshness может быть добавлена позже без изменения общего принципа.
 
 ### 5.7. Termination, cancellation, resume и execution authority
 
@@ -441,6 +441,8 @@ Project Intelligence — AutoCoder-owned слой понимания польз�
 
 Контекст модели не должен бесконтрольно собираться внутри UI-компонента или одного prompt builder.
 
+Project Intelligence должен работать относительно **логического Workspace**, а не предполагать один filesystem directory. Если Workspace включает несколько roots/repositories/resources, поиск, индексация, dependency analysis и context retrieval должны сохранять root/resource scope и уметь связывать факты между ними без превращения одного root в единственный «главный проект».
+
 ### 6.1. Источники Project Intelligence
 
 Project Intelligence должен быть агрегатором нескольких источников, а не единым жёстко пришитым parser/indexer engine.
@@ -480,14 +482,15 @@ Project Intelligence должен различать **факт/наблюден
 Нормализованный project fact или существенный retrieval result должен по мере зрелости системы иметь достаточный provenance/freshness context, например:
 
 - источник/adapter;
-- WorkspaceRevision, file/input revision/hash или другой релевантный scope;
+- `WorkspaceId` и релевантный workspace-root/resource identity/scope;
+- WorkspaceRevision, root/resource revision, file/input revision/hash или другой релевантный scope;
 - время получения, если источник внешне изменяемый;
 - tool/index/provider version, если это влияет на интерпретацию;
 - признак derived/heuristic и confidence/provenance, если факт не является прямым наблюдением.
 
 Parser/LSP/index/Git/debugger/vector retrieval и другие источники могут устаревать независимо друг от друга. Stale data может использоваться как historical/contextual information, но перед state-changing решением или semantic completion должна быть revalidated, если её актуальность материальна для решения.
 
-Изменение workspace/environment не обязано глобально инвалидировать все знания: допускается dependency/scope-aware freshness. Но неизвестная актуальность не должна незаметно превращаться в утверждение о текущем состоянии.
+Изменение одного root/resource или environment не обязано глобально инвалидировать все знания всего Workspace: допускается root/resource/dependency/scope-aware freshness. Но неизвестная актуальность не должна незаметно превращаться в утверждение о текущем состоянии.
 
 Project Intelligence предоставляет Orchestration нормализованные observations/context; он не получает instruction authority пользователя и не объявляет semantic completion задачи.
 
@@ -833,7 +836,7 @@ Effect classification может строиться из manifest metadata, ар
 
 ## 10. Workspace ChangeSet / Transaction
 
-AI должна изменять **workspace**, а редактор должен отображать workspace.
+AI должна изменять **логический workspace**, а редактор должен отображать тот же workspace независимо от того, состоит он из одного или нескольких roots/resources.
 
 Целевая модель:
 
@@ -849,23 +852,25 @@ AI / Orchestration
 → rollback/reconciliation при необходимости
 → editor/project reconciliation.
 
-ChangeSet должен поддерживать как минимум create / modify / delete и в будущем multi-file **logically atomic / crash-recoverable bounded transactions**.
+ChangeSet должен поддерживать как минимум create / modify / delete и в будущем multi-file **logically atomic / crash-recoverable bounded transactions**. Один ChangeSet/Transaction может затрагивать несколько roots одного логического Workspace, если соответствующие ресурсы находятся под управлением Workspace Transaction; архитектура не должна предполагать единственный project directory.
 
-ChangeSet должен строиться относительно известного состояния workspace: WorkspaceRevision, per-file revisions/hashes или других проверяемых preconditions. Перед применением система обязана проверять, что релевантные входы не были неожиданно изменены пользователем, другим Tool, formatter, Git operation, другой автономной задачей или внешним процессом.
+ChangeSet должен строиться относительно известного состояния Workspace и затронутых roots/resources: WorkspaceRevision, root/resource revisions, per-file revisions/hashes или других проверяемых preconditions. Перед применением система обязана проверять, что релевантные входы не были неожиданно изменены пользователем, другим Tool, formatter, Git operation, другой автономной задачей или внешним процессом.
 
 При несовпадении preconditions запрещён blind overwrite. Требуется conflict/reconciliation/re-plan logic.
 
-Если несколько автономных задач могут изменять один workspace, mutation semantics должны быть явно определены: serialized writes, optimistic concurrency control или другой проверяемый механизм. Конкретная стратегия является implementation detail при сохранении conflict/precondition guarantees.
+Если несколько автономных задач могут изменять один Workspace или пересекающиеся roots/resources, mutation semantics должны быть явно определены: serialized writes, optimistic concurrency control или другой проверяемый механизм. Конкретная стратегия является implementation detail при сохранении conflict/precondition guarantees.
 
-Нельзя считать Monaco/editor buffer конечным execution backend для фактических AI-изменений. Terminal, compiler и другие инструменты должны видеть тот же фактический workspace, который AutoCoder считает изменённым.
+Нельзя считать Monaco/editor buffer конечным execution backend для фактических AI-изменений. Terminal, compiler и другие инструменты должны видеть тот же фактический logical workspace и те же затронутые resources, которые AutoCoder считает изменёнными.
 
-Git может использоваться как дополнительный механизм diff/history, но не как обязательная зависимость backup/rollback.
+Git может использоваться как дополнительный механизм diff/history для одного или нескольких repositories внутри Workspace, но не как обязательная зависимость backup/rollback.
 
-Workspace Transaction является AutoCoder-owned subsystem. Реализация filesystem/backup primitives может меняться без изменения orchestration semantics.
+Workspace Transaction является AutoCoder-owned subsystem. Реализация filesystem/resource/backup primitives может меняться без изменения orchestration semantics.
 
 ### 10.1. Transaction boundary и внешние side effects
 
 **Workspace Transaction не означает глобальную атомарность всей пользовательской Task.** Его atomic/recovery guarantees относятся только к тем workspace mutations, которыми AutoCoder реально владеет и которые входят в конкретный bounded transaction.
+
+Если один logical Workspace содержит roots/resources с разными backends или transaction capabilities, AutoCoder не должен обещать невозможную физическую атомарность между ними. Граница конкретного bounded transaction должна быть явной; ресурсы вне неё используют Durable Execution, idempotency, compensation/reconciliation и factual history так же, как другие внешние side effects.
 
 Одна Task может одновременно включать эффекты вне этого transaction boundary, например:
 
@@ -887,16 +892,29 @@ UI/Diagnostics должны различать **workspace rollback** и **exter
 
 ## 11. Workspace identity
 
-Нужен first-class stable `WorkspaceId` для identity фактического workspace/project.
+`WorkspaceId` является first-class stable identity **логического development workspace/project**, а не filesystem path и не identity одного repository.
 
-Display name проекта не является identity.
+Logical Workspace должен уметь состоять из **одного или нескольких independently located roots/resources**. Обычный single-folder/single-repository проект является частным случаем этой модели, а не отдельной архитектурой.
+
+Workspace roots/resources могут представлять, например:
+
+- локальные directories;
+- несколько независимых Git repositories;
+- directories на разных дисках;
+- mounted/container-backed filesystem roots;
+- будущие remote/resource roots, если соответствующий backend/capability их поддерживает.
+
+Каждый root/resource должен иметь достаточную собственную identity/location/backend scope или функционально эквивалентное представление, чтобы Project Intelligence, Workspace Transaction, Persistence, Diagnostics, authorization и evidence могли однозначно ссылаться на затронутую часть Workspace. Точное имя типа (`WorkspaceRootId` или иное), schema и representation являются implementation detail.
+
+Display name проекта, filesystem path отдельного root и repository name не являются identity всего Workspace.
 
 Если системе нужен отдельный идентификатор конкретного открытия/активной сессии workspace, он должен иметь отдельную семантику и lifetime, например `ProjectSessionId`, и не подменять стабильный `WorkspaceId`.
 
-Workspace identity должен проходить через:
+Workspace identity/root-set должен проходить через:
 
 - UI;
 - Orchestration;
+- Project Intelligence;
 - Tool Runtime;
 - Workspace Transaction;
 - Persistence;
@@ -904,9 +922,9 @@ Workspace identity должен проходить через:
 - Backend Runtime;
 - Execution Ledger.
 
-Канонический filesystem root и stable id должны защищать от логических коллизий между проектами с одинаковыми именами или похожей структурой.
+Состав roots/resources является частью фактического Workspace context и должен быть наблюдаемым/versionable там, где его изменение влияет на durable execution, evidence или project knowledge. Архитектура не должна иметь искусственного hard limit на количество roots; реальные пределы определяются ресурсами, backends и пользовательской policy.
 
-Workspace root/identity определяет project context и transaction scope, но **не является автоматически абсолютным filesystem sandbox для всех general-purpose capabilities**. Доступ за пределы workspace определяется реальными OS/platform permissions и effective user policy. Внешние protocol concepts вроде roots/scopes не должны подменять фактический authorization boundary AutoCoder.
+Roots/resources определяют project context и scope соответствующих workspace operations, но **не являются автоматически абсолютным filesystem/security sandbox для всех general-purpose capabilities**. Доступ за пределы root set определяется реальными OS/platform permissions и effective user policy. Внешние protocol concepts вроде roots/scopes не должны подменять фактический authorization boundary AutoCoder.
 
 ---
 
@@ -970,8 +988,8 @@ Backend Runtime должен быть долгоживущим сервисом,
 - provider capabilities;
 - provider responses;
 - council positions/results;
-- workspace revisions/changesets/results;
-- Project Intelligence facts/observation provenance;
+- workspace identity/root-set, revisions/changesets/results;
+- Project Intelligence facts/observation provenance и root/resource scope;
 - evidence/provenance references;
 - settings/policies;
 - structured errors;
@@ -1120,7 +1138,7 @@ Persistence отвечает за надёжное хранение данных
 - chat/history;
 - settings/profiles и их revisions/effective values там, где они влияют на durable decisions;
 - authorization-decision provenance;
-- workspace metadata/revisions;
+- workspace metadata, logical root/resource set и соответствующие revisions;
 - Project Intelligence fact/provenance metadata там, где оно persistent;
 - evidence/provenance references;
 - diagnostics retention;
@@ -1177,7 +1195,7 @@ Run
 → durable step
 → tool execution / action effect
 → OS operation
-→ filesystem/external mutation
+→ workspace root/resource/filesystem/external mutation
 → reconciliation/compensation
 → evidence
 → persisted state.
@@ -1230,7 +1248,7 @@ Runtime traces должны автоматически обнаруживать 
 - model turns;
 - council rounds;
 - database operations;
-- workspace operations;
+- workspace/root/resource operations;
 - external side effects/compensations, насколько они наблюдаемы;
 - task transitions;
 - external protocol boundaries.
@@ -1412,6 +1430,7 @@ Settings architecture принадлежит AutoCoder и должна быть 
 
 - global/application;
 - workspace/project;
+- workspace root/resource, если настройка действительно имеет такой scope;
 - profile;
 - Council Profile;
 - provider/model profile;
@@ -1519,7 +1538,7 @@ AutoCoder должен поддерживать диапазон от пошаг
 - shell/process actions;
 - network research и external development services;
 - dependencies и implementation strategy;
-- workspace/file operations;
+- workspace/file/resource operations across one or multiple workspace roots;
 - способы анализа, debugging и diagnostics;
 - тесты и verification methods;
 - AI-managed operational/performance settings, если пользователь их не закрепил;
@@ -1549,6 +1568,7 @@ Full Autonomy не означает обязанность пользовате�
 - неизвестная классификация действия не равна автоматическому запрету;
 - capability set может расширяться во время Task и не замораживается при старте;
 - отсутствие first-class Tool Manifest не запрещает использование нового инструмента через доступный general-purpose capability;
+- logical Workspace может включать несколько roots/resources без сведения остальных roots к «внешним» shell-path hacks;
 - workspace rollback не выдаётся за глобальный rollback внешних side effects;
 - irreversible/unknown external effects используют factual reconciliation/compensation semantics, а не выдуманную атомарность;
 - Project Intelligence observations имеют provenance/freshness scope и не считаются текущей истиной после материального устаревания без revalidation;
@@ -1587,7 +1607,7 @@ UI-строки не должны жёстко зашиваться в комп�
 
 Git не является обязательной зависимостью AutoCoder.
 
-AutoCoder может использовать Git/GitHub как инструменты разработки, но пользовательская безопасность не должна зависеть от наличия Git repository.
+AutoCoder может использовать Git/GitHub как инструменты разработки, в том числе независимо для нескольких repositories внутри одного logical Workspace, но пользовательская безопасность не должна зависеть от наличия Git repository.
 
 Собственная backup/rollback система для AutoCoder-owned workspace mutations остаётся обязательной.
 
@@ -1769,8 +1789,10 @@ AI-managed режим не нужно заменять десятками обя
 - Council Engine — владелец deliberation/topology/position semantics, но не фактической истины о выполнении tools;
 - Project Intelligence — владелец нормализованного project knowledge/context и его provenance/freshness semantics, но не конкретный parser/LSP/indexer;
 - Project Intelligence observation не считается вечной текущей истиной вне своего freshness/scope;
+- `WorkspaceId` идентифицирует logical Workspace, а не один filesystem path/repository; Workspace может включать 1..N independently located roots/resources;
+- Workspace root/resource set не имеет искусственного application-level hard limit и сохраняет identity/scope для Project Intelligence, transactions, evidence, persistence и diagnostics;
 - Workspace Transaction — владелец фактического применения AI-изменений и conflict/precondition handling;
-- Workspace Transaction гарантирует только свой bounded workspace transaction и не обещает глобальную атомарность внешних side effects;
+- Workspace Transaction может работать с затронутым набором roots/resources, но гарантирует только свой bounded transaction и не обещает невозможную глобальную атомарность разных backends/external side effects;
 - external/irreversible effects используют idempotency, compensation/reconciliation и factual history, а не выдуманный общий rollback;
 - Editor отображает workspace, но не заменяет его;
 - Tool Runtime исполняет capability, но не объявляет semantic completion задачи;
@@ -1784,13 +1806,13 @@ AI-managed режим не нужно заменять десятками обя
 - interoperability adapters переводят внешние protocols в AutoCoder contracts, но не определяют внутреннюю архитектуру;
 - сторонняя библиотека не должна становиться скрытым владельцем доменной семантики AutoCoder;
 - capability registry описывает доступные возможности, но не задаёт искусственный whitelist возможностей AI;
-- workspace root/context не является автоматически absolute security sandbox; authorization определяется effective policy + фактическими platform permissions;
+- workspace roots/context не являются автоматически absolute security sandbox; authorization определяется effective policy + фактическими platform permissions;
 - autonomy/approval policy управляет разрешением выполнения, но не должна обеднять архитектурный toolbox ядра;
 - authority-relevant policy change применяется к будущей execution authority и требует re-evaluation stale authorization перед dispatch;
 - историческое authorization решение связано с effective policy, которая действовала в момент действия, и не переписывается задним числом;
 - reliability mechanisms не должны превращаться в capability gates;
 - недоверенный внешний контент не получает автоматически instruction authority пользователя или системы;
-- evidence должно оставаться связано с тем состоянием и входами, которые оно фактически проверяло;
+- evidence должно оставаться связано с тем Workspace/root/resource state и входами, которые оно фактически проверяло;
 - live AI execution может быть недетерминированным, но recovery старой durable history использует recorded observations/facts;
 - всё поддерживаемое пользовательски изменяемое поведение должно иметь явную setting/policy boundary вместо скрытого hardcode;
 - configurable operational settings должны позволять AI-managed выбор и пользовательские overrides/locks там, где это технически осмысленно;
@@ -1860,8 +1882,8 @@ AI-managed режим не нужно заменять десятками обя
 6. storage-level реализация Ledger append: EventId, stream revision, expected-revision/CAS, idempotent append и attempt/execution-authority fencing;
 7. конкретный механизм orchestration-semantics versioning/compatibility и migration незавершённых durable tasks между версиями AutoCoder;
 8. перечень nondeterministic observations, которые становятся durable facts, и конкретная replay representation;
-9. точная Evidence + Project Intelligence provenance/freshness schema: WorkspaceRevision, input hashes/dependency scope, source versions и invalidation algorithms;
-10. конкретная concurrency strategy Workspace Transaction: serialized writes/optimistic concurrency, conflict UX и crash recovery;
+9. точная Workspace/root/resource identity + Evidence + Project Intelligence provenance/freshness schema: WorkspaceRevision, root/resource revisions, input hashes/dependency scope, source versions и invalidation algorithms;
+10. конкретная multi-root/resource concurrency strategy Workspace Transaction: bounded transaction scope, serialized writes/optimistic concurrency, cross-root conflicts, conflict UX и crash recovery без обещания универсальной cross-backend атомарности;
 11. migration order от текущей фактической реализации к frozen target architecture без искусственного запрета на связный rewrite, если он окажется лучшим решением;
 12. механизмы автоматического architecture/diagnostics coverage discovery и CI integration;
 13. минимальная normalized Project Intelligence fact schema и adapter contracts;
