@@ -78,7 +78,19 @@ Capability discovery отвечает на вопрос **«что систем�
 
 Неполное знание AutoCoder о новом capability, его risk/effect classification, reversibility, idempotency, языке, технологии или способе проверки **само по себе не является основанием запретить AI использовать этот capability**. Неизвестность должна оставаться явным состоянием и управляться пользовательской policy, diagnostics, reconciliation и observability. `Unknown` не должно автоматически означать `forbidden`.
 
-### 2.2. Пользовательская настраиваемость
+**Capability space является динамическим и не фиксируется на момент старта Task.** В пределах effective user policy и фактических OS/platform/environment permissions AI должен иметь возможность расширять собственный toolbox во время выполнения задачи, в том числе:
+
+- устанавливать development dependencies, CLI и другие необходимые инструменты;
+- создавать временные или постоянные scripts/helpers/utilities;
+- запускать локальные services/processes, необходимые для разработки и проверки;
+- обнаруживать и подключать новые providers, tools, language/debug services и другие capabilities;
+- создавать или подключать новые adapters/integrations, если это является лучшим способом решения задачи;
+- регистрировать reusable capabilities, когда структурированная интеграция действительно полезна;
+- повторно выполнять capability discovery после изменения environment/runtime.
+
+Использование нового инструмента через уже доступный general-purpose capability, например Terminal/shell/process execution, **не должно требовать предварительного создания first-class Tool Manifest только ради получения разрешения на использование**. Tool Manifest / registry нужен для structured discovery, reusable integration, schemas, diagnostics и richer execution semantics, а не как лицензия, без которой AI запрещено применять технически доступный инструмент.
+
+### 2.2. Пользовательская настраиваемость и AI-managed settings
 
 **Всё поведение AutoCoder, которое архитектурно предусмотрено как настраиваемое, выбираемое, ограничиваемое, профильное или включаемое/выключаемое, должно иметь явную пользовательскую настройку.**
 
@@ -98,9 +110,21 @@ Capability discovery отвечает на вопрос **«что систем�
 - backup/recovery policies там, где существует реальный пользовательский выбор;
 - любым будущим feature flags, режимам, лимитам и profiles, которые являются частью поведения продукта.
 
+**Наличие настройки не должно превращать AutoCoder в систему ручной конфигурации.** Для operational/performance/execution settings, где это имеет смысл, Settings model должна позволять различать как минимум:
+
+- `Auto / AI-managed` — AutoCoder сам выбирает effective value для текущей задачи/ситуации;
+- явное пользовательское значение / override;
+- пользовательский lock / hard constraint, который AutoCoder не меняет самостоятельно.
+
+В Full Autonomy незакреплённые пользователем operational settings должны иметь возможность оставаться AI-managed. Пользователь не обязан заранее вручную выбирать модель, Council topology, количество rounds, tools, context strategy, verification strategy, parallelism, timeouts, retry parameters и другие поддерживаемые технические параметры, если он предпочитает поручить их AutoCoder.
+
+Явная настройка означает **контроль пользователя**, а не обязательное ручное вмешательство. Пользователь может открыть настройку, задать значение и при необходимости закрепить его; в остальных случаях AutoCoder должен иметь возможность самостоятельно выбирать оптимальное значение в пределах пользовательской authority/policy.
+
 Сложная или редко используемая настройка может находиться в `Advanced` / `Expert` / developer settings, но не должна существовать только как скрытая константа, если продукт реально поддерживает её изменение.
 
 Presets вроде Fast / Balanced / Deep Review могут упрощать настройку, но не должны превращаться в закрытый список и скрывать underlying options, которые AutoCoder архитектурно поддерживает.
+
+**Искусственные application-level hard ceilings не должны ограничивать capability space без технической причины.** Если limit/budget не является реальным пределом hardware, OS/platform, provider/API или другого внешнего contract, соответствующая настройка должна по возможности поддерживать `Auto`, пользовательское значение и режим без application-level limit / unlimited там, где это технически осмысленно. Реальные физические и внешние ограничения остаются фактическими constraints, а пользовательская policy может сознательно задавать более узкие limits/budgets.
 
 Это правило не требует превращать каждую внутреннюю переменную реализации в UI setting. Оно относится к **фактически поддерживаемому изменяемому поведению продукта и policy**, а не к implementation detail, которое не имеет осмысленного пользовательского выбора.
 
@@ -207,6 +231,7 @@ Orchestration Core — единственный логический владе�
 - допустимые переходы state machine;
 - выбор следующего шага;
 - стратегический выбор model/provider/council execution strategy на основании доступных capabilities и пользовательской policy;
+- выбор AI-managed operational settings в пределах effective user policy/locks;
 - связь model turn ↔ action ↔ factual result;
 - уровни автономности и approval policy;
 - execution budgets;
@@ -466,15 +491,17 @@ Council Engine не должен иметь искусственного арх�
 - API rate limits;
 - стоимостью API;
 - размером контекста;
-- выбранными пользователем настройками параллелизма и deliberation.
+- выбранными пользователем или AI-managed настройками параллелизма и deliberation.
 
 AutoCoder должен предупреждать пользователя о потенциальной нагрузке в месте настройки Council Profile, но не вводить искусственный hard limit на число моделей.
+
+Явная configurability Council не означает обязательную ручную конфигурацию. В AI-managed режиме AutoCoder должен иметь возможность самостоятельно выбирать участников, models/providers, roles, topology, rounds, consensus/evaluation strategy, research policy и scheduler parameters в пределах пользовательских overrides/locks и фактических ресурсов.
 
 ### 8.1. Участники совета
 
 Каждый участник совета должен иметь собственную конфигурацию.
 
-Как минимум пользователь должен иметь возможность независимо выбрать для каждого участника:
+Пользователь должен иметь возможность независимо задать для каждого участника:
 
 - provider;
 - model;
@@ -484,17 +511,19 @@ AutoCoder должен предупреждать пользователя о п
 - при необходимости дополнительные model/provider settings;
 - необязательный weight / priority.
 
+Если соответствующие поля находятся в `Auto / AI-managed`, Council Engine может формировать и изменять конфигурацию участников самостоятельно согласно задаче и effective policy.
+
 Одинаковая модель может участвовать в совете несколько раз с разными ролями и разными пользовательскими prompt-инструкциями.
 
 Точная внутренняя семантика сущности `Participant` должна быть отдельно спроектирована после фиксации целевой архитектуры и повторного аудита проекта. Не следует преждевременно закреплять, что `Participant` навсегда равен одному provider/model instance.
 
 ### 8.2. Раунды обсуждения
 
-Пользователь задаёт **максимальное число deliberation rounds**.
+Максимальное число deliberation rounds должно быть настраиваемым. Пользователь может задать/закрепить конкретное значение, а в AI-managed режиме AutoCoder может выбрать подходящий лимит самостоятельно.
 
 Это верхняя граница, а не обязательное количество раундов. Если участники достигли выбранного критерия консенсуса раньше, обсуждение заканчивается раньше.
 
-Критерий консенсуса должен быть настраиваемым. Система должна позволять использовать:
+Критерий консенсуса должен быть настраиваемым и также может быть AI-managed, если пользователь его не закрепил. Система должна позволять использовать:
 
 - полное совпадение решения;
 - совпадение ключевого плана;
@@ -530,7 +559,8 @@ Deliberation не является отдельным чат-шоу. Его ре
 - полностью отключена;
 - по запросу участников;
 - разрешена в каждом раунде;
-- обязательна для проверяемых внешних утверждений перед финальным решением.
+- обязательна для проверяемых внешних утверждений перед финальным решением;
+- AI-managed в пределах разрешённой пользователем network policy.
 
 Research results должны сохранять фактические источники и время получения, чтобы участники могли ссылаться на одни и те же evidence, а Diagnostics могла восстановить причинную цепочку решения.
 
@@ -551,6 +581,8 @@ Research results должны сохранять фактические исто
 - 10 команд × 5 моделей;
 - другие конфигурации в пределах доступных ресурсов.
 
+В AI-managed режиме AutoCoder может выбирать размер/количество команд и topology самостоятельно, если пользователь не закрепил эти значения.
+
 Количество логических участников не должно означать одновременную загрузку всех локальных моделей. Runtime Scheduler должен позволять выполнять участников последовательно или ограниченными параллельными группами согласно настройкам железа.
 
 **Логический Council не должен сужаться из-за physical scheduling.** Например, профиль из 100 логических участников может выполняться на железе, где одновременно запускаются только 1–2 модели. Scheduler управляет способом физического выполнения выбранной конфигурации, а не определяет, какие Council configurations AI или пользователь в принципе имеют право задавать.
@@ -565,7 +597,8 @@ Council Engine отвечает за логические deliberation requireme
 - maximum concurrent API calls;
 - context budget per participant;
 - team size / team count;
-- пользовательские performance profiles.
+- пользовательские performance profiles;
+- `Auto / AI-managed` и отсутствие application-level limit там, где нет реального технического hard ceiling.
 
 Нагрузка должна быть объяснена пользователю предупреждением в месте конфигурации Council Profile, а не искусственным запретом.
 
@@ -581,7 +614,7 @@ Position Stability и convergence не являются доказательст
 
 Капитаны переходят на следующий уровень и проходят **тот же общий принцип deliberation**, а не отдельную непрозрачную judge-логику.
 
-Пользователь должен отдельно настраивать **максимальное количество captain rounds**. Как и обычные rounds, это верхняя граница: если капитаны достигли выбранного критерия консенсуса раньше, капитанский этап завершается раньше.
+Максимальное количество captain rounds должно быть отдельно настраиваемым. Пользователь может задать/закрепить значение, а в AI-managed режиме AutoCoder может выбрать его самостоятельно. Как и обычные rounds, это верхняя граница: если капитаны достигли выбранного критерия консенсуса раньше, капитанский этап завершается раньше.
 
 Финальный победитель капитанского уровня становится итоговым победителем совета для соответствующего решения.
 
@@ -679,6 +712,8 @@ Shift 2:
 - cost/token/API budget;
 - дополнительные экспериментальные параметры.
 
+Каждый поддерживаемый профильный параметр должен иметь возможность быть явно задан пользователем или оставлен `Auto / AI-managed`, если самостоятельный выбор этого параметра AutoCoder технически поддерживается.
+
 AutoCoder может поставлять предустановленные профили вроде Fast / Balanced / Deep Review, но пользовательские профили не должны быть ограничены ими, а все реально поддерживаемые profile options должны оставаться доступными для явной настройки.
 
 ---
@@ -708,7 +743,9 @@ Tool Manifest должен со временем описывать статич
 
 Capability Registry является механизмом discovery и нормализации доступных возможностей, **а не whitelist того, что AI в принципе разрешено уметь**.
 
-Orchestration Core спрашивает registry, какие capabilities реально доступны в текущем runtime, вместо hardcoded предположений. Новый capability должен иметь возможность подключаться через manifest/adapter/registry без переписывания Orchestration Core.
+Orchestration Core спрашивает registry, какие capabilities реально доступны в текущем runtime, вместо hardcoded предположений. Capability discovery должна обновляться динамически, когда AI устанавливает/создаёт/подключает новые технические возможности во время задачи.
+
+Новый reusable/structured capability должен иметь возможность подключаться через manifest/adapter/registry без переписывания Orchestration Core. При этом одноразовое или general-purpose использование технически доступного CLI/script/process через Terminal/shell не обязано сначала становиться first-class registry entry.
 
 Authorization и approval применяются к фактически доступным capabilities согласно пользовательской policy; они не должны скрывать capability из архитектуры только потому, что конкретный режим требует подтверждения.
 
@@ -986,7 +1023,7 @@ Orchestration Core / Council Engine выбирает стратегию на о�
 - transport retry policy в пределах Durable Execution semantics;
 - required provider capabilities.
 
-Все параметры Model Execution Profile, которые AutoCoder фактически поддерживает как изменяемые, должны иметь соответствующие пользовательские настройки или профильные overrides согласно общей Settings model.
+Все параметры Model Execution Profile, которые AutoCoder фактически поддерживает как изменяемые, должны иметь соответствующие пользовательские настройки или профильные overrides согласно общей Settings model. Там, где параметр может безопасно выбираться автоматически, он должен поддерживать AI-managed effective value и пользовательский override/lock.
 
 Diagnostics должна фиксировать фактически применённый execution profile и реальные execution attempts там, где retry влияет на причинную цепочку.
 
@@ -1249,7 +1286,7 @@ System Model должен строиться из фактических registr
 
 Approval policy должна быть пользовательски настраиваемой вплоть до **Full Autonomy**, где AutoCoder может самостоятельно выполнять доступные действия без per-action approval в пределах фактических OS/platform permissions и явно заданных пользователем ограничений.
 
-Факт, что UI технически может вызвать command, сам по себе не определяет AI authorization. И наоборот, отсутствие заранее прописанного command/capability в статическом списке не должно запрещать AI использовать новый корректно зарегистрированный capability.
+Факт, что UI технически может вызвать command, сам по себе не определяет AI authorization. И наоборот, отсутствие заранее прописанного command/capability в статическом списке не должно запрещать AI использовать новый технически доступный capability в пределах effective policy только потому, что он ещё не оформлен отдельным first-class manifest/registry entry.
 
 ### 20.1. Content provenance и instruction authority
 
@@ -1294,6 +1331,7 @@ Settings architecture принадлежит AutoCoder и должна быть 
 - type/schema и допустимые значения;
 - default value;
 - scope;
+- control mode, если применимо: `Auto / AI-managed`, explicit user value/override, user lock/hard constraint;
 - current/effective value;
 - источник effective value / override;
 - version/revision, если значение влияет на durable execution, authorization или последующее объяснение причинности.
@@ -1312,9 +1350,15 @@ Settings architecture принадлежит AutoCoder и должна быть 
 
 Если AutoCoder поддерживает `on/off`, выбор режима, лимит, policy, profile или иной пользовательский параметр — у него должна быть явная настройка. Новая экспериментальная функция, которую можно технически включить/отключить, должна иметь соответствующий feature setting/flag, даже если он находится только в Advanced/Experimental settings.
 
+Для operational/performance/execution settings, которые AutoCoder способен выбирать самостоятельно, `Auto / AI-managed` должен быть first-class режимом, а не скрытым preset. Пользовательский override меняет effective value, а user lock/hard constraint запрещает AI самостоятельно его переопределять в соответствующем scope.
+
+В Full Autonomy AutoCoder должен иметь возможность самостоятельно выбирать все незаблокированные operational settings, необходимые для выполнения задачи. Наличие UI-настройки не является требованием участия пользователя в каждом решении.
+
 Настройки не должны превращаться в искусственный capability whitelist. Например отсутствие отдельной risk classification настройки для нового capability не означает автоматический запрет этого capability. Settings управляют поддерживаемым поведением и пользовательской policy; capability discovery остаётся отдельной системой.
 
 Пользователь может разрешить AutoCoder автоматически подбирать или временно изменять operational/performance settings для выполнения задачи. Такая AI self-tuning возможность сама должна быть настраиваемой. Изменение authority/autonomy/privacy policies самим AI допускается только если пользовательская policy явно предоставляет такое право.
+
+Limits/budgets должны отличать реальные external/physical constraints от application-level policy limits. Там, где продукт технически способен работать без искусственного потолка, пользовательская настройка должна по возможности позволять `Auto` или отсутствие application-level limit, а не скрытый hard maximum.
 
 Presets и automatic modes являются удобными слоями над settings, а не заменой underlying configurability.
 
@@ -1364,7 +1408,7 @@ Runtime-загрузки обязательных локальных компо�
 - remote documentation;
 - external APIs/services;
 - cloud build/test/development services;
-- любые другие сетевые development tools, которые пользователь подключил к AutoCoder.
+- любые другие сетевые development tools, которые пользователь подключил к AutoCoder или которые AutoCoder обнаружил/подключил в пределах разрешённой network policy.
 
 Локальный Ollama должен работать без интернета после установки требуемой модели.
 
@@ -1385,16 +1429,20 @@ AutoCoder должен поддерживать диапазон от пошаг
 - модели и Council configuration;
 - project/context retrieval;
 - tools/capabilities;
+- создание, установку, подключение и повторное обнаружение новых development capabilities;
 - shell/process actions;
 - network research и external development services;
 - dependencies и implementation strategy;
 - workspace/file operations;
 - способы анализа, debugging и diagnostics;
 - тесты и verification methods;
+- AI-managed operational/performance settings, если пользователь их не закрепил;
 - порядок итераций и исправлений;
 - объём refactor/migration, необходимый для достижения пользовательской цели.
 
 AutoCoder не должен требовать per-action approval в Full Autonomy, если действие находится в пределах фактических permissions и явно выбранных пользователем ограничений. Другие autonomy policies могут добавлять confirmations или более узкие execution boundaries без изменения самих capabilities ядра.
+
+Full Autonomy не означает обязанность пользователя предварительно настроить каждый технический параметр. Незакреплённые settings могут определяться AutoCoder динамически по задаче, доступным ресурсам, evidence и текущему execution context.
 
 При любой policy должны сохраняться базовые инварианты:
 
@@ -1411,7 +1459,11 @@ AutoCoder не должен требовать per-action approval в Full Auton
 - replay/recovery не переоценивает старые nondeterministic observations как будто они являются прежними фактами;
 - reliability/risk metadata не создаёт скрытый capability whitelist;
 - неизвестная классификация действия не равна автоматическому запрету;
-- настройки управляют policy и режимами, но не подменяют capability discovery.
+- capability set может расширяться во время Task и не замораживается при старте;
+- отсутствие first-class Tool Manifest не запрещает использование нового инструмента через доступный general-purpose capability;
+- настройки управляют policy и режимами, но не подменяют capability discovery;
+- явная configurability не означает обязательную ручную конфигурацию: незакреплённые operational settings могут быть AI-managed;
+- application-level limits не должны превращаться в скрытые hard ceilings без фактической технической причины.
 
 ### 22.1. Свобода verification
 
@@ -1603,6 +1655,8 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 
 То же относится к configurability: не нужно заранее строить UI для всех будущих настроек, но если текущая функция уже имеет поддерживаемый toggle/mode/policy/limit/profile, архитектура не должна оставлять этот выбор скрытым hardcode. Настройка может появляться одновременно с самой функцией и находиться в Advanced/Experimental UI.
 
+AI-managed режим не нужно заменять десятками обязательных ручных настроек. По мере появления новой configurable функции нужно сохранять возможность явного пользовательского override/lock и, где это технически уместно, автоматического выбора AutoCoder.
+
 ---
 
 ## 29. Правила архитектурной ответственности
@@ -1611,6 +1665,7 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 
 - один subsystem / resource lifecycle — один логический владелец;
 - Orchestration Core — единственный владелец task state machine и стратегического выбора execution path/models;
+- Orchestration Core / AI execution strategy может выбирать незакреплённые AI-managed operational settings в пределах effective user policy;
 - Durable Execution Engine + Execution Ledger — владелец durable-step/history/attempt/retry/replay semantics, но не бизнес-цели задачи;
 - Execution Ledger append имеет idempotent/concurrency-safe semantics и не принимает stale state transitions бесшумно;
 - Rust supervisor — владелец физических AutoCoder-owned child processes, но не semantic retry Task Actions;
@@ -1620,7 +1675,9 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 - Workspace Transaction — владелец фактического применения AI-изменений и conflict/precondition handling;
 - Editor отображает workspace, но не заменяет его;
 - Tool Runtime исполняет capability, но не объявляет semantic completion задачи;
-- Tool Manifest описывает capability, а конкретный Action Effect может зависеть от invocation/runtime context;
+- Tool Manifest описывает structured/reusable capability, а конкретный Action Effect может зависеть от invocation/runtime context;
+- использование технически доступного нового инструмента через general-purpose capability не обязано предварительно получать first-class Tool Manifest;
+- capability space динамически расширяется во время Task и не замораживается в момент старта;
 - неизвестный/неполный risk/effect metadata не означает автоматический запрет capability;
 - Persistence хранит факты/state, но не решает business transitions;
 - UI отправляет intents и отображает state, но не является главным orchestration engine;
@@ -1635,7 +1692,10 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 - live AI execution может быть недетерминированным, но recovery старой durable history использует recorded observations/facts;
 - историческое authorization решение должно быть связано с effective policy, которая действовала в момент действия;
 - всё поддерживаемое пользовательски изменяемое поведение должно иметь явную setting/policy boundary вместо скрытого hardcode;
-- presets/automatic modes не должны закрывать underlying configurability, которую продукт реально поддерживает.
+- configurable operational settings должны позволять AI-managed выбор и пользовательские overrides/locks там, где это технически осмысленно;
+- наличие настройки не означает обязательное участие пользователя: Full Autonomy использует AI-managed значения для незакреплённых параметров;
+- presets/automatic modes не должны закрывать underlying configurability, которую продукт реально поддерживает;
+- application-level limits/budgets не должны создавать произвольные hard ceilings там, где реального технического предела нет.
 
 Если новая функция нарушает эти границы, сначала пересматривается архитектура, а не добавляется ещё одна локальная защита.
 
@@ -1672,7 +1732,9 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 - Технические API и возможности быстро меняющихся инструментов проверяются по актуальной официальной документации.
 - Нельзя выдумывать API, параметры или элементы интерфейса.
 - AI-разработчик имеет свободу использовать любые доступные инструменты, методы, сеть, dependencies, tests и архитектурные подходы, если они помогают лучше выполнить задачу и находятся в пределах фактической среды и пользовательских границ.
+- Capability space может расширяться самим AutoCoder во время задачи через установку, создание и подключение новых development tools/capabilities в пределах effective user policy.
 - Reliability, security metadata и settings проектируются так, чтобы сохранять свободу AI, а не создавать новый whitelist через боковую дверь.
+- Наличие подробных настроек не должно переносить orchestration decisions обратно на пользователя: незакреплённые технические параметры могут оставаться AI-managed.
 - Нельзя исправлять неизвестную причину по последовательности догадок, если можно сначала получить фактическую диагностику.
 - При повторяющемся классе багов нужно искать отсутствующий архитектурный механизм, а не бесконечно добавлять локальные исключения.
 - Поэтапная миграция предпочтительна, когда она снижает риск и улучшает проверяемость; большой связный rewrite/refactor допустим, если фактический анализ показывает, что он является лучшим или необходимым решением.
@@ -1704,11 +1766,13 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 14. какие interoperability adapters реально нужны первыми и какой минимальный поднабор каждого протокола поддерживать;
 15. dependency/replacement map: какие текущие и будущие third-party components остаются сменными реализациями, а какие действительно оправданно считать частью platform stack;
 16. точную модель capability discovery + authorization, включая Full Autonomy без hardcoded AI-tool whitelist;
-17. authorization-decision provenance и versioning effective settings/policies без превращения этого механизма в дополнительный approval layer;
-18. Action Effect model для runtime invocations и композиции tool chains при сохранении правила `unknown != forbidden`;
-19. Settings / Policy model: scopes, precedence/effective values, schema/versioning, Advanced/Experimental settings и AI self-tuning;
-20. механизм свободного выбора и расширения verification/test capabilities самим AutoCoder;
-21. provenance/trust/instruction-authority model для project/web/tool/external-agent content и настраиваемая policy внешней передачи данных без hardcoded запретов;
-22. точную границу logical Council scheduling и отдельного Runtime/Resource Scheduler;
-23. точную семантику task termination/interruption states;
-24. возможную экспериментальную поддержку durable amendments к уже выполняющейся пользовательской задаче без переписывания исходного intent.
+17. динамический capability lifecycle: install/create/connect/discover/register semantics и граница между general-purpose использованием инструмента и first-class Capability Registry integration;
+18. authorization-decision provenance и versioning effective settings/policies без превращения этого механизма в дополнительный approval layer;
+19. Action Effect model для runtime invocations и композиции tool chains при сохранении правила `unknown != forbidden`;
+20. Settings / Policy model: scopes, precedence/effective values, schema/versioning, `Auto / AI-managed`, user overrides/locks, Advanced/Experimental settings и AI self-tuning;
+21. модель limits/budgets: различие user policy limits, AI-managed limits, unlimited/no application-level limit и фактических hardware/OS/provider constraints;
+22. механизм свободного выбора и расширения verification/test capabilities самим AutoCoder;
+23. provenance/trust/instruction-authority model для project/web/tool/external-agent content и настраиваемая policy внешней передачи данных без hardcoded запретов;
+24. точную границу logical Council scheduling и отдельного Runtime/Resource Scheduler;
+25. точную семантику task termination/interruption states;
+26. возможную экспериментальную поддержку durable amendments к уже выполняющейся пользовательской задаче без переписывания исходного intent.
