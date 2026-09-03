@@ -74,6 +74,36 @@ Capability discovery отвечает на вопрос **«что систем�
 
 Безопасность должна обеспечиваться фактическими permissions, изоляцией, ownership, recoverability, backups, observability и выбранной пользователем policy, а не искусственным обеднением технических возможностей AI.
 
+**Reliability-механизмы не должны становиться capability gates.** Execution Ledger, Durable Execution, Diagnostics, provenance, risk/effect metadata, Workspace Transaction, replay и другие механизмы достоверности отвечают за вопрос «что произошло, можно ли безопасно продолжать и подтверждён ли результат?», а не за создание скрытого whitelist действий AI.
+
+Неполное знание AutoCoder о новом capability, его risk/effect classification, reversibility, idempotency, языке, технологии или способе проверки **само по себе не является основанием запретить AI использовать этот capability**. Неизвестность должна оставаться явным состоянием и управляться пользовательской policy, diagnostics, reconciliation и observability. `Unknown` не должно автоматически означать `forbidden`.
+
+### 2.2. Пользовательская настраиваемость
+
+**Всё поведение AutoCoder, которое архитектурно предусмотрено как настраиваемое, выбираемое, ограничиваемое, профильное или включаемое/выключаемое, должно иметь явную пользовательскую настройку.**
+
+Если функция или policy допускает несколько технически поддерживаемых режимов, AutoCoder не должен прятать выбор одного из них как необъяснимый hardcode. Пользователь должен иметь возможность увидеть и изменить соответствующее поведение через подходящий уровень настроек.
+
+Это относится, в частности, к:
+
+- enable/disable функций и экспериментальных возможностей;
+- providers/models и их execution settings;
+- autonomy/approval policies;
+- network/research policies;
+- tools/capabilities и их пользовательским ограничениям;
+- Council profiles, topology, consensus/evaluation и rounds;
+- scheduler/hardware/performance/cost budgets;
+- privacy/external-data policies;
+- diagnostics, retention/export и developer options;
+- backup/recovery policies там, где существует реальный пользовательский выбор;
+- любым будущим feature flags, режимам, лимитам и profiles, которые являются частью поведения продукта.
+
+Сложная или редко используемая настройка может находиться в `Advanced` / `Expert` / developer settings, но не должна существовать только как скрытая константа, если продукт реально поддерживает её изменение.
+
+Presets вроде Fast / Balanced / Deep Review могут упрощать настройку, но не должны превращаться в закрытый список и скрывать underlying options, которые AutoCoder архитектурно поддерживает.
+
+Это правило не требует превращать каждую внутреннюю переменную реализации в UI setting. Оно относится к **фактически поддерживаемому изменяемому поведению продукта и policy**, а не к implementation detail, которое не имеет осмысленного пользовательского выбора.
+
 ---
 
 ## 3. Главный принцип владения архитектурой
@@ -139,6 +169,7 @@ AutoCoder-owned abstractions / contracts
 - stable IDs;
 - явное process ownership;
 - capability / permission model;
+- AutoCoder-owned Settings / Policy model;
 - structured errors;
 - versioned persistence schema;
 - restart-safe semantics;
@@ -160,7 +191,7 @@ UI не должен быть владельцем orchestration state machine.
 - открыть / изменить проект;
 - работать с редактором и интерактивными инструментами;
 - просматривать изменения, историю, diagnostics и результаты;
-- настраивать providers, council profiles, autonomy, hardware/scheduler policies и research policy.
+- настраивать providers, council profiles, autonomy, hardware/scheduler policies, research policy и другие поддерживаемые settings.
 
 UI может содержать локальное представление состояния для рендеринга, но источник истины для жизненного цикла автономной задачи должен находиться в Orchestration Core.
 
@@ -175,6 +206,7 @@ Orchestration Core — единственный логический владе�
 - текущее состояние задачи;
 - допустимые переходы state machine;
 - выбор следующего шага;
+- стратегический выбор model/provider/council execution strategy на основании доступных capabilities и пользовательской policy;
 - связь model turn ↔ action ↔ factual result;
 - уровни автономности и approval policy;
 - execution budgets;
@@ -210,7 +242,7 @@ Frontend, provider, tools и persistence не должны независимо 
 - CouncilRoundCompleted;
 - CaptainSelected;
 - ActionProposed;
-- ActionApproved / ActionDeclined;
+- AuthorizationDecisionRecorded / ActionApproved / ActionDeclined;
 - DurableStepStarted;
 - DurableAttemptStarted;
 - DurableAttemptCompleted / DurableAttemptFailed / DurableAttemptInterrupted;
@@ -228,7 +260,27 @@ Frontend, provider, tools и persistence не должны независимо 
 
 Event sourcing не требуется распространять на всё приложение. Он нужен прежде всего там, где критична доказуемая причинность: orchestration, execution lifecycle, recovery и replay.
 
-### 5.2. Durable Step, attempts и retry semantics
+### 5.2. Ledger append и concurrency semantics
+
+Append-only история должна иметь явный persistent concurrency contract. Один логический owner task state machine недостаточен, если несколько процессов, attempts или поздних результатов могут конкурентно пытаться записать события.
+
+Каждый значимый Ledger event должен иметь stable `EventId`. Для task/event stream должна существовать монотонная revision/position или эквивалентный механизм причинного порядка.
+
+State-changing append должен поддерживать optimistic concurrency / compare-and-swap semantics или функционально эквивалентную гарантию:
+
+прочитана revision N
+→ принято решение
+→ append(event, expectedRevision=N).
+
+Если stream уже изменился, stale append не должен бесшумно приниматься. Orchestration обязана перечитать факты и повторно определить допустимый transition.
+
+Retry одного и того же append после неизвестного transport/database результата должен быть idempotent по `EventId` или эквивалентной identity, чтобы один логический факт не превращался в два события.
+
+Late или superseded execution attempt не должен иметь возможность изменить актуальный task state только потому, что его результат физически пришёл позже. Attempt/epoch/fencing semantics должны позволять распознавать потерявший authority writer.
+
+Точный storage-level механизм — SQLite transaction, expected revision, sequence, CAS, fencing token или другой вариант — является implementation detail при условии сохранения этих семантических гарантий.
+
+### 5.3. Durable Step, attempts и retry semantics
 
 Недетерминированная или выполняющая внешний side effect операция должна иметь явный durable execution contract.
 
@@ -259,7 +311,7 @@ intent
 
 Если исход операции неизвестен, система должна явно считать его неизвестным и применять специальную reconciliation/recovery логику, а не угадывать.
 
-### 5.3. Версия orchestration semantics
+### 5.4. Версия orchestration semantics
 
 Durable history должна интерпретироваться совместимой версией orchestration semantics.
 
@@ -274,7 +326,23 @@ Durable history должна интерпретироваться совмест
 
 Точный способ идентификации версии — номер схемы, implementation hash, compatibility generation или другой механизм — проектируется отдельно.
 
-### 5.4. Evidence validity и freshness
+### 5.5. Recorded nondeterminism и deterministic recovery
+
+Свобода AI во время **live execution** не должна ограничиваться требованием детерминированности. AI может использовать время, random, сеть, внешние сервисы, текущий filesystem/environment, модели, новые инструменты и любые другие доступные недетерминированные capabilities.
+
+Но если недетерминированное наблюдение влияет на durable task transition или последующее recovery, существенный результат этого наблюдения должен стать durable fact/result или иметь эквивалентную replayable representation.
+
+Recovery/replay одной и той же durable history должен быть детерминирован относительно:
+
+- сохранённой history/facts/results;
+- совместимой orchestration semantics version;
+- явно сохранённых пользовательских/policy inputs.
+
+Replay не должен заново читать современное состояние мира и выдавать новый результат за исторический факт старого run. Повторное обращение к текущему filesystem, wall clock, random, network/provider или другому nondeterministic источнику является новым execution observation и должно иметь собственную durable семантику.
+
+Это правило ограничивает не свободу AI, а только способ безопасного восстановления уже произошедшей причинной цепочки.
+
+### 5.6. Evidence validity и freshness
 
 Факт успешной проверки имеет смысл только относительно состояния входов и окружения, на которых эта проверка была выполнена.
 
@@ -289,11 +357,11 @@ Evidence, используемое для `RequirementSatisfied` или `TaskCom
 
 На раннем этапе допустима более консервативная workspace-wide revision model; более точная dependency-aware freshness может быть добавлена позже без изменения общего принципа.
 
-### 5.5. Собственная реализация
+### 5.7. Собственная реализация
 
 Durable Execution Engine должен быть AutoCoder-owned модулем поверх Execution Ledger и Persistence.
 
-**Ориентиры / решения, которые нужно изучать, но не принимать как фундаментальную зависимость:** Temporal, Restate, DBOS и другие durable-workflow systems. Из них полезны идеи durable steps, journal/history, idempotency, recovery, replay, external signals, execution attempts, versioning и controlled retries.
+**Ориентиры / решения, которые нужно изучать, но не принимать как фундаментальную зависимость:** Temporal, Restate, DBOS и другие durable-workflow systems. Из них полезны идеи durable steps, journal/history, idempotency, recovery, replay, external signals, execution attempts, versioning, recorded nondeterminism и controlled retries.
 
 Цель — перенести проверенные принципы в собственную архитектуру AutoCoder, не отдавая внешнему workflow engine владение orchestration state machine и не вводя обязательный отдельный server/runtime без необходимости.
 
@@ -359,7 +427,7 @@ COMSOL Knowledge Engine в будущем должен использовать 
 Provider Runtime отвечает за:
 
 - взаимодействие с локальными и облачными AI-провайдерами;
-- model selection;
+- model discovery / enumeration / resolution;
 - capability discovery / negotiation;
 - generation settings;
 - structured outputs;
@@ -369,6 +437,8 @@ Provider Runtime отвечает за:
 - timeout policy;
 - безопасные transport-level retries в пределах durable execution contract;
 - безопасную работу с credentials.
+
+**Стратегический выбор модели/provider/council принадлежит Orchestration Core / Council Engine / AI execution strategy, а не Provider Runtime.** Provider Runtime сообщает, какие модели доступны и как их выполнить. Если provider поддерживает собственный routing/fallback, это должно быть явной execution strategy/capability, а не скрытой заменой решения Orchestration.
 
 Provider не должен определять orchestration state machine или самостоятельно владеть semantic retry/recovery.
 
@@ -482,6 +552,10 @@ Research results должны сохранять фактические исто
 - другие конфигурации в пределах доступных ресурсов.
 
 Количество логических участников не должно означать одновременную загрузку всех локальных моделей. Runtime Scheduler должен позволять выполнять участников последовательно или ограниченными параллельными группами согласно настройкам железа.
+
+**Логический Council не должен сужаться из-за physical scheduling.** Например, профиль из 100 логических участников может выполняться на железе, где одновременно запускаются только 1–2 модели. Scheduler управляет способом физического выполнения выбранной конфигурации, а не определяет, какие Council configurations AI или пользователь в принципе имеют право задавать.
+
+Council Engine отвечает за логические deliberation requirements/topology; runtime resource scheduling исполняет их в пределах фактически доступного железа и пользовательской hardware/performance policy. Точная граница отдельного Runtime/Resource Scheduler subsystem остаётся открытым архитектурным вопросом.
 
 Настройки scheduler/hardware должны позволять адаптировать одну и ту же логическую конфигурацию совета под различное железо. Архитектура должна допускать настройки вроде:
 
@@ -597,6 +671,7 @@ Shift 2:
 - max deliberation rounds;
 - max captain rounds;
 - consensus policy;
+- captain/evaluation policy;
 - topology;
 - teams configuration;
 - internet research policy;
@@ -604,7 +679,7 @@ Shift 2:
 - cost/token/API budget;
 - дополнительные экспериментальные параметры.
 
-AutoCoder может поставлять предустановленные профили вроде Fast / Balanced / Deep Review, но пользовательские профили не должны быть ограничены ими.
+AutoCoder может поставлять предустановленные профили вроде Fast / Balanced / Deep Review, но пользовательские профили не должны быть ограничены ими, а все реально поддерживаемые profile options должны оставаться доступными для явной настройки.
 
 ---
 
@@ -612,24 +687,24 @@ AutoCoder может поставлять предустановленные п�
 
 Инструменты должны регистрироваться через AutoCoder-owned Capability Registry / Tool Manifest, а не через набор разрозненных условных конструкций.
 
-Tool Manifest должен со временем описывать:
+Tool Manifest должен со временем описывать статические или относительно устойчивые свойства capability:
 
 - stable id;
 - operations;
 - input schema;
 - result schema;
 - execution backend;
-- approval / risk policy;
+- approval / risk policy hooks;
 - diagnostics category;
 - capability metadata;
 - version;
-- resource scope;
-- read-only / mutating semantics;
-- idempotency semantics;
-- destructive/reversible/compensatable semantics, если они известны;
+- known resource scope;
+- известные read-only / mutating semantics;
+- известные idempotency semantics;
+- destructive/reversible/compensatable semantics, если они могут быть достоверно описаны на уровне capability;
 - external/open-world side effects, если они возможны.
 
-Эти свойства нужны для планирования, Full Autonomy, Durable Execution, recovery и diagnostics. Для внешних tools metadata от недоверенного сервера не считается доказательством фактических свойств capability; adapter/host обязан сохранять границу доверия.
+Эти свойства нужны для planning, Full Autonomy, Durable Execution, recovery и diagnostics. Для внешних tools metadata от недоверенного сервера не считается доказательством фактических свойств capability; adapter/host обязан сохранять границу доверия.
 
 Capability Registry является механизмом discovery и нормализации доступных возможностей, **а не whitelist того, что AI в принципе разрешено уметь**.
 
@@ -639,7 +714,29 @@ Authorization и approval применяются к фактически дос�
 
 File и Terminal являются первыми реализациями Tool Runtime, но не определяют архитектуру всех будущих инструментов и не образуют закрытый список допустимых действий.
 
-### 9.1. MCP как внешний compatibility target
+### 9.1. Action Effect Profile
+
+Статический Tool Manifest не может надёжно описать все эффекты конкретного вызова универсального capability.
+
+Например один и тот же Terminal capability может выполнить `git status` или destructive filesystem command. Поэтому конкретный Action/Invocation должен иметь возможность получать отдельный runtime `Action Effect Profile` или эквивалентное описание фактических/ожидаемых эффектов.
+
+Такой профиль может включать, когда это возможно определить:
+
+- фактический resource scope;
+- read-only / mutating;
+- destructive/non-destructive;
+- idempotent/non-idempotent/unknown;
+- reversible/compensatable/irreversible/unknown;
+- local/external/open-world effect;
+- confidence/provenance классификации.
+
+Effect classification может строиться из manifest metadata, аргументов конкретного вызова, adapter knowledge, runtime observation и других источников.
+
+**Отсутствие полного Action Effect Profile или значение `unknown` не должно автоматически запрещать выполнение capability.** Оно является входом для пользовательской policy, planning, diagnostics и recovery. В Full Autonomy неизвестный эффект остаётся допустимым, если capability фактически доступен и effective user policy не требует иного.
+
+Риск может зависеть от композиции нескольких действий, а не только от одного вызова. Архитектура должна позволять в будущем учитывать chain/session-level effects без превращения статического Tool Manifest в закрытый список разрешённых workflows.
+
+### 9.2. MCP как внешний compatibility target
 
 Внутренний Tool Runtime **не должен строиться на MCP как на своём core protocol**.
 
@@ -760,15 +857,17 @@ Backend Runtime должен быть долгоживущим сервисом,
 
 В частности:
 
-- task state/events;
+- task state/events и event-stream revisions;
 - durable steps/attempts;
-- actions/results;
+- actions/results и action effect profiles;
+- authorization decisions / effective policy references;
 - tool manifests;
 - provider capabilities;
 - provider responses;
 - council positions/results;
 - workspace revisions/changesets/results;
 - evidence/provenance references;
+- settings/policies;
 - structured errors;
 - diagnostics events;
 - backend requests/responses.
@@ -887,6 +986,8 @@ Orchestration Core / Council Engine выбирает стратегию на о�
 - transport retry policy в пределах Durable Execution semantics;
 - required provider capabilities.
 
+Все параметры Model Execution Profile, которые AutoCoder фактически поддерживает как изменяемые, должны иметь соответствующие пользовательские настройки или профильные overrides согласно общей Settings model.
+
 Diagnostics должна фиксировать фактически применённый execution profile и реальные execution attempts там, где retry влияет на причинную цепочку.
 
 Provider envelope должен по возможности сохранять полезные metadata ответа: модель, finish/done reason, timings, token/eval counts и другие доступные provider metrics.
@@ -906,10 +1007,12 @@ Persistence отвечает за надёжное хранение данных
 Необходимо различать как минимум:
 
 - durable execution facts;
+- Ledger EventId / stream revision / idempotency data;
 - orchestration semantics/version identity для незавершённых задач;
 - snapshots/cache;
 - chat/history;
-- settings/profiles;
+- settings/profiles и их revisions/effective values там, где они влияют на durable decisions;
+- authorization-decision provenance;
 - workspace metadata/revisions;
 - evidence/provenance references;
 - diagnostics retention;
@@ -954,15 +1057,17 @@ Diagnostics — AutoCoder-owned fundamental platform capability, а не лок�
 Run
 → UI operation
 → orchestration task/version
+→ effective settings/policy revision
 → model/council turn
 → provider request
 → durable attempt
 → provider response
 → decision
+→ authorization decision
 → validator
 → approval
 → durable step
-→ tool execution
+→ tool execution / action effect
 → OS operation
 → filesystem mutation/revision
 → reconciliation
@@ -1037,7 +1142,9 @@ Coverage Auditor сравнивает:
 
 ### 18.5. Replay
 
-Diagnostics должна позволять воспроизводить captured causal chain без повторного недетерминированного model call.
+**Replay semantics принадлежат Durable Execution Engine + Orchestration logic совместимой версии.** Diagnostics не должна становиться вторым владельцем state transitions или durable recovery.
+
+Diagnostics предоставляет captured history, results, correlations, artifacts и интерфейс исследования replay, а Durable Execution/Orchestration выполняют фактическую интерпретацию history по своим contracts.
 
 Особенно важно уметь повторно прогнать сохранённый provider/model response через:
 
@@ -1049,7 +1156,7 @@ Diagnostics должна позволять воспроизводить capture
 
 Replay использует сохранённые durable-step/attempt results там, где side effect уже был выполнен.
 
-Replay не должен автоматически повторять destructive tool side effects.
+Replay не должен автоматически повторять destructive tool side effects или заново получать nondeterministic исторические observations.
 
 ### 18.6. Diagnostics UI / Bundle
 
@@ -1096,10 +1203,10 @@ Diagnostics должна быть пассивным наблюдателем:
 - должна быть concurrency/process safe;
 - payloads должны быть bounded;
 - нужен retention/rotation/cleanup;
-- нужен centralized redaction/sanitization;
+- нужен centralized redaction/sanitization согласно effective data policy;
 - предыдущие diagnostic runs должны сохраняться достаточно долго для расследования restart/startup проблем;
-- никаких автоматических внешних telemetry uploads;
-- работа локальная/offline.
+- никаких автоматических внешних telemetry uploads без соответствующей пользовательской настройки/policy;
+- работа локальная/offline по умолчанию.
 
 ---
 
@@ -1119,6 +1226,7 @@ AutoCoder должен иметь machine-readable factual System Model собс
 - protocol versions;
 - protocol adapters;
 - replaceable implementations;
+- available settings/policies и scopes;
 - diagnostics coverage.
 
 System Model должен строиться из фактических registries, runtime discovery, protocols и других проверяемых источников, а не вручную поддерживаемого списка, который легко забыть обновить.
@@ -1162,15 +1270,69 @@ AutoCoder должен сохранять provenance существенного 
 
 Если пользователь подключил и разрешил облачный provider или внешний service, AutoCoder в обычном автономном режиме может самостоятельно передавать ему необходимый для задачи контекст без per-request подтверждений.
 
-При этом data handling должна быть policy-driven, а не зашитой навсегда стеной. Базовая конфигурация должна защищать credentials, tokens и другие секреты от случайной передачи; пользователь должен иметь возможность изменять доступные политики раскрытия данных в пределах фактических platform/security границ.
+Data handling должна быть policy-driven, а не зашитой навсегда стеной. Базовая конфигурация должна защищать credentials, tokens и другие обнаруженные секреты от случайной внешней передачи, но это **настраиваемая default policy**, а не фундаментальный запрет capability space.
 
-Архитектура не должна вводить обязательный детальный whitelist типов данных для каждого provider. Более строгие privacy/enterprise/data-egress режимы могут добавляться как настраиваемые policies без изменения Orchestration Core и без искусственного ограничения Full Autonomy для пользователей, которые их не включили.
+Secret detection/classification является общей cross-cutting функцией. Конкретное действие — redact, block, warn, allow, scope-specific allow или другое поддерживаемое поведение — определяется effective user policy и реальными platform constraints.
+
+Пользователь должен иметь возможность изменять поддерживаемые политики раскрытия данных, включая более строгие privacy/enterprise режимы и более свободные режимы, когда это необходимо для легитимной задачи. Full Autonomy работает внутри выбранной policy без обязательных per-request подтверждений.
+
+Архитектура не должна вводить обязательный детальный whitelist типов данных для каждого provider. Более строгие privacy/data-egress режимы добавляются как настраиваемые policies без изменения Orchestration Core и без искусственного ограничения пользователей, которые их не включили.
 
 Для credentials нужен Secret Store abstraction.
 
 `.env` допустим как development override, но не должен считаться конечным production-хранилищем API keys/tokens.
 
-Redaction/sanitization secrets должна быть общей cross-cutting границей для diagnostics, persisted artifacts, provider/council payloads и export, а не только локальной функцией Diagnostics.
+Diagnostics, persisted artifacts, provider/council payloads и export должны использовать общую secret/data classification и effective policy, а не иметь несогласованные hardcoded правила redaction в каждом subsystem.
+
+### 20.3. Settings / Policy model
+
+Settings architecture принадлежит AutoCoder и должна быть общей для UI, Orchestration, Council, Provider Runtime, Tool Runtime, Diagnostics и других подсистем, а не набором независимых hardcoded переключателей.
+
+Для пользовательски изменяемой настройки по мере зрелости системы должны быть определимы как минимум:
+
+- stable setting/policy id;
+- type/schema и допустимые значения;
+- default value;
+- scope;
+- current/effective value;
+- источник effective value / override;
+- version/revision, если значение влияет на durable execution, authorization или последующее объяснение причинности.
+
+Архитектура должна поддерживать подходящие scopes, например:
+
+- global/application;
+- workspace/project;
+- profile;
+- Council Profile;
+- provider/model profile;
+- task/run override;
+- другие обоснованные будущие scopes.
+
+Точная precedence model проектируется отдельно, но effective value должна быть однозначно вычисляема и диагностируема.
+
+Если AutoCoder поддерживает `on/off`, выбор режима, лимит, policy, profile или иной пользовательский параметр — у него должна быть явная настройка. Новая экспериментальная функция, которую можно технически включить/отключить, должна иметь соответствующий feature setting/flag, даже если он находится только в Advanced/Experimental settings.
+
+Настройки не должны превращаться в искусственный capability whitelist. Например отсутствие отдельной risk classification настройки для нового capability не означает автоматический запрет этого capability. Settings управляют поддерживаемым поведением и пользовательской policy; capability discovery остаётся отдельной системой.
+
+Пользователь может разрешить AutoCoder автоматически подбирать или временно изменять operational/performance settings для выполнения задачи. Такая AI self-tuning возможность сама должна быть настраиваемой. Изменение authority/autonomy/privacy policies самим AI допускается только если пользовательская policy явно предоставляет такое право.
+
+Presets и automatic modes являются удобными слоями над settings, а не заменой underlying configurability.
+
+### 20.4. Authorization decision provenance
+
+Для фактически выполняемого Action система должна иметь возможность восстановить, почему действие считалось разрешённым в момент исполнения.
+
+Authorization decision должен по мере необходимости ссылаться на:
+
+- action/execution identity;
+- effective autonomy/authorization policy revision или эквивалентный immutable reference;
+- relevant scope/inputs;
+- результат решения;
+- время/causal context.
+
+В Full Autonomy такой provenance **не означает дополнительный approval step**. Действие может выполняться автоматически; система просто сохраняет факт, какая effective policy разрешала его в тот момент.
+
+Изменение настроек после действия не должно переписывать историческую причину, по которой прошлое действие было разрешено.
 
 ---
 
@@ -1245,7 +1407,11 @@ AutoCoder не должен требовать per-action approval в Full Auton
 - restart не должен незаметно повторять действие с неизвестным результатом;
 - late result не может незаконно изменить уже терминальное состояние задачи;
 - durable step с подтверждённым side effect не повторяется автоматически при replay/recovery;
-- несовместимая новая orchestration logic не продолжает старую durable history вслепую.
+- несовместимая новая orchestration logic не продолжает старую durable history вслепую;
+- replay/recovery не переоценивает старые nondeterministic observations как будто они являются прежними фактами;
+- reliability/risk metadata не создаёт скрытый capability whitelist;
+- неизвестная классификация действия не равна автоматическому запрету;
+- настройки управляют policy и режимами, но не подменяют capability discovery.
 
 ### 22.1. Свобода verification
 
@@ -1282,6 +1448,8 @@ AutoCoder может использовать Git/GitHub как инструме
 Собственная backup/rollback система остаётся обязательной.
 
 В будущем Workspace Transaction может использовать Git как дополнительный источник diff/history, если он доступен, но не как единственную защиту.
+
+Те параметры backup/retention/recovery поведения, которые AutoCoder поддерживает как пользовательски изменяемые, должны быть представлены соответствующими settings согласно общей Settings model.
 
 ---
 
@@ -1433,6 +1601,8 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 
 Будущие функции, которые не являются приоритетом текущего ядра — например изменение пользователем уже выполняющейся задачи или более строгие privacy/data-egress режимы — не нужно реализовывать заранее. Но архитектура по возможности должна оставлять для них расширяемую границу вместо необратимого запрета.
 
+То же относится к configurability: не нужно заранее строить UI для всех будущих настроек, но если текущая функция уже имеет поддерживаемый toggle/mode/policy/limit/profile, архитектура не должна оставлять этот выбор скрытым hardcode. Настройка может появляться одновременно с самой функцией и находиться в Advanced/Experimental UI.
+
 ---
 
 ## 29. Правила архитектурной ответственности
@@ -1440,24 +1610,32 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 Устойчивые инварианты проекта:
 
 - один subsystem / resource lifecycle — один логический владелец;
-- Orchestration Core — единственный владелец task state machine;
-- Durable Execution Engine + Execution Ledger — владелец durable-step/history/attempt/retry semantics, но не бизнес-цели задачи;
+- Orchestration Core — единственный владелец task state machine и стратегического выбора execution path/models;
+- Durable Execution Engine + Execution Ledger — владелец durable-step/history/attempt/retry/replay semantics, но не бизнес-цели задачи;
+- Execution Ledger append имеет idempotent/concurrency-safe semantics и не принимает stale state transitions бесшумно;
 - Rust supervisor — владелец физических AutoCoder-owned child processes, но не semantic retry Task Actions;
-- Provider Runtime — владелец AI-provider semantics, но не OS process ownership desktop runtime и не orchestration retry/recovery;
+- Provider Runtime — владелец AI-provider semantics, discovery/resolution и execution, но не стратегического model selection, OS process ownership desktop runtime или orchestration retry/recovery;
 - Council Engine — владелец deliberation/topology/position semantics, но не фактической истины о выполнении tools;
 - Project Intelligence — владелец нормализованного project knowledge/context, но не конкретный parser/LSP/indexer;
 - Workspace Transaction — владелец фактического применения AI-изменений и conflict/precondition handling;
 - Editor отображает workspace, но не заменяет его;
 - Tool Runtime исполняет capability, но не объявляет semantic completion задачи;
+- Tool Manifest описывает capability, а конкретный Action Effect может зависеть от invocation/runtime context;
+- неизвестный/неполный risk/effect metadata не означает автоматический запрет capability;
 - Persistence хранит факты/state, но не решает business transitions;
 - UI отправляет intents и отображает state, но не является главным orchestration engine;
-- Diagnostics наблюдает систему, но не участвует в принятии business decisions;
+- Diagnostics наблюдает систему, предоставляет replay evidence/UI, но не владеет replay/state-transition semantics;
 - interoperability adapters переводят внешние protocols в AutoCoder contracts, но не определяют внутреннюю архитектуру;
 - сторонняя библиотека не должна становиться скрытым владельцем доменной семантики AutoCoder;
 - capability registry описывает доступные возможности, но не задаёт искусственный whitelist возможностей AI;
 - autonomy/approval policy управляет разрешением выполнения, но не должна обеднять архитектурный toolbox ядра;
+- reliability mechanisms не должны превращаться в capability gates;
 - недоверенный внешний контент не получает автоматически instruction authority пользователя или системы;
-- evidence должно оставаться связано с тем состоянием и входами, которые оно фактически проверяло.
+- evidence должно оставаться связано с тем состоянием и входами, которые оно фактически проверяло;
+- live AI execution может быть недетерминированным, но recovery старой durable history использует recorded observations/facts;
+- историческое authorization решение должно быть связано с effective policy, которая действовала в момент действия;
+- всё поддерживаемое пользовательски изменяемое поведение должно иметь явную setting/policy boundary вместо скрытого hardcode;
+- presets/automatic modes не должны закрывать underlying configurability, которую продукт реально поддерживает.
 
 Если новая функция нарушает эти границы, сначала пересматривается архитектура, а не добавляется ещё одна локальная защита.
 
@@ -1494,12 +1672,14 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 - Технические API и возможности быстро меняющихся инструментов проверяются по актуальной официальной документации.
 - Нельзя выдумывать API, параметры или элементы интерфейса.
 - AI-разработчик имеет свободу использовать любые доступные инструменты, методы, сеть, dependencies, tests и архитектурные подходы, если они помогают лучше выполнить задачу и находятся в пределах фактической среды и пользовательских границ.
+- Reliability, security metadata и settings проектируются так, чтобы сохранять свободу AI, а не создавать новый whitelist через боковую дверь.
 - Нельзя исправлять неизвестную причину по последовательности догадок, если можно сначала получить фактическую диагностику.
 - При повторяющемся классе багов нужно искать отсутствующий архитектурный механизм, а не бесконечно добавлять локальные исключения.
 - Поэтапная миграция предпочтительна, когда она снижает риск и улучшает проверяемость; большой связный rewrite/refactor допустим, если фактический анализ показывает, что он является лучшим или необходимым решением.
 - Существующий рабочий механизм не является неприкосновенным: его нужно сохранить, перенести, переработать или заменить исходя из фактической пользы и целевой архитектуры.
 - Один законченный технический пакет должен решать связанный архитектурный результат, а не только ближайший симптом; его размер не ограничивается искусственно.
 - При проектировании новой внутренней функции изучаются зрелые внешние реализации/стандарты, после чего свободно выбирается лучший вариант: собственный модуль, сменная внешняя implementation через adapter, direct isolated dependency или hybrid.
+- Если функция имеет пользовательски значимый изменяемый режим/toggle/policy/profile, соответствующая настройка является частью завершённой функции, а не необязательной будущей косметикой.
 - COMSOL остаётся финишной специализацией после универсального ядра.
 
 ---
@@ -1513,16 +1693,22 @@ MCP/ACP/A2A support не нужно реализовывать до реальн
 3. формальную модель `Position`, Position Stability Analysis, diversity, calibration signals и заменяемую captain/evaluation policy;
 4. хранение deliberation data между Execution Ledger, Diagnostics и persistent stores;
 5. точный durable-step/attempt contract, idempotency/reconciliation semantics, границу semantic/transport retry и связь с replay;
-6. механизм orchestration-semantics versioning/compatibility и migration незавершённых durable tasks между версиями AutoCoder;
-7. модель Evidence provenance/freshness: WorkspaceRevision, input hashes/dependency scope и критерии invalidation;
-8. concurrency model Workspace Transaction: preconditions, conflict detection, serialized writes/optimistic concurrency и crash recovery;
-9. точный migration order от текущей архитектуры к целевой без обязательства сохранять искусственные промежуточные ограничения и без переписывания проекта с нуля, если полный rewrite не окажется фактически лучшим решением;
-10. критерии и механизмы автоматического architecture/diagnostics coverage discovery;
-11. границы Project Intelligence adapters и минимальный собственный normalized fact model;
-12. какие interoperability adapters реально нужны первыми и какой минимальный поднабор каждого протокола поддерживать;
-13. dependency/replacement map: какие текущие и будущие third-party components остаются сменными реализациями, а какие действительно оправданно считать частью platform stack;
-14. точную модель capability discovery + authorization, включая Full Autonomy без hardcoded AI-tool whitelist;
-15. механизм свободного выбора и расширения verification/test capabilities самим AutoCoder;
-16. provenance/trust/instruction-authority model для project/web/tool/external-agent content и настраиваемая policy внешней передачи данных без hardcoded запретов;
-17. точную семантику task termination/interruption states;
-18. возможную экспериментальную поддержку durable amendments к уже выполняющейся пользовательской задаче без переписывания исходного intent.
+6. точный Ledger append contract: EventId, stream revision, expected-revision/CAS semantics, idempotent append и attempt/epoch fencing;
+7. механизм orchestration-semantics versioning/compatibility и migration незавершённых durable tasks между версиями AutoCoder;
+8. deterministic recovery model: какие nondeterministic observations обязаны становиться durable facts и как replay использует recorded results;
+9. модель Evidence provenance/freshness: WorkspaceRevision, input hashes/dependency scope и критерии invalidation;
+10. concurrency model Workspace Transaction: preconditions, conflict detection, serialized writes/optimistic concurrency и crash recovery;
+11. точный migration order от текущей архитектуры к целевой без обязательства сохранять искусственные промежуточные ограничения и без переписывания проекта с нуля, если полный rewrite не окажется фактически лучшим решением;
+12. критерии и механизмы автоматического architecture/diagnostics coverage discovery;
+13. границы Project Intelligence adapters и минимальный собственный normalized fact model;
+14. какие interoperability adapters реально нужны первыми и какой минимальный поднабор каждого протокола поддерживать;
+15. dependency/replacement map: какие текущие и будущие third-party components остаются сменными реализациями, а какие действительно оправданно считать частью platform stack;
+16. точную модель capability discovery + authorization, включая Full Autonomy без hardcoded AI-tool whitelist;
+17. authorization-decision provenance и versioning effective settings/policies без превращения этого механизма в дополнительный approval layer;
+18. Action Effect model для runtime invocations и композиции tool chains при сохранении правила `unknown != forbidden`;
+19. Settings / Policy model: scopes, precedence/effective values, schema/versioning, Advanced/Experimental settings и AI self-tuning;
+20. механизм свободного выбора и расширения verification/test capabilities самим AutoCoder;
+21. provenance/trust/instruction-authority model для project/web/tool/external-agent content и настраиваемая policy внешней передачи данных без hardcoded запретов;
+22. точную границу logical Council scheduling и отдельного Runtime/Resource Scheduler;
+23. точную семантику task termination/interruption states;
+24. возможную экспериментальную поддержку durable amendments к уже выполняющейся пользовательской задаче без переписывания исходного intent.
