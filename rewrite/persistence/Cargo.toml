@@ -1,0 +1,12 @@
+[package]
+name = "autocoder-persistence"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autocoder-contracts = { path = "../contracts" }
+autocoder-ledger = { path = "../ledger" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json.workspace = true
+
