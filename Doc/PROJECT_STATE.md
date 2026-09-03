@@ -26,10 +26,12 @@ runtime.
 - отдельный `OrchestrationCore` как единственный владелец перехода create-task;
 - абстракция append-only `ExecutionLedger` с expected stream revision и idempotency key;
 - SQLite-реализация Ledger: транзакционный optimistic append, уникальные event/idempotency keys,
-  упорядоченный replay и сохранение versioned event body;
+  строгая проверка envelope, различение exact retry и conflicting identity reuse, упорядоченный
+  replay и сохранение versioned event body;
 - `ApplicationShell` как composition boundary без собственной task state machine;
 - отдельная минимальная Tauri desktop composition и статический UI, отправляющий только
-  `create_task` intent через IPC;
+  `create_task` intent через IPC; Ledger path выводится из Tauri `app_data_dir`, а UI сохраняет
+  pending logical-append identity до подтверждения результата;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
 
@@ -38,20 +40,21 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 
 ## Проверенное поведение
 
-Команда `cargo test --manifest-path rewrite/Cargo.toml --workspace --exclude autocoder-desktop`
-успешна: три contract tests подтверждают durable SQLite replay после повторного открытия,
-идемпотентный повтор UI intent и fencing конкурирующего append по revision.
+Команда `cargo test --manifest-path rewrite/Cargo.toml --workspace` успешна: одиннадцать tests
+подтверждают durable SQLite replay после повторного открытия, Tauri app-data path composition, exact
+idempotent retry, отказ при conflicting reuse event/idempotency identity, stale append,
+несогласованном envelope, невалидном десериализованном identifier и повторном create transition.
 
-Desktop crate включён в workspace и его Tauri command имеет отдельный contract test, однако Linux
-сборка desktop target в текущем контейнере блокируется отсутствием системного development package
-`glib-2.0` (`glib-2.0.pc`). Поэтому реальный запуск webview и desktop IPC в этой среде не подтверждён.
+`cargo check --manifest-path rewrite/Cargo.toml -p autocoder-desktop` также успешен после установки
+доступных Linux WebKitGTK development libraries. Реальный интерактивный запуск webview в headless
+контейнере и Windows packaged runtime по-прежнему не подтверждены.
 
 ## Существенные ограничения текущего slice
 
 - Реализован только переход создания task; полноценная task state machine, attempts, execution
   authority, stop/resume/reconciliation и semantic completion отсутствуют.
-- Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует global EventId,
-  timestamps, orchestration-version migration и crash reconciliation.
+- Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
+  orchestration-version migration и crash reconciliation.
 - Workspace/Provider/Supervisor/Diagnostics пока являются только ownership boundaries.
 - Windows packaged запуск новой desktop composition и durable запись из реального WebView не
   проверялись; это platform-specific acceptance risk, а не доказанная неисправность.

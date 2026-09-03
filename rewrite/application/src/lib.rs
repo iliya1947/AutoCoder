@@ -78,7 +78,19 @@ mod tests {
     fn competing_append_is_fenced_by_stream_revision() {
         let shell = ApplicationShell::open(":memory:").unwrap();
         shell.create_task(intent("ui-request-1")).unwrap();
-        let error = shell.create_task(intent("ui-request-2")).unwrap_err();
+        let mut competing = intent("ui-request-2");
+        competing.event_id = EventId::parse("event-2").unwrap();
+        let error = shell.create_task(competing).unwrap_err();
         assert!(error.to_string().contains("expected 0, actual 1"));
+    }
+
+    #[test]
+    fn create_cannot_be_reissued_at_a_nonzero_current_revision() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        shell.create_task(intent("ui-request-1")).unwrap();
+        let mut second_create = intent("ui-request-2");
+        second_create.expected_revision = 1;
+        let error = shell.create_task(second_create).unwrap_err();
+        assert!(error.to_string().contains("requires expected revision 0"));
     }
 }

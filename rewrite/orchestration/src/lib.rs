@@ -8,6 +8,8 @@ pub enum OrchestrationError {
     Contract(#[from] autocoder_contracts::ContractError),
     #[error(transparent)]
     Ledger(#[from] LedgerError),
+    #[error("task creation requires expected revision 0, got {0}")]
+    InvalidCreateRevision(u64),
 }
 
 pub struct OrchestrationCore<L> {
@@ -21,6 +23,11 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
 
     pub fn create_task(&self, intent: CreateTaskIntent) -> Result<LedgerEvent, OrchestrationError> {
         intent.validate()?;
+        if intent.expected_revision != 0 {
+            return Err(OrchestrationError::InvalidCreateRevision(
+                intent.expected_revision,
+            ));
+        }
         let event = LedgerEvent {
             schema_version: CONTRACT_VERSION,
             task_id: intent.task_id.clone(),
@@ -32,11 +39,6 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 intent: intent.intent,
             },
         };
-        Ok(self.ledger.append(
-            &intent.task_id,
-            intent.expected_revision,
-            &intent.idempotency_key,
-            event,
-        )?)
+        Ok(self.ledger.append(intent.expected_revision, event)?)
     }
 }

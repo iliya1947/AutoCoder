@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use thiserror::Error;
 
@@ -14,7 +14,7 @@ pub enum ContractError {
 
 macro_rules! identifier {
     ($name:ident) => {
-        #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -35,7 +35,27 @@ macro_rules! identifier {
                 self.0.fmt(f)
             }
         }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::parse(value).map_err(serde::de::Error::custom)
+            }
+        }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifiers_are_validated_during_deserialization() {
+        let error = serde_json::from_str::<TaskId>(r#""   ""#).unwrap_err();
+        assert!(error.to_string().contains("identifier must not be empty"));
+    }
 }
 
 identifier!(WorkspaceId);

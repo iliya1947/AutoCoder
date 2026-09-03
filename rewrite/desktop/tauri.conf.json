@@ -9,5 +9,5 @@
     "windows": [{ "title": "AutoCoder", "width": 900, "height": 600 }],
     "security": { "csp": "default-src 'self'; script-src 'self'" }
   },
-  "bundle": { "active": false }
+  "bundle": { "active": false, "icon": [] }
 }

@@ -111,6 +111,7 @@ name = "autocoder-contracts"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
@@ -151,6 +152,7 @@ dependencies = [
  "autocoder-ledger",
  "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 use autocoder_application::ApplicationShell;
 use autocoder_contracts::{CreateTaskIntent, LedgerEvent};
-use std::sync::Mutex;
+use std::{fs, path::PathBuf, sync::Mutex};
+use tauri::Manager;
 
 struct RuntimeState(Mutex<ApplicationShell>);
 
@@ -21,15 +22,21 @@ fn create_task(
 }
 
 fn main() {
-    let data_dir = std::env::current_dir()
-        .expect("current directory")
-        .join("autocoder-clean-runtime.sqlite");
-    let shell = ApplicationShell::open(data_dir).expect("open execution ledger");
     tauri::Builder::default()
-        .manage(RuntimeState(Mutex::new(shell)))
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            fs::create_dir_all(&data_dir)?;
+            let shell = ApplicationShell::open(ledger_path(data_dir))?;
+            app.manage(RuntimeState(Mutex::new(shell)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![create_task])
         .run(tauri::generate_context!())
         .expect("run AutoCoder clean desktop runtime");
+}
+
+fn ledger_path(app_data_dir: PathBuf) -> PathBuf {
+    app_data_dir.join("execution-ledger.sqlite")
 }
 
 #[cfg(test)]
@@ -54,5 +61,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(event.stream_revision, 1);
+    }
+
+    #[test]
+    fn ledger_location_is_derived_only_from_tauri_app_data() {
+        let app_data = std::path::PathBuf::from("stable-app-data");
+        assert_eq!(
+            ledger_path(app_data),
+            std::path::PathBuf::from("stable-app-data/execution-ledger.sqlite")
+        );
     }
 }
