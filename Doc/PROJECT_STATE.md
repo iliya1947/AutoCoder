@@ -50,8 +50,8 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 Автоматические Rust tests подтверждают replay lifecycle после повторного открытия SQLite store,
 реализованные replay states, отказ для invalid transitions и неподтверждённого semantic completion
 как при production, так и при replay, несовместимой версии, неполной/некорректной history,
-read-only application/desktop
-query, exact idempotent retry, безопасный UI retry после successful create + failed projection и
+read-only application/desktop query, exact idempotent retry, безопасный UI retry после successful
+create + failed projection и
 optimistic fencing конкурирующих lifecycle append. Ранее реализованные Ledger guarantees для
 conflicting identity reuse, envelope validation и durable concurrency сохраняются.
 
