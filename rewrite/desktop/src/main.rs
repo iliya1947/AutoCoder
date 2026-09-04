@@ -1,5 +1,5 @@
 use autocoder_application::ApplicationShell;
-use autocoder_contracts::{CreateTaskIntent, LedgerEvent};
+use autocoder_contracts::{CreateTaskIntent, LedgerEvent, TaskId, TaskProjection};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::Manager;
 
@@ -21,6 +21,19 @@ fn create_task(
     dispatch_create_task(&shell, intent)
 }
 
+fn dispatch_get_task(shell: &ApplicationShell, task_id: TaskId) -> Result<TaskProjection, String> {
+    shell.task(&task_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_task(
+    state: tauri::State<'_, RuntimeState>,
+    task_id: TaskId,
+) -> Result<TaskProjection, String> {
+    let shell = state.0.lock().map_err(|_| "runtime state poisoned")?;
+    dispatch_get_task(&shell, task_id)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -30,7 +43,7 @@ fn main() {
             app.manage(RuntimeState(Mutex::new(shell)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![create_task])
+        .invoke_handler(tauri::generate_handler![create_task, get_task])
         .run(tauri::generate_context!())
         .expect("run AutoCoder clean desktop runtime");
 }
@@ -61,6 +74,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(event.stream_revision, 1);
+        let projection = dispatch_get_task(&shell, event.task_id.clone()).unwrap();
+        assert_eq!(projection.state, TaskState::Created);
+        assert_eq!(projection.stream_revision, 1);
     }
 
     #[test]

@@ -7,3 +7,8 @@ form { display: grid; gap: .75rem; }
 textarea { min-height: 9rem; resize: vertical; border: 1px solid #394457; border-radius: .5rem; padding: .8rem; color: inherit; background: #181e29; }
 button { justify-self: start; border: 0; border-radius: .5rem; padding: .7rem 1rem; font-weight: 700; color: #0c1729; background: #8ab4f8; }
 output { display: block; margin-top: 1.5rem; color: #aeb9ca; }
+section { margin-top: 1.5rem; padding: 1rem; border: 1px solid #394457; border-radius: .5rem; }
+h2 { margin-top: 0; font-size: 1rem; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: .5rem 1rem; margin-bottom: 0; }
+dt { color: #aeb9ca; }
+dd { margin: 0; overflow-wrap: anywhere; }

@@ -16,8 +16,15 @@
         <button type="submit">Create task</button>
       </form>
       <output id="result" aria-live="polite">Runtime ready</output>
+      <section id="projection" hidden>
+        <h2>Durable task projection</h2>
+        <dl>
+          <dt>Task</dt><dd id="projection-task"></dd>
+          <dt>State</dt><dd id="projection-state"></dd>
+          <dt>Revision</dt><dd id="projection-revision"></dd>
+        </dl>
+      </section>
     </main>
     <script src="./main.js"></script>
   </body>
 </html>
-

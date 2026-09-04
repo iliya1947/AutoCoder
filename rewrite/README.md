@@ -3,7 +3,7 @@
 This workspace is the new runtime skeleton. It does not depend on the donor
 application in `src/`, `backend/`, or `src-tauri/`.
 
-Dependency direction for the first slice is:
+Dependency direction is:
 
 ```text
 desktop UI -> application -> orchestration -> ledger contract <- persistence
@@ -16,10 +16,15 @@ Workspace, Provider Runtime, Process Supervisor, and Diagnostics. Those modules
 cannot transition tasks. `orchestration` is the only owner of task transitions;
 `persistence` only implements the append-only ledger contract.
 
+The current lifecycle contract projects `created`, `ready`, `blocked`, and
+`completed` by replaying the versioned task stream. The orchestration core owns
+the transition table and rejects invalid or incompatible history. The
+application and desktop layers expose a read-only projection query; the UI only
+renders that result.
+
 `desktop` is a separate Tauri composition and serves the intentionally minimal
 `ui/` shell; it shares no source or runtime state with the donor Tauri app.
 
 Run the contract slice with `cargo test --manifest-path rewrite/Cargo.toml` and
 the new desktop with `cargo run --manifest-path rewrite/Cargo.toml -p
 autocoder-desktop`.
-
