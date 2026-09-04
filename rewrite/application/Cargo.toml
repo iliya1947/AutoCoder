@@ -1,0 +1,16 @@
+[package]
+name = "autocoder-application"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autocoder-contracts = { path = "../contracts" }
+autocoder-ledger = { path = "../ledger" }
+autocoder-orchestration = { path = "../orchestration" }
+autocoder-persistence = { path = "../persistence" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
