@@ -137,6 +137,7 @@ mod tests {
             payload: TaskEventPayload::TaskCreated {
                 workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
                 intent: "intent".into(),
+                input_revision: InputRevision::parse("input-1").unwrap(),
             },
         }
     }
@@ -159,6 +160,7 @@ mod tests {
         changed_payload.payload = TaskEventPayload::TaskCreated {
             workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
             intent: "different intent".into(),
+            input_revision: InputRevision::parse("input-1").unwrap(),
         };
         assert!(matches!(
             ledger.append(0, changed_payload),

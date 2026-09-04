@@ -1,5 +1,6 @@
 use autocoder_contracts::{
-    CreateTaskIntent, LedgerEvent, TaskId, TaskProjection, TransitionTaskIntent,
+    CompleteTaskIntent, CreateTaskIntent, LedgerEvent, RecordVerificationIntent, TaskId,
+    TaskProjection, TransitionTaskIntent,
 };
 use autocoder_orchestration::{OrchestrationCore, OrchestrationError};
 use autocoder_persistence::SqliteLedger;
@@ -27,6 +28,18 @@ impl ApplicationShell {
         intent: TransitionTaskIntent,
     ) -> Result<LedgerEvent, OrchestrationError> {
         self.core.transition_task(intent)
+    }
+    pub fn record_verification(
+        &self,
+        intent: RecordVerificationIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        self.core.record_verification(intent)
+    }
+    pub fn complete_task(
+        &self,
+        intent: CompleteTaskIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        self.core.complete_task(intent)
     }
 }
 
@@ -57,6 +70,7 @@ mod tests {
             workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
             task_id: TaskId::parse("task-1").unwrap(),
             intent: "Create the first task".into(),
+            input_revision: InputRevision::parse("workspace-snapshot-1").unwrap(),
             event_id: EventId::parse("event-1").unwrap(),
             idempotency_key: IdempotencyKey::parse(key).unwrap(),
             expected_revision: 0,
@@ -70,6 +84,50 @@ mod tests {
             target_state: state,
             event_id: EventId::parse(event).unwrap(),
             idempotency_key: IdempotencyKey::parse(key).unwrap(),
+            expected_revision: revision,
+        }
+    }
+
+    fn basis(task: &str, created_event: &str, input: &str) -> VerificationBasis {
+        VerificationBasis {
+            schema_version: CONTRACT_VERSION,
+            task_id: TaskId::parse(task).unwrap(),
+            task_created_event_id: EventId::parse(created_event).unwrap(),
+            workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
+            input_revision: InputRevision::parse(input).unwrap(),
+        }
+    }
+
+    fn verification(outcome: VerificationOutcome, revision: u64) -> RecordVerificationIntent {
+        RecordVerificationIntent {
+            contract_version: CONTRACT_VERSION,
+            task_id: TaskId::parse("task-1").unwrap(),
+            evidence: SemanticVerificationEvidence {
+                schema_version: CONTRACT_VERSION,
+                evidence_id: EvidenceId::parse("evidence-1").unwrap(),
+                basis: basis("task-1", "event-1", "workspace-snapshot-1"),
+                outcome,
+                provenance: VerificationProvenance {
+                    verifier: "autocoder.semantic-verifier".into(),
+                    verifier_version: "1.0.0".into(),
+                    method: "acceptance-contract".into(),
+                },
+                summary: "requirements satisfied".into(),
+            },
+            event_id: EventId::parse("verification-event").unwrap(),
+            idempotency_key: IdempotencyKey::parse("verification-request").unwrap(),
+            expected_revision: revision,
+        }
+    }
+
+    fn completion(revision: u64) -> CompleteTaskIntent {
+        CompleteTaskIntent {
+            contract_version: CONTRACT_VERSION,
+            task_id: TaskId::parse("task-1").unwrap(),
+            evidence_id: EvidenceId::parse("evidence-1").unwrap(),
+            basis: basis("task-1", "event-1", "workspace-snapshot-1"),
+            event_id: EventId::parse("completion-event").unwrap(),
+            idempotency_key: IdempotencyKey::parse("completion-request").unwrap(),
             expected_revision: revision,
         }
     }
@@ -229,5 +287,184 @@ mod tests {
                 actual: 2
             })
         ));
+    }
+
+    fn ready(shell: &ApplicationShell) {
+        shell.create_task(intent("create-request")).unwrap();
+        shell
+            .transition_task(transition(TaskState::Ready, 1, "event-2", "ready-request"))
+            .unwrap();
+    }
+
+    #[test]
+    fn verified_evidence_is_durable_before_completion_and_replays_after_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        ready(&shell);
+        let evidence = shell
+            .record_verification(verification(VerificationOutcome::Verified, 2))
+            .unwrap();
+        assert!(matches!(
+            evidence.payload,
+            TaskEventPayload::SemanticVerificationRecorded { .. }
+        ));
+        assert_eq!(
+            shell.task(&TaskId::parse("task-1").unwrap()).unwrap().state,
+            TaskState::Ready
+        );
+        shell.complete_task(completion(3)).unwrap();
+        drop(shell);
+
+        let reopened = ApplicationShell::open(&path).unwrap();
+        let projection = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        assert_eq!(projection.state, TaskState::Completed);
+        assert_eq!(projection.stream_revision, 4);
+        assert_eq!(
+            projection.completion_evidence_id,
+            Some(EvidenceId::parse("evidence-1").unwrap())
+        );
+    }
+
+    #[test]
+    fn absent_or_failed_evidence_cannot_complete() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        ready(&shell);
+        assert!(matches!(
+            shell.complete_task(completion(2)),
+            Err(OrchestrationError::EvidenceNotFound(_))
+        ));
+        shell
+            .record_verification(verification(VerificationOutcome::Failed, 2))
+            .unwrap();
+        assert!(matches!(
+            shell.complete_task(completion(3)),
+            Err(OrchestrationError::EvidenceFailed(_))
+        ));
+        assert_eq!(
+            shell.task(&TaskId::parse("task-1").unwrap()).unwrap().state,
+            TaskState::Ready
+        );
+    }
+
+    #[test]
+    fn evidence_for_another_task_or_input_basis_is_inapplicable_and_stale() {
+        for invalid_basis in [
+            basis("another-task", "event-1", "workspace-snapshot-1"),
+            basis("task-1", "event-1", "older-workspace-snapshot"),
+        ] {
+            let shell = ApplicationShell::open(":memory:").unwrap();
+            ready(&shell);
+            let mut record = verification(VerificationOutcome::Verified, 2);
+            record.evidence.basis = invalid_basis;
+            shell.record_verification(record).unwrap();
+            assert!(matches!(
+                shell.complete_task(completion(3)),
+                Err(OrchestrationError::EvidenceBasisMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_verification_and_completion_retries_do_not_duplicate_and_stale_writer_is_fenced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let first = ApplicationShell::open(&path).unwrap();
+        let second = ApplicationShell::open(&path).unwrap();
+        ready(&first);
+        let record = verification(VerificationOutcome::Verified, 2);
+        assert_eq!(
+            first.record_verification(record.clone()).unwrap(),
+            second.record_verification(record).unwrap()
+        );
+        let complete = completion(3);
+        assert_eq!(
+            first.complete_task(complete.clone()).unwrap(),
+            second.complete_task(complete).unwrap()
+        );
+        let events = SqliteLedger::open(&path)
+            .unwrap()
+            .events(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        assert_eq!(events.len(), 4);
+
+        let mut stale = verification(VerificationOutcome::Verified, 2);
+        stale.event_id = EventId::parse("stale-verification").unwrap();
+        stale.idempotency_key = IdempotencyKey::parse("stale-request").unwrap();
+        assert!(matches!(
+            second.record_verification(stale),
+            Err(OrchestrationError::Ledger(
+                autocoder_ledger::LedgerError::RevisionConflict {
+                    expected: 2,
+                    actual: 4
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn incompatible_evidence_version_is_explicitly_rejected() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        ready(&shell);
+        let mut record = verification(VerificationOutcome::Verified, 2);
+        record.evidence.schema_version = CONTRACT_VERSION + 1;
+        let error = shell.record_verification(record).unwrap_err();
+        assert!(error.to_string().contains("unsupported contract version"));
+    }
+
+    #[test]
+    fn conflicting_evidence_identity_is_rejected_without_corrupting_history() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        ready(&shell);
+        shell
+            .record_verification(verification(VerificationOutcome::Verified, 2))
+            .unwrap();
+        let mut conflict = verification(VerificationOutcome::Failed, 3);
+        conflict.event_id = EventId::parse("conflicting-evidence-event").unwrap();
+        conflict.idempotency_key = IdempotencyKey::parse("conflicting-evidence-request").unwrap();
+        assert!(matches!(
+            shell.record_verification(conflict),
+            Err(OrchestrationError::EvidenceIdentityConflict(_))
+        ));
+        assert_eq!(
+            shell
+                .task(&TaskId::parse("task-1").unwrap())
+                .unwrap()
+                .stream_revision,
+            3
+        );
+    }
+
+    #[test]
+    fn replay_explicitly_rejects_durable_incompatible_evidence_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        ready(&shell);
+        drop(shell);
+        let ledger = SqliteLedger::open(&path).unwrap();
+        let mut evidence = verification(VerificationOutcome::Verified, 2).evidence;
+        evidence.schema_version = CONTRACT_VERSION + 1;
+        ledger
+            .append(
+                2,
+                LedgerEvent {
+                    schema_version: CONTRACT_VERSION,
+                    task_id: TaskId::parse("task-1").unwrap(),
+                    event_id: EventId::parse("incompatible-evidence-event").unwrap(),
+                    stream_revision: 3,
+                    idempotency_key: IdempotencyKey::parse("incompatible-evidence-request")
+                        .unwrap(),
+                    payload: TaskEventPayload::SemanticVerificationRecorded { evidence },
+                },
+            )
+            .unwrap();
+        let reopened = ApplicationShell::open(&path).unwrap();
+        let error = reopened
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported verification evidence/basis version"));
     }
 }

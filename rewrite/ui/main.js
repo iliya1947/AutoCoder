@@ -20,6 +20,7 @@ function newSubmission(intent) {
     workspace_id: "workspace-default",
     task_id: `task-${id}`,
     intent,
+    input_revision: `initial-input-${id}`,
     event_id: `event-${id}`,
     idempotency_key: `ui-${id}`,
     expected_revision: 0,
