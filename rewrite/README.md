@@ -28,6 +28,15 @@ unverified completion event rather than projecting success.
 `desktop` is a separate Tauri composition and serves the intentionally minimal
 `ui/` shell; it shares no source or runtime state with the donor Tauri app.
 
-Run the contract slice with `cargo test --manifest-path rewrite/Cargo.toml` and
-the new desktop with `cargo run --manifest-path rewrite/Cargo.toml -p
-autocoder-desktop`.
+Validate the current contract slice with:
+
+```text
+cargo test --manifest-path rewrite/Cargo.toml --workspace
+node --test rewrite/ui/main.test.mjs
+```
+
+The Rust workspace suite covers lifecycle, replay, and Ledger guarantees. The
+focused Node test covers the UI's uncertain-outcome create/projection
+reconciliation path. Run the new desktop with `cargo run --manifest-path
+rewrite/Cargo.toml -p autocoder-desktop` when an interactive platform check is
+needed.

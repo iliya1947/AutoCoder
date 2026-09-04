@@ -47,13 +47,16 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 
 ## Проверенное поведение
 
-Автоматические Rust tests подтверждают replay lifecycle после повторного открытия SQLite store,
-реализованные replay states, отказ для invalid transitions и неподтверждённого semantic completion
-как при production, так и при replay, несовместимой версии, неполной/некорректной history,
-read-only application/desktop query, exact idempotent retry, безопасный UI retry после successful
-create + failed projection и
+`cargo test --manifest-path rewrite/Cargo.toml --workspace` подтверждает replay lifecycle после
+повторного открытия SQLite store, реализованные replay states, отказ для invalid transitions и
+неподтверждённого semantic completion как при production, так и при replay, несовместимой версии,
+неполной/некорректной history, read-only application/desktop query, exact idempotent retry и
 optimistic fencing конкурирующих lifecycle append. Ранее реализованные Ledger guarantees для
 conflicting identity reuse, envelope validation и durable concurrency сохраняются.
+
+Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
+durable create, ошибка последующего projection query и безопасный retry с той же logical identity
+без создания новой task identity.
 
 `cargo check --manifest-path rewrite/Cargo.toml -p autocoder-desktop` также успешен после установки
 доступных Linux WebKitGTK development libraries. Реальный интерактивный запуск webview в headless
