@@ -19,6 +19,8 @@ pub enum OrchestrationError {
     IncompatibleHistory(String),
     #[error("invalid task transition from {from:?} to {to:?}")]
     InvalidTransition { from: TaskState, to: TaskState },
+    #[error("task completion requires durable verified semantic-completion evidence")]
+    CompletionRequiresVerifiedEvidence,
 }
 
 pub struct OrchestrationCore<L> {
@@ -79,12 +81,16 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             &events[..intent.expected_revision as usize],
         )?;
         let payload = match (current.state, intent.target_state) {
+            // TaskCompleted remains part of the replay contract, but this generic
+            // lifecycle command cannot produce it. A later orchestration-owned
+            // completion path must first append/validate durable verification.
+            (_, TaskState::Completed) => {
+                return Err(OrchestrationError::CompletionRequiresVerifiedEvidence)
+            }
             (TaskState::Created, TaskState::Ready) | (TaskState::Blocked, TaskState::Ready) => {
                 TaskEventPayload::TaskReady
             }
             (TaskState::Ready, TaskState::Blocked) => TaskEventPayload::TaskBlocked,
-            (TaskState::Ready, TaskState::Completed)
-            | (TaskState::Blocked, TaskState::Completed) => TaskEventPayload::TaskCompleted,
             (from, to) => return Err(OrchestrationError::InvalidTransition { from, to }),
         };
         let event = LedgerEvent {
@@ -136,7 +142,11 @@ fn project(task_id: &TaskId, events: &[LedgerEvent]) -> Result<TaskProjection, O
         let next = match &event.payload {
             TaskEventPayload::TaskReady => TaskState::Ready,
             TaskEventPayload::TaskBlocked => TaskState::Blocked,
-            TaskEventPayload::TaskCompleted => TaskState::Completed,
+            TaskEventPayload::TaskCompleted => {
+                return Err(OrchestrationError::IncompatibleHistory(
+                    "task_completed has no durable semantic-verification evidence".into(),
+                ))
+            }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(
                     "task_created occurs more than once".into(),
@@ -216,6 +226,19 @@ mod tests {
             core.task(&TaskId::parse("task-1").unwrap()),
             Err(OrchestrationError::IncompatibleHistory(_))
         ));
+    }
+
+    #[test]
+    fn replay_rejects_completed_event_without_durable_verification_evidence() {
+        let core = OrchestrationCore::new(ReplayLedger(vec![
+            created(),
+            event(2, TaskEventPayload::TaskReady),
+            event(3, TaskEventPayload::TaskCompleted),
+        ]));
+        let error = core.task(&TaskId::parse("task-1").unwrap()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no durable semantic-verification evidence"));
     }
 
     #[test]

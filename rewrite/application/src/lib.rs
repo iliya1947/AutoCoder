@@ -156,7 +156,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             invalid,
-            OrchestrationError::InvalidTransition { .. }
+            OrchestrationError::CompletionRequiresVerifiedEvidence
         ));
 
         shell
@@ -181,45 +181,31 @@ mod tests {
                 "blocked-request-2",
             ))
             .unwrap();
-        shell
+        let unverified_from_blocked = shell
             .transition_task(transition(
                 TaskState::Completed,
                 5,
                 "event-7",
                 "complete-request-2",
             ))
-            .unwrap();
+            .unwrap_err();
+        assert!(matches!(
+            unverified_from_blocked,
+            OrchestrationError::CompletionRequiresVerifiedEvidence
+        ));
+
         let terminal = shell
             .transition_task(transition(
-                TaskState::Ready,
-                6,
+                TaskState::Created,
+                5,
                 "event-8",
-                "terminal-resume-request",
+                "invalid-request",
             ))
             .unwrap_err();
         assert!(matches!(
             terminal,
             OrchestrationError::InvalidTransition { .. }
         ));
-
-        let direct = ApplicationShell::open(":memory:").unwrap();
-        direct.create_task(intent("direct-create-request")).unwrap();
-        direct
-            .transition_task(transition(
-                TaskState::Ready,
-                1,
-                "direct-event-2",
-                "direct-ready-request",
-            ))
-            .unwrap();
-        direct
-            .transition_task(transition(
-                TaskState::Completed,
-                2,
-                "direct-event-3",
-                "direct-complete-request",
-            ))
-            .unwrap();
     }
 
     #[test]

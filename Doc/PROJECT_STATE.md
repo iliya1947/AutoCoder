@@ -24,9 +24,10 @@ runtime.
 - AutoCoder-owned versioned contracts `WorkspaceId`, `TaskId`, `EventId`, `IdempotencyKey`,
   `CreateTaskIntent`, `LedgerEvent` и первый `TaskCreated` payload;
 - отдельный `OrchestrationCore` как единственный владелец перехода create-task;
-- versioned lifecycle `created -> ready`, `ready <-> blocked` и terminal `completed` (из
-  `ready`/`blocked`), причём Orchestration Core отклоняет недопустимые transitions и несовместимые
-  histories;
+- versioned lifecycle с рабочими переходами `created -> ready` и `ready <-> blocked`; terminal
+  `completed` сохранён как versioned state/event, но его production и успешная projection
+  зарезервированы до появления orchestration-owned durable semantic-verification evidence, а
+  generic transition и replay history без evidence явно отклоняются;
 - абстракция append-only `ExecutionLedger` с expected stream revision и idempotency key;
 - SQLite-реализация Ledger: транзакционный optimistic append, уникальные event/idempotency keys,
   строгая проверка envelope, различение exact retry и conflicting identity reuse, упорядоченный
@@ -35,8 +36,9 @@ runtime.
   query durable projection, полностью восстанавливаемой replay-ем task stream;
 - отдельная минимальная Tauri desktop composition и статический UI, отправляющий только
   `create_task` intent и read-only `get_task` query через IPC; Ledger path выводится из Tauri
-  `app_data_dir`, UI сохраняет pending logical-append identity до подтверждения результата и
-  отображает полученную durable projection, не вычисляя transitions;
+  `app_data_dir`, UI сохраняет pending logical-append identity до подтверждения create и успешной
+  reconciliation projection (включая случай successful create + failed query) и отображает
+  полученную durable projection, не вычисляя transitions;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
 
@@ -46,8 +48,10 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 ## Проверенное поведение
 
 Автоматические Rust tests подтверждают replay lifecycle после повторного открытия SQLite store,
-все определённые состояния, отказ для invalid/terminal transitions, несовместимой версии,
-неполной/некорректной history, read-only application/desktop query, exact idempotent retry и
+реализованные replay states, отказ для invalid transitions и неподтверждённого semantic completion
+как при production, так и при replay, несовместимой версии, неполной/некорректной history,
+read-only application/desktop
+query, exact idempotent retry, безопасный UI retry после successful create + failed projection и
 optimistic fencing конкурирующих lifecycle append. Ранее реализованные Ledger guarantees для
 conflicting identity reuse, envelope validation и durable concurrency сохраняются.
 
@@ -57,8 +61,9 @@ conflicting identity reuse, envelope validation и durable concurrency сохр�
 
 ## Существенные ограничения текущего slice
 
-- Lifecycle пока намеренно ограничен состояниями `created`/`ready`/`blocked`/`completed`; attempts,
-  execution authority, stop/resume/reconciliation и доказательство semantic completion отсутствуют.
+- Lifecycle пока намеренно ограничен состояниями `created`/`ready`/`blocked` и replay-контрактом
+  `completed`; production `TaskCompleted`, attempts, execution authority, stop/resume и durable
+  доказательство semantic completion отсутствуют.
 - Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
   orchestration-version migration и crash reconciliation.
 - Workspace/Provider/Supervisor/Diagnostics пока являются только ownership boundaries.
@@ -68,12 +73,11 @@ conflicting identity reuse, envelope validation и durable concurrency сохр�
 
 ## Следующий точный технический шаг
 
-Добавить минимальную orchestration execution authority для явных user intents остановки и
-возобновления lifecycle без provider/tool/process semantics: определить versioned events и
-replay-safe transition rules, не смешивая logical task lifecycle с physical process ownership.
-Physical process lifecycle, capability registry, Workspace Transaction и provider adapter должны
-по-прежнему подключаться последующими slices через новые boundaries, а не через legacy
-orchestration.
+Добавить минимальный durable semantic-verification contract и orchestration-owned completion path,
+который только после подтверждённого evidence сможет производить зарезервированный
+`TaskCompleted`. Provider/tool execution, stop/resume, physical process lifecycle, capability
+registry, Workspace Transaction и provider adapter должны по-прежнему подключаться последующими
+slices через новые boundaries, а не через legacy orchestration.
 
 ## Правило обновления этого файла
 

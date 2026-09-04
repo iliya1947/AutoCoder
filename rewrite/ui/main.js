@@ -29,17 +29,24 @@ function newSubmission(intent) {
 async function submit(submission) {
   localStorage.setItem(pendingKey, JSON.stringify(submission));
   result.textContent = "Creating durable task…";
+  let ledgerEvent;
   try {
-    const ledgerEvent = await window.__TAURI__.core.invoke("create_task", {
+    ledgerEvent = await window.__TAURI__.core.invoke("create_task", {
       intent: submission,
     });
-    localStorage.removeItem(pendingKey);
-    localStorage.setItem(lastTaskKey, submission.task_id);
+  } catch (error) {
+    result.textContent = `Create outcome not confirmed; retry will use the same identity: ${error}`;
+    return;
+  }
+
+  localStorage.setItem(lastTaskKey, submission.task_id);
+  try {
     await showProjection(submission.task_id);
+    localStorage.removeItem(pendingKey);
     result.textContent = `Task recorded at revision ${ledgerEvent.stream_revision}`;
     form.reset();
   } catch (error) {
-    result.textContent = `Outcome not confirmed; retry will use the same identity: ${error}`;
+    result.textContent = `Task creation confirmed, but its projection could not be loaded; retry will reconcile the same identity: ${error}`;
   }
 }
 
