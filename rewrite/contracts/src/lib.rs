@@ -74,6 +74,45 @@ pub struct CreateTaskIntent {
     pub expected_revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    Created,
+    Ready,
+    Blocked,
+    Completed,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct TransitionTaskIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub target_state: TaskState,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
+impl TransitionTaskIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.contract_version != CONTRACT_VERSION {
+            return Err(ContractError::UnsupportedVersion(self.contract_version));
+        }
+        Ok(())
+    }
+}
+
+/// Read model rebuilt from the task's event stream. It is never stored separately.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct TaskProjection {
+    pub schema_version: u16,
+    pub task_id: TaskId,
+    pub workspace_id: WorkspaceId,
+    pub intent: String,
+    pub state: TaskState,
+    pub stream_revision: u64,
+}
+
 impl CreateTaskIntent {
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.contract_version != CONTRACT_VERSION {
@@ -90,6 +129,9 @@ pub enum TaskEventPayload {
         workspace_id: WorkspaceId,
         intent: String,
     },
+    TaskReady,
+    TaskBlocked,
+    TaskCompleted,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]

@@ -2,12 +2,12 @@
 
 ## Дата состояния
 
-3 сентября 2026.
+4 сентября 2026.
 
 ## Текущий этап
 
-**Первый vertical slice clean rewrite реализован; следующий этап — durable task projection и
-явный lifecycle новых задач.**
+**Второй vertical slice clean rewrite реализован: durable task lifecycle projection и явный
+lifecycle новых задач.**
 
 `Doc/PROJECT_MEMORY.md` остаётся неизменённым **FROZEN ARCHITECTURE CONTRACT v1**. Старый React,
 Python и Rust/Tauri runtime сохранён только как donor/reference и не является dependency нового
@@ -24,14 +24,21 @@ runtime.
 - AutoCoder-owned versioned contracts `WorkspaceId`, `TaskId`, `EventId`, `IdempotencyKey`,
   `CreateTaskIntent`, `LedgerEvent` и первый `TaskCreated` payload;
 - отдельный `OrchestrationCore` как единственный владелец перехода create-task;
+- versioned lifecycle с рабочими переходами `created -> ready` и `ready <-> blocked`; terminal
+  `completed` сохранён как versioned state/event, но его production и успешная projection
+  зарезервированы до появления orchestration-owned durable semantic-verification evidence, а
+  generic transition и replay history без evidence явно отклоняются;
 - абстракция append-only `ExecutionLedger` с expected stream revision и idempotency key;
 - SQLite-реализация Ledger: транзакционный optimistic append, уникальные event/idempotency keys,
   строгая проверка envelope, различение exact retry и conflicting identity reuse, упорядоченный
   replay и сохранение versioned event body;
-- `ApplicationShell` как composition boundary без собственной task state machine;
+- `ApplicationShell` как composition boundary без собственной task state machine и read-only
+  query durable projection, полностью восстанавливаемой replay-ем task stream;
 - отдельная минимальная Tauri desktop composition и статический UI, отправляющий только
-  `create_task` intent через IPC; Ledger path выводится из Tauri `app_data_dir`, а UI сохраняет
-  pending logical-append identity до подтверждения результата;
+  `create_task` intent и read-only `get_task` query через IPC; Ledger path выводится из Tauri
+  `app_data_dir`, UI сохраняет pending logical-append identity до подтверждения create и успешной
+  reconciliation projection (включая случай successful create + failed query) и отображает
+  полученную durable projection, не вычисляя transitions;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
 
@@ -40,10 +47,16 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 
 ## Проверенное поведение
 
-Команда `cargo test --manifest-path rewrite/Cargo.toml --workspace` успешна: одиннадцать tests
-подтверждают durable SQLite replay после повторного открытия, Tauri app-data path composition, exact
-idempotent retry, отказ при conflicting reuse event/idempotency identity, stale append,
-несогласованном envelope, невалидном десериализованном identifier и повторном create transition.
+`cargo test --manifest-path rewrite/Cargo.toml --workspace` подтверждает replay lifecycle после
+повторного открытия SQLite store, реализованные replay states, отказ для invalid transitions и
+неподтверждённого semantic completion как при production, так и при replay, несовместимой версии,
+неполной/некорректной history, read-only application/desktop query, exact idempotent retry и
+optimistic fencing конкурирующих lifecycle append. Ранее реализованные Ledger guarantees для
+conflicting identity reuse, envelope validation и durable concurrency сохраняются.
+
+Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
+durable create, ошибка последующего projection query и безопасный retry с той же logical identity
+без создания новой task identity.
 
 `cargo check --manifest-path rewrite/Cargo.toml -p autocoder-desktop` также успешен после установки
 доступных Linux WebKitGTK development libraries. Реальный интерактивный запуск webview в headless
@@ -51,8 +64,9 @@ idempotent retry, отказ при conflicting reuse event/idempotency identity
 
 ## Существенные ограничения текущего slice
 
-- Реализован только переход создания task; полноценная task state machine, attempts, execution
-  authority, stop/resume/reconciliation и semantic completion отсутствуют.
+- Lifecycle пока намеренно ограничен состояниями `created`/`ready`/`blocked` и replay-контрактом
+  `completed`; production `TaskCompleted`, attempts, execution authority, stop/resume и durable
+  доказательство semantic completion отсутствуют.
 - Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
   orchestration-version migration и crash reconciliation.
 - Workspace/Provider/Supervisor/Diagnostics пока являются только ownership boundaries.
@@ -62,19 +76,11 @@ idempotent retry, отказ при conflicting reuse event/idempotency identity
 
 ## Следующий точный технический шаг
 
-Добавить внутри clean workspace минимальный **durable task lifecycle projection**:
-
-1. определить versioned состояния и события как минимум для created/ready/blocked/completed без
-   tool/provider-specific semantics;
-2. восстанавливать task projection только replay-ем Ledger и проверять допустимость перехода в
-   Orchestration Core;
-3. добавить read-only query через Application Shell/desktop IPC, чтобы UI отображал durable state,
-   не вычисляя business transitions;
-4. покрыть restart/replay, invalid transition, optimistic concurrency и idempotent retry contract
-   tests.
-
-Physical process lifecycle, capability registry, Workspace Transaction и provider adapter должны
-подключаться последующими slices через новые boundaries, а не через legacy orchestration.
+Добавить минимальный durable semantic-verification contract и orchestration-owned completion path,
+который только после подтверждённого evidence сможет производить зарезервированный
+`TaskCompleted`. Provider/tool execution, stop/resume, physical process lifecycle, capability
+registry, Workspace Transaction и provider adapter должны по-прежнему подключаться последующими
+slices через новые boundaries, а не через legacy orchestration.
 
 ## Правило обновления этого файла
 

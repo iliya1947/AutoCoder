@@ -2,6 +2,16 @@ const form = document.querySelector("#task-form");
 const result = document.querySelector("#result");
 const intentField = document.querySelector("#intent");
 const pendingKey = "autocoder.pending-create-task.v1";
+const lastTaskKey = "autocoder.last-task-id.v1";
+const projection = document.querySelector("#projection");
+
+async function showProjection(taskId) {
+  const task = await window.__TAURI__.core.invoke("get_task", { taskId });
+  document.querySelector("#projection-task").textContent = task.task_id;
+  document.querySelector("#projection-state").textContent = task.state;
+  document.querySelector("#projection-revision").textContent = task.stream_revision;
+  projection.hidden = false;
+}
 
 function newSubmission(intent) {
   const id = crypto.randomUUID();
@@ -19,15 +29,24 @@ function newSubmission(intent) {
 async function submit(submission) {
   localStorage.setItem(pendingKey, JSON.stringify(submission));
   result.textContent = "Creating durable task…";
+  let ledgerEvent;
   try {
-    const ledgerEvent = await window.__TAURI__.core.invoke("create_task", {
+    ledgerEvent = await window.__TAURI__.core.invoke("create_task", {
       intent: submission,
     });
+  } catch (error) {
+    result.textContent = `Create outcome not confirmed; retry will use the same identity: ${error}`;
+    return;
+  }
+
+  localStorage.setItem(lastTaskKey, submission.task_id);
+  try {
+    await showProjection(submission.task_id);
     localStorage.removeItem(pendingKey);
     result.textContent = `Task recorded at revision ${ledgerEvent.stream_revision}`;
     form.reset();
   } catch (error) {
-    result.textContent = `Outcome not confirmed; retry will use the same identity: ${error}`;
+    result.textContent = `Task creation confirmed, but its projection could not be loaded; retry will reconcile the same identity: ${error}`;
   }
 }
 
@@ -42,4 +61,11 @@ if (pending) {
   const submission = JSON.parse(pending);
   intentField.value = submission.intent;
   submit(submission);
+} else {
+  const lastTaskId = localStorage.getItem(lastTaskKey);
+  if (lastTaskId) {
+    showProjection(lastTaskId).catch((error) => {
+      result.textContent = `Unable to read durable task: ${error}`;
+    });
+  }
 }
