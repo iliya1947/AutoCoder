@@ -1,4 +1,6 @@
-use autocoder_contracts::{LedgerEvent, TaskId, CONTRACT_VERSION};
+use autocoder_contracts::{
+    legacy_create_v1_input_revision, EventId, LedgerEvent, TaskId, CONTRACT_VERSION,
+};
 use autocoder_ledger::{ExecutionLedger, LedgerError};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{path::Path, sync::Mutex};
@@ -19,6 +21,30 @@ impl SqliteLedger {
 
 fn storage(error: rusqlite::Error) -> LedgerError {
     LedgerError::Storage(error.to_string())
+}
+
+fn decode_event(body: &str) -> Result<LedgerEvent, LedgerError> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| LedgerError::Storage(error.to_string()))?;
+    let is_legacy_create_v1 = value.get("schema_version").and_then(|item| item.as_u64())
+        == Some(u64::from(CONTRACT_VERSION))
+        && value
+            .pointer("/payload/type")
+            .and_then(|item| item.as_str())
+            == Some("task_created")
+        && value.pointer("/payload/input_revision").is_none();
+    if is_legacy_create_v1 {
+        let event_id: EventId = serde_json::from_value(
+            value
+                .get("event_id")
+                .cloned()
+                .ok_or_else(|| LedgerError::Storage("legacy event is missing event_id".into()))?,
+        )
+        .map_err(|error| LedgerError::Storage(error.to_string()))?;
+        value["payload"]["input_revision"] =
+            serde_json::Value::String(legacy_create_v1_input_revision(&event_id).to_string());
+    }
+    serde_json::from_value(value).map_err(|error| LedgerError::Storage(error.to_string()))
 }
 
 impl ExecutionLedger for SqliteLedger {
@@ -69,8 +95,7 @@ impl ExecutionLedger for SqliteLedger {
             .optional()
             .map_err(storage)?;
         let matches_retry = |body: &str| -> Result<bool, LedgerError> {
-            let stored: LedgerEvent = serde_json::from_str(body)
-                .map_err(|error| LedgerError::Storage(error.to_string()))?;
+            let stored = decode_event(body)?;
             Ok(stored == event && expected_revision + 1 == stored.stream_revision)
         };
         match (by_event_id.as_deref(), by_key.as_deref()) {
@@ -113,12 +138,8 @@ impl ExecutionLedger for SqliteLedger {
         let rows = statement
             .query_map([task_id.as_str()], |row| row.get::<_, String>(0))
             .map_err(storage)?;
-        rows.map(|row| {
-            row.map_err(storage).and_then(|body| {
-                serde_json::from_str(&body).map_err(|e| LedgerError::Storage(e.to_string()))
-            })
-        })
-        .collect()
+        rows.map(|row| row.map_err(storage).and_then(|body| decode_event(&body)))
+            .collect()
     }
 }
 
@@ -140,6 +161,44 @@ mod tests {
                 input_revision: InputRevision::parse("input-1").unwrap(),
             },
         }
+    }
+
+    fn insert_main_create_representation(ledger: &SqliteLedger) {
+        let body = r#"{"schema_version":1,"task_id":"task-1","event_id":"event-1","stream_revision":1,"idempotency_key":"request-1","payload":{"type":"task_created","workspace_id":"workspace-1","intent":"intent"}}"#;
+        ledger
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO execution_events(task_id, revision, event_id, idempotency_key, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["task-1", 1, "event-1", "request-1", body],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn main_create_representation_upcasts_and_remains_an_exact_retry() {
+        let ledger = SqliteLedger::open(":memory:").unwrap();
+        insert_main_create_representation(&ledger);
+        let mut migrated = event("event-1", "request-1");
+        migrated.payload = TaskEventPayload::TaskCreated {
+            workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
+            intent: "intent".into(),
+            input_revision: legacy_create_v1_input_revision(&migrated.event_id),
+        };
+
+        assert_eq!(
+            ledger.events(&migrated.task_id).unwrap(),
+            vec![migrated.clone()]
+        );
+        assert_eq!(ledger.append(0, migrated.clone()).unwrap(), migrated);
+        assert_eq!(
+            ledger
+                .events(&TaskId::parse("task-1").unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -38,14 +38,16 @@ runtime.
 - абстракция append-only `ExecutionLedger` с expected stream revision и idempotency key;
 - SQLite-реализация Ledger: транзакционный optimistic append, уникальные event/idempotency keys,
   строгая проверка envelope, различение exact retry и conflicting identity reuse, упорядоченный
-  replay и сохранение versioned event body;
+  replay и сохранение versioned event body; `TaskCreated` предыдущего slice без
+  `input_revision` upcast-ится в детерминированный event-scoped legacy basis;
 - `ApplicationShell` как composition boundary без собственной task state machine и read-only
   query durable projection, полностью восстанавливаемой replay-ем task stream;
 - отдельная минимальная Tauri desktop composition и статический UI, отправляющий только
   `create_task` intent и read-only `get_task` query через IPC; Ledger path выводится из Tauri
   `app_data_dir`, UI сохраняет pending logical-append identity до подтверждения create и успешной
   reconciliation projection (включая случай successful create + failed query) и отображает
-  полученную durable projection, не вычисляя transitions;
+  полученную durable projection, не вычисляя transitions; pending create предыдущего slice
+  получает тот же детерминированный legacy basis перед retry;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
 
@@ -59,7 +61,10 @@ completion и его projection после повторного открытия
 failed, mismatched/stale/inapplicable, conflicting или version-incompatible evidence/history;
 запрет generic completion; exact retry без дублирования verification/completion; optimistic
 fencing stale writer. Ранее реализованные Ledger guarantees для conflicting append identity reuse,
-envelope validation и durable concurrency сохраняются.
+envelope validation и durable concurrency сохраняются. Regression tests, начинающиеся с JSON
+representations предыдущего slice, подтверждают согласованный upcast Ledger/UI pending и exact
+retry possibly committed create без второго события, а также completion такой задачи через durable
+evidence и replay после reopen.
 
 Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
 durable create, ошибка последующего projection query и безопасный retry с той же logical identity

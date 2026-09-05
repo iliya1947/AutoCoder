@@ -102,6 +102,7 @@ dependencies = [
  "autocoder-ledger",
  "autocoder-orchestration",
  "autocoder-persistence",
+ "rusqlite",
  "serde_json",
  "tempfile",
 ]

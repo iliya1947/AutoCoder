@@ -32,6 +32,11 @@ cannot complete tasks. Replay never reruns verification or consults current
 time, filesystem, provider, or network state, and rejects missing, failed,
 stale, conflicting, or version-incompatible evidence/history.
 
+Version 1 create events and pending UI submissions written before
+`input_revision` was introduced are compatibly upcast from their stable create
+event identity. Both boundaries derive the same deterministic legacy input
+reference, so an unknown-outcome pre-upgrade create remains an exact retry.
+
 `desktop` is a separate Tauri composition and serves the intentionally minimal
 `ui/` shell; it shares no source or runtime state with the donor Tauri app.
 

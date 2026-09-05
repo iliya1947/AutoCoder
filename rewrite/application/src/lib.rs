@@ -155,6 +155,52 @@ mod tests {
     }
 
     #[test]
+    fn main_create_history_retries_and_completes_through_durable_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE execution_events (task_id TEXT NOT NULL, revision INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL UNIQUE, body TEXT NOT NULL, PRIMARY KEY(task_id, revision));").unwrap();
+        let main_body = r#"{"schema_version":1,"task_id":"task-1","event_id":"event-1","stream_revision":1,"idempotency_key":"ui-request-1","payload":{"type":"task_created","workspace_id":"workspace-1","intent":"Create the first task"}}"#;
+        connection.execute(
+            "INSERT INTO execution_events(task_id, revision, event_id, idempotency_key, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["task-1", 1, "event-1", "ui-request-1", main_body],
+        ).unwrap();
+        drop(connection);
+
+        let shell = ApplicationShell::open(&path).unwrap();
+        let legacy_input = legacy_create_v1_input_revision(&EventId::parse("event-1").unwrap());
+        let mut retried_create = intent("ui-request-1");
+        retried_create.input_revision = legacy_input.clone();
+        assert_eq!(
+            shell.create_task(retried_create).unwrap().stream_revision,
+            1
+        );
+        shell
+            .transition_task(transition(
+                TaskState::Ready,
+                1,
+                "ready-event",
+                "ready-request",
+            ))
+            .unwrap();
+
+        let legacy_basis = basis("task-1", "event-1", legacy_input.as_str());
+        let mut record = verification(VerificationOutcome::Verified, 2);
+        record.evidence.basis = legacy_basis.clone();
+        shell.record_verification(record).unwrap();
+        let mut complete = completion(3);
+        complete.basis = legacy_basis.clone();
+        shell.complete_task(complete).unwrap();
+        drop(shell);
+
+        let reopened = ApplicationShell::open(&path).unwrap();
+        let projection = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        assert_eq!(projection.input_basis, legacy_basis);
+        assert_eq!(projection.state, TaskState::Completed);
+        assert_eq!(projection.stream_revision, 4);
+    }
+
+    #[test]
     fn competing_append_is_fenced_by_stream_revision() {
         let shell = ApplicationShell::open(":memory:").unwrap();
         shell.create_task(intent("ui-request-1")).unwrap();

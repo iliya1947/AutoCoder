@@ -58,6 +58,15 @@ mod tests {
         let error = serde_json::from_str::<TaskId>(r#""   ""#).unwrap_err();
         assert!(error.to_string().contains("identifier must not be empty"));
     }
+
+    #[test]
+    fn legacy_create_input_revision_is_stable_and_event_scoped() {
+        let event_id = EventId::parse("event-from-main").unwrap();
+        assert_eq!(
+            legacy_create_v1_input_revision(&event_id).as_str(),
+            "autocoder:legacy-create-v1:event:event-from-main"
+        );
+    }
 }
 
 identifier!(WorkspaceId);
@@ -66,6 +75,20 @@ identifier!(EventId);
 identifier!(IdempotencyKey);
 identifier!(EvidenceId);
 identifier!(InputRevision);
+
+const LEGACY_CREATE_V1_INPUT_REVISION_PREFIX: &str = "autocoder:legacy-create-v1:event:";
+
+/// Deterministic input-basis reference for a v1 create written before
+/// `input_revision` became part of the contract. The event identity is shared by
+/// the durable event and the UI's pending request, so both upgrade paths derive
+/// exactly the same value without consulting current workspace state.
+pub fn legacy_create_v1_input_revision(event_id: &EventId) -> InputRevision {
+    InputRevision::parse(format!(
+        "{LEGACY_CREATE_V1_INPUT_REVISION_PREFIX}{}",
+        event_id.as_str()
+    ))
+    .expect("the non-empty prefix makes the derived input revision valid")
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CreateTaskIntent {
