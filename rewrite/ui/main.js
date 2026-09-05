@@ -5,6 +5,18 @@ const pendingKey = "autocoder.pending-create-task.v1";
 const lastTaskKey = "autocoder.last-task-id.v1";
 const projection = document.querySelector("#projection");
 
+function upgradeSubmission(submission) {
+  if (submission.contract_version === 1 && !("input_revision" in submission)) {
+    return {
+      ...submission,
+      // Must match contracts::legacy_create_v1_input_revision so an uncertain
+      // pre-upgrade create remains the same logical Ledger append.
+      input_revision: `autocoder:legacy-create-v1:event:${submission.event_id}`,
+    };
+  }
+  return submission;
+}
+
 async function showProjection(taskId) {
   const task = await window.__TAURI__.core.invoke("get_task", { taskId });
   document.querySelector("#projection-task").textContent = task.task_id;
@@ -20,6 +32,7 @@ function newSubmission(intent) {
     workspace_id: "workspace-default",
     task_id: `task-${id}`,
     intent,
+    input_revision: `initial-input-${id}`,
     event_id: `event-${id}`,
     idempotency_key: `ui-${id}`,
     expected_revision: 0,
@@ -27,6 +40,7 @@ function newSubmission(intent) {
 }
 
 async function submit(submission) {
+  submission = upgradeSubmission(submission);
   localStorage.setItem(pendingKey, JSON.stringify(submission));
   result.textContent = "Creating durable task…";
   let ledgerEvent;
@@ -53,12 +67,12 @@ async function submit(submission) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const pending = localStorage.getItem(pendingKey);
-  await submit(pending ? JSON.parse(pending) : newSubmission(intentField.value));
+  await submit(pending ? upgradeSubmission(JSON.parse(pending)) : newSubmission(intentField.value));
 });
 
 const pending = localStorage.getItem(pendingKey);
 if (pending) {
-  const submission = JSON.parse(pending);
+  const submission = upgradeSubmission(JSON.parse(pending));
   intentField.value = submission.intent;
   submit(submission);
 } else {

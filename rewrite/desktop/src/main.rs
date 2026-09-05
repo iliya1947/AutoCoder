@@ -67,6 +67,7 @@ mod tests {
                 workspace_id: WorkspaceId::parse("workspace-desktop").unwrap(),
                 task_id: TaskId::parse("task-desktop").unwrap(),
                 intent: "Start clean runtime".into(),
+                input_revision: InputRevision::parse("desktop-input-1").unwrap(),
                 event_id: EventId::parse("event-desktop").unwrap(),
                 idempotency_key: IdempotencyKey::parse("request-desktop").unwrap(),
                 expected_revision: 0,

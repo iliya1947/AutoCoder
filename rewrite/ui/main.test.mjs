@@ -69,3 +69,62 @@ test("confirmed create and failed projection retry the same logical identity", a
   assert.equal(localStorage.getItem(pendingKey), null);
   assert.equal(element("#projection-state").textContent, "created");
 });
+
+test("pending create from main upgrades deterministically before startup reconciliation", async () => {
+  const pendingKey = "autocoder.pending-create-task.v1";
+  const mainSubmission = {
+    contract_version: 1,
+    workspace_id: "workspace-default",
+    task_id: "task-pre-upgrade",
+    intent: "Possibly committed before upgrade",
+    event_id: "event-pre-upgrade",
+    idempotency_key: "ui-pre-upgrade",
+    expected_revision: 0,
+  };
+  const values = new Map([[pendingKey, JSON.stringify(mainSubmission)]]);
+  const elements = new Map();
+  const element = (selector) => {
+    if (!elements.has(selector)) {
+      elements.set(selector, {
+        hidden: true,
+        textContent: "",
+        value: "",
+        reset() {},
+        addEventListener(type, handler) {
+          this[type] = handler;
+        },
+      });
+    }
+    return elements.get(selector);
+  };
+  const createCalls = [];
+  const invoke = async (command, arguments_) => {
+    if (command === "create_task") {
+      createCalls.push(structuredClone(arguments_.intent));
+      return { stream_revision: 1 };
+    }
+    return { task_id: arguments_.taskId, state: "created", stream_revision: 1 };
+  };
+  const context = vm.createContext({
+    console,
+    crypto: { randomUUID: () => "unused" },
+    document: { querySelector: element },
+    localStorage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    },
+    structuredClone,
+    window: { __TAURI__: { core: { invoke } } },
+  });
+  const source = await readFile(new URL("./main.js", import.meta.url), "utf8");
+  vm.runInContext(source, context);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(createCalls.length, 1);
+  assert.deepEqual(createCalls[0], {
+    ...mainSubmission,
+    input_revision: "autocoder:legacy-create-v1:event:event-pre-upgrade",
+  });
+  assert.equal(values.get(pendingKey), undefined);
+});

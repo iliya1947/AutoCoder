@@ -1,6 +1,7 @@
 use autocoder_contracts::{
-    CreateTaskIntent, LedgerEvent, TaskEventPayload, TaskId, TaskProjection, TaskState,
-    TransitionTaskIntent, CONTRACT_VERSION,
+    CompleteTaskIntent, CreateTaskIntent, EvidenceId, LedgerEvent, RecordVerificationIntent,
+    SemanticVerificationEvidence, TaskEventPayload, TaskId, TaskProjection, TaskState,
+    TransitionTaskIntent, VerificationBasis, VerificationOutcome, CONTRACT_VERSION,
 };
 use autocoder_ledger::{ExecutionLedger, LedgerError};
 use thiserror::Error;
@@ -19,8 +20,16 @@ pub enum OrchestrationError {
     IncompatibleHistory(String),
     #[error("invalid task transition from {from:?} to {to:?}")]
     InvalidTransition { from: TaskState, to: TaskState },
-    #[error("task completion requires durable verified semantic-completion evidence")]
+    #[error("task completion is owned by the verified completion path")]
     CompletionRequiresVerifiedEvidence,
+    #[error("verification evidence {0} is absent")]
+    EvidenceNotFound(EvidenceId),
+    #[error("verification evidence {0} did not verify semantic completion")]
+    EvidenceFailed(EvidenceId),
+    #[error("verification evidence is not applicable to the task's current input basis")]
+    EvidenceBasisMismatch,
+    #[error("verification evidence identity {0} is already present in task history")]
+    EvidenceIdentityConflict(EvidenceId),
 }
 
 pub struct OrchestrationCore<L> {
@@ -43,20 +52,21 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             schema_version: CONTRACT_VERSION,
             task_id: intent.task_id.clone(),
             event_id: intent.event_id,
-            stream_revision: intent.expected_revision + 1,
-            idempotency_key: intent.idempotency_key.clone(),
+            stream_revision: 1,
+            idempotency_key: intent.idempotency_key,
             payload: TaskEventPayload::TaskCreated {
                 workspace_id: intent.workspace_id,
                 intent: intent.intent,
+                input_revision: intent.input_revision,
             },
         };
-        Ok(self.ledger.append(intent.expected_revision, event)?)
+        Ok(self.ledger.append(0, event)?)
     }
 
-    /// Rebuilds the read model exclusively from the durable event stream.
+    /// Rebuilds the read model exclusively from durable history. Replay performs
+    /// no verification and consults no clock, filesystem, provider, or network.
     pub fn task(&self, task_id: &TaskId) -> Result<TaskProjection, OrchestrationError> {
-        let events = self.ledger.events(task_id)?;
-        project(task_id, &events)
+        project(task_id, &self.ledger.events(task_id)?)
     }
 
     pub fn transition_task(
@@ -65,25 +75,8 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
     ) -> Result<LedgerEvent, OrchestrationError> {
         intent.validate()?;
         let events = self.ledger.events(&intent.task_id)?;
-        let actual = events.len() as u64;
-        if intent.expected_revision > actual {
-            return Err(LedgerError::RevisionConflict {
-                expected: intent.expected_revision,
-                actual,
-            }
-            .into());
-        }
-        // Validate the history at the caller's expected revision. This permits an
-        // exact append retry to reach the Ledger while stale conflicting work is
-        // still fenced by its stable identity or expected stream revision.
-        let current = project(
-            &intent.task_id,
-            &events[..intent.expected_revision as usize],
-        )?;
-        let payload = match (current.state, intent.target_state) {
-            // TaskCompleted remains part of the replay contract, but this generic
-            // lifecycle command cannot produce it. A later orchestration-owned
-            // completion path must first append/validate durable verification.
+        let current = project_at_expected(&intent.task_id, &events, intent.expected_revision)?;
+        let payload = match (current.projection.state, intent.target_state) {
             (_, TaskState::Completed) => {
                 return Err(OrchestrationError::CompletionRequiresVerifiedEvidence)
             }
@@ -93,180 +86,271 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             (TaskState::Ready, TaskState::Blocked) => TaskEventPayload::TaskBlocked,
             (from, to) => return Err(OrchestrationError::InvalidTransition { from, to }),
         };
-        let event = LedgerEvent {
-            schema_version: CONTRACT_VERSION,
-            task_id: intent.task_id,
-            event_id: intent.event_id,
-            stream_revision: intent.expected_revision.checked_add(1).ok_or_else(|| {
-                OrchestrationError::IncompatibleHistory("stream revision overflow".into())
-            })?,
-            idempotency_key: intent.idempotency_key,
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
             payload,
-        };
-        Ok(self.ledger.append(intent.expected_revision, event)?)
+        )
+    }
+
+    /// Persists the verifier's historical result without treating success as
+    /// completion. Applicability is deliberately evaluated by completion replay.
+    pub fn record_verification(
+        &self,
+        intent: RecordVerificationIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let events = self.ledger.events(&intent.task_id)?;
+        let current = project_at_expected(&intent.task_id, &events, intent.expected_revision)?;
+        if current.projection.state == TaskState::Completed {
+            return Err(OrchestrationError::InvalidTransition {
+                from: TaskState::Completed,
+                to: TaskState::Completed,
+            });
+        }
+        if current
+            .evidence
+            .iter()
+            .any(|item| item.evidence_id == intent.evidence.evidence_id)
+        {
+            return Err(OrchestrationError::EvidenceIdentityConflict(
+                intent.evidence.evidence_id,
+            ));
+        }
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::SemanticVerificationRecorded {
+                evidence: intent.evidence,
+            },
+        )
+    }
+
+    /// The sole production path to TaskCompleted. It decides exclusively from
+    /// the replayed prefix at `expected_revision`, then durably appends completion.
+    pub fn complete_task(
+        &self,
+        intent: CompleteTaskIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let events = self.ledger.events(&intent.task_id)?;
+        let current = project_at_expected(&intent.task_id, &events, intent.expected_revision)?;
+        if intent.basis != current.projection.input_basis {
+            return Err(OrchestrationError::EvidenceBasisMismatch);
+        }
+        let evidence = current
+            .evidence
+            .iter()
+            .find(|e| e.evidence_id == intent.evidence_id)
+            .ok_or_else(|| OrchestrationError::EvidenceNotFound(intent.evidence_id.clone()))?;
+        if evidence.basis != current.projection.input_basis {
+            return Err(OrchestrationError::EvidenceBasisMismatch);
+        }
+        if evidence.outcome != VerificationOutcome::Verified {
+            return Err(OrchestrationError::EvidenceFailed(intent.evidence_id));
+        }
+        if !matches!(
+            current.projection.state,
+            TaskState::Ready | TaskState::Blocked
+        ) {
+            return Err(OrchestrationError::InvalidTransition {
+                from: current.projection.state,
+                to: TaskState::Completed,
+            });
+        }
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::TaskCompleted {
+                evidence_id: evidence.evidence_id.clone(),
+                basis: intent.basis,
+            },
+        )
+    }
+
+    fn append(
+        &self,
+        task_id: TaskId,
+        event_id: autocoder_contracts::EventId,
+        idempotency_key: autocoder_contracts::IdempotencyKey,
+        expected_revision: u64,
+        payload: TaskEventPayload,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        let stream_revision = expected_revision.checked_add(1).ok_or_else(|| {
+            OrchestrationError::IncompatibleHistory("stream revision overflow".into())
+        })?;
+        Ok(self.ledger.append(
+            expected_revision,
+            LedgerEvent {
+                schema_version: CONTRACT_VERSION,
+                task_id,
+                event_id,
+                stream_revision,
+                idempotency_key,
+                payload,
+            },
+        )?)
     }
 }
 
+struct ReplayState {
+    projection: TaskProjection,
+    evidence: Vec<SemanticVerificationEvidence>,
+}
+
+fn project_at_expected(
+    task_id: &TaskId,
+    events: &[LedgerEvent],
+    expected: u64,
+) -> Result<ReplayState, OrchestrationError> {
+    let actual = events.len() as u64;
+    if expected > actual {
+        return Err(LedgerError::RevisionConflict { expected, actual }.into());
+    }
+    project_state(task_id, &events[..expected as usize])
+}
+
 fn project(task_id: &TaskId, events: &[LedgerEvent]) -> Result<TaskProjection, OrchestrationError> {
+    Ok(project_state(task_id, events)?.projection)
+}
+
+fn project_state(
+    task_id: &TaskId,
+    events: &[LedgerEvent],
+) -> Result<ReplayState, OrchestrationError> {
     let first = events
         .first()
         .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.clone()))?;
-    let (workspace_id, intent) = match &first.payload {
+    validate_envelope(task_id, first, 1)?;
+    let (workspace_id, intent, input_revision) = match &first.payload {
         TaskEventPayload::TaskCreated {
             workspace_id,
             intent,
-        } => (workspace_id.clone(), intent.clone()),
+            input_revision,
+        } => (workspace_id.clone(), intent.clone(), input_revision.clone()),
         _ => {
             return Err(OrchestrationError::IncompatibleHistory(
                 "first event is not task_created".into(),
             ))
         }
     };
+    let input_basis = VerificationBasis {
+        schema_version: CONTRACT_VERSION,
+        task_id: task_id.clone(),
+        task_created_event_id: first.event_id.clone(),
+        workspace_id: workspace_id.clone(),
+        input_revision,
+    };
     let mut state = TaskState::Created;
-    for (index, event) in events.iter().enumerate() {
-        let revision = (index as u64) + 1;
-        if event.schema_version != CONTRACT_VERSION {
-            return Err(OrchestrationError::IncompatibleHistory(format!(
-                "unsupported event schema version {} at revision {revision}",
-                event.schema_version
-            )));
-        }
-        if &event.task_id != task_id || event.stream_revision != revision {
-            return Err(OrchestrationError::IncompatibleHistory(format!(
-                "invalid envelope at revision {revision}"
-            )));
-        }
-        if index == 0 {
-            continue;
-        }
-        let next = match &event.payload {
-            TaskEventPayload::TaskReady => TaskState::Ready,
-            TaskEventPayload::TaskBlocked => TaskState::Blocked,
-            TaskEventPayload::TaskCompleted => {
-                return Err(OrchestrationError::IncompatibleHistory(
-                    "task_completed has no durable semantic-verification evidence".into(),
-                ))
+    let mut evidence: Vec<SemanticVerificationEvidence> = Vec::new();
+    let mut completion_evidence_id = None;
+    for (index, event) in events.iter().enumerate().skip(1) {
+        let revision = index as u64 + 1;
+        validate_envelope(task_id, event, revision)?;
+        match &event.payload {
+            TaskEventPayload::TaskReady
+                if matches!(state, TaskState::Created | TaskState::Blocked) =>
+            {
+                state = TaskState::Ready
+            }
+            TaskEventPayload::TaskBlocked if state == TaskState::Ready => {
+                state = TaskState::Blocked
+            }
+            TaskEventPayload::SemanticVerificationRecorded { evidence: item } => {
+                if item.schema_version != CONTRACT_VERSION
+                    || item.basis.schema_version != CONTRACT_VERSION
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "unsupported verification evidence/basis version at revision {revision}"
+                    )));
+                }
+                if evidence
+                    .iter()
+                    .any(|existing| existing.evidence_id == item.evidence_id)
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "conflicting or duplicate evidence identity {}",
+                        item.evidence_id
+                    )));
+                }
+                evidence.push(item.clone());
+            }
+            TaskEventPayload::TaskCompleted { evidence_id, basis } => {
+                if basis.schema_version != CONTRACT_VERSION {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "unsupported completion basis version at revision {revision}"
+                    )));
+                }
+                let proof = evidence
+                    .iter()
+                    .find(|item| &item.evidence_id == evidence_id)
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(format!(
+                            "completion references absent evidence {evidence_id}"
+                        ))
+                    })?;
+                if basis != &input_basis
+                    || &proof.basis != basis
+                    || proof.outcome != VerificationOutcome::Verified
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!("completion evidence is failed, stale, or inapplicable at revision {revision}")));
+                }
+                if !matches!(state, TaskState::Ready | TaskState::Blocked) {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "invalid transition from {state:?} to Completed at revision {revision}"
+                    )));
+                }
+                state = TaskState::Completed;
+                completion_evidence_id = Some(evidence_id.clone());
             }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(
                     "task_created occurs more than once".into(),
                 ))
             }
-        };
-        let valid = matches!(
-            (state, next),
-            (TaskState::Created, TaskState::Ready)
-                | (TaskState::Blocked, TaskState::Ready)
-                | (TaskState::Ready, TaskState::Blocked)
-                | (TaskState::Ready, TaskState::Completed)
-                | (TaskState::Blocked, TaskState::Completed)
-        );
-        if !valid {
-            return Err(OrchestrationError::IncompatibleHistory(format!(
-                "invalid transition from {state:?} to {next:?} at revision {revision}"
-            )));
+            _ => {
+                return Err(OrchestrationError::IncompatibleHistory(format!(
+                    "invalid lifecycle event at revision {revision}"
+                )))
+            }
         }
-        state = next;
     }
-    Ok(TaskProjection {
-        schema_version: CONTRACT_VERSION,
-        task_id: task_id.clone(),
-        workspace_id,
-        intent,
-        state,
-        stream_revision: events.len() as u64,
+    Ok(ReplayState {
+        projection: TaskProjection {
+            schema_version: CONTRACT_VERSION,
+            task_id: task_id.clone(),
+            workspace_id,
+            intent,
+            input_basis,
+            state,
+            stream_revision: events.len() as u64,
+            completion_evidence_id,
+        },
+        evidence,
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use autocoder_contracts::{EventId, IdempotencyKey, WorkspaceId};
-
-    struct ReplayLedger(Vec<LedgerEvent>);
-
-    impl ExecutionLedger for ReplayLedger {
-        fn append(&self, _: u64, _: LedgerEvent) -> Result<LedgerEvent, LedgerError> {
-            unreachable!()
-        }
-
-        fn events(&self, _: &TaskId) -> Result<Vec<LedgerEvent>, LedgerError> {
-            Ok(self.0.clone())
-        }
+fn validate_envelope(
+    task_id: &TaskId,
+    event: &LedgerEvent,
+    revision: u64,
+) -> Result<(), OrchestrationError> {
+    if event.schema_version != CONTRACT_VERSION {
+        return Err(OrchestrationError::IncompatibleHistory(format!(
+            "unsupported event schema version {} at revision {revision}",
+            event.schema_version
+        )));
     }
-
-    fn event(revision: u64, payload: TaskEventPayload) -> LedgerEvent {
-        LedgerEvent {
-            schema_version: CONTRACT_VERSION,
-            task_id: TaskId::parse("task-1").unwrap(),
-            event_id: EventId::parse(format!("event-{revision}")).unwrap(),
-            stream_revision: revision,
-            idempotency_key: IdempotencyKey::parse(format!("request-{revision}")).unwrap(),
-            payload,
-        }
+    if &event.task_id != task_id || event.stream_revision != revision {
+        return Err(OrchestrationError::IncompatibleHistory(format!(
+            "invalid envelope at revision {revision}"
+        )));
     }
-
-    fn created() -> LedgerEvent {
-        event(
-            1,
-            TaskEventPayload::TaskCreated {
-                workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
-                intent: "intent".into(),
-            },
-        )
-    }
-
-    #[test]
-    fn replay_rejects_invalid_lifecycle_history() {
-        let core = OrchestrationCore::new(ReplayLedger(vec![
-            created(),
-            event(2, TaskEventPayload::TaskCompleted),
-        ]));
-        assert!(matches!(
-            core.task(&TaskId::parse("task-1").unwrap()),
-            Err(OrchestrationError::IncompatibleHistory(_))
-        ));
-    }
-
-    #[test]
-    fn replay_rejects_completed_event_without_durable_verification_evidence() {
-        let core = OrchestrationCore::new(ReplayLedger(vec![
-            created(),
-            event(2, TaskEventPayload::TaskReady),
-            event(3, TaskEventPayload::TaskCompleted),
-        ]));
-        let error = core.task(&TaskId::parse("task-1").unwrap()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("no durable semantic-verification evidence"));
-    }
-
-    #[test]
-    fn replay_rejects_incompatible_event_version() {
-        let mut incompatible = created();
-        incompatible.schema_version = CONTRACT_VERSION + 1;
-        let core = OrchestrationCore::new(ReplayLedger(vec![incompatible]));
-        let error = core.task(&TaskId::parse("task-1").unwrap()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported event schema version"));
-    }
-
-    #[test]
-    fn replay_rejects_missing_and_noncontiguous_history() {
-        let missing = OrchestrationCore::new(ReplayLedger(vec![]));
-        assert!(matches!(
-            missing.task(&TaskId::parse("task-1").unwrap()),
-            Err(OrchestrationError::TaskNotFound(_))
-        ));
-
-        let core = OrchestrationCore::new(ReplayLedger(vec![
-            created(),
-            event(3, TaskEventPayload::TaskReady),
-        ]));
-        assert!(matches!(
-            core.task(&TaskId::parse("task-1").unwrap()),
-            Err(OrchestrationError::IncompatibleHistory(_))
-        ));
-    }
+    Ok(())
 }

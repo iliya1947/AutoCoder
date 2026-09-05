@@ -6,8 +6,8 @@
 
 ## Текущий этап
 
-**Второй vertical slice clean rewrite реализован: durable task lifecycle projection и явный
-lifecycle новых задач.**
+**Третий vertical slice clean rewrite реализован: durable semantic-verification contract и
+orchestration-owned completion path.**
 
 `Doc/PROJECT_MEMORY.md` остаётся неизменённым **FROZEN ARCHITECTURE CONTRACT v1**. Старый React,
 Python и Rust/Tauri runtime сохранён только как donor/reference и не является dependency нового
@@ -25,20 +25,29 @@ runtime.
   `CreateTaskIntent`, `LedgerEvent` и первый `TaskCreated` payload;
 - отдельный `OrchestrationCore` как единственный владелец перехода create-task;
 - versioned lifecycle с рабочими переходами `created -> ready` и `ready <-> blocked`; terminal
-  `completed` сохранён как versioned state/event, но его production и успешная projection
-  зарезервированы до появления orchestration-owned durable semantic-verification evidence, а
-  generic transition и replay history без evidence явно отклоняются;
+  `completed` производится только отдельным orchestration-owned completion path после replay
+  подтверждённого durable semantic-verification evidence; generic transition не может завершить
+  task;
+- first-class versioned `SemanticVerificationEvidence` со stable `EvidenceId`, outcome,
+  verifier provenance и applicability basis, связывающим task, `TaskCreated` event, workspace и
+  opaque `InputRevision`; это минимальная AutoCoder-owned reference boundary, а не фиктивная
+  реализация Workspace subsystem;
+- verification result сначала добавляется в Ledger отдельным immutable fact; completion выбирает
+  evidence по identity и принимает решение только из replay сохранённого stream prefix, без
+  повторной verification и обращений к clock/filesystem/provider/network;
 - абстракция append-only `ExecutionLedger` с expected stream revision и idempotency key;
 - SQLite-реализация Ledger: транзакционный optimistic append, уникальные event/idempotency keys,
   строгая проверка envelope, различение exact retry и conflicting identity reuse, упорядоченный
-  replay и сохранение versioned event body;
+  replay и сохранение versioned event body; `TaskCreated` предыдущего slice без
+  `input_revision` upcast-ится в детерминированный event-scoped legacy basis;
 - `ApplicationShell` как composition boundary без собственной task state machine и read-only
   query durable projection, полностью восстанавливаемой replay-ем task stream;
 - отдельная минимальная Tauri desktop composition и статический UI, отправляющий только
   `create_task` intent и read-only `get_task` query через IPC; Ledger path выводится из Tauri
   `app_data_dir`, UI сохраняет pending logical-append identity до подтверждения create и успешной
   reconciliation projection (включая случай successful create + failed query) и отображает
-  полученную durable projection, не вычисляя transitions;
+  полученную durable projection, не вычисляя transitions; pending create предыдущего slice
+  получает тот же детерминированный legacy basis перед retry;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
 
@@ -47,12 +56,15 @@ Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
 
 ## Проверенное поведение
 
-`cargo test --manifest-path rewrite/Cargo.toml --workspace` подтверждает replay lifecycle после
-повторного открытия SQLite store, реализованные replay states, отказ для invalid transitions и
-неподтверждённого semantic completion как при production, так и при replay, несовместимой версии,
-неполной/некорректной history, read-only application/desktop query, exact idempotent retry и
-optimistic fencing конкурирующих lifecycle append. Ранее реализованные Ledger guarantees для
-conflicting identity reuse, envelope validation и durable concurrency сохраняются.
+`cargo test --manifest-path rewrite/Cargo.toml --workspace` подтверждает durable verified
+completion и его projection после повторного открытия SQLite store; отказ при отсутствующем,
+failed, mismatched/stale/inapplicable, conflicting или version-incompatible evidence/history;
+запрет generic completion; exact retry без дублирования verification/completion; optimistic
+fencing stale writer. Ранее реализованные Ledger guarantees для conflicting append identity reuse,
+envelope validation и durable concurrency сохраняются. Regression tests, начинающиеся с JSON
+representations предыдущего slice, подтверждают согласованный upcast Ledger/UI pending и exact
+retry possibly committed create без второго события, а также completion такой задачи через durable
+evidence и replay после reopen.
 
 Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
 durable create, ошибка последующего projection query и безопасный retry с той же logical identity
@@ -64,9 +76,9 @@ durable create, ошибка последующего projection query и без
 
 ## Существенные ограничения текущего slice
 
-- Lifecycle пока намеренно ограничен состояниями `created`/`ready`/`blocked` и replay-контрактом
-  `completed`; production `TaskCompleted`, attempts, execution authority, stop/resume и durable
-  доказательство semantic completion отсутствуют.
+- Lifecycle пока намеренно не содержит attempts, execution authority и stop/resume. Текущий
+  `InputRevision` является opaque stable reference: полноценные Workspace revisions/hashes и их
+  смена появятся только с отдельным Workspace slice.
 - Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
   orchestration-version migration и crash reconciliation.
 - Workspace/Provider/Supervisor/Diagnostics пока являются только ownership boundaries.
@@ -76,11 +88,10 @@ durable create, ошибка последующего projection query и без
 
 ## Следующий точный технический шаг
 
-Добавить минимальный durable semantic-verification contract и orchestration-owned completion path,
-который только после подтверждённого evidence сможет производить зарезервированный
-`TaskCompleted`. Provider/tool execution, stop/resume, physical process lifecycle, capability
-registry, Workspace Transaction и provider adapter должны по-прежнему подключаться последующими
-slices через новые boundaries, а не через legacy orchestration.
+Добавить минимальный durable attempt/execution-authority contract в Orchestration Core, не
+подключая пока provider/tool execution или physical process lifecycle. Stop/resume, capability
+registry, Workspace Transaction и provider adapters должны по-прежнему появляться отдельными
+последующими slices через clean boundaries, а не через legacy orchestration.
 
 ## Правило обновления этого файла
 

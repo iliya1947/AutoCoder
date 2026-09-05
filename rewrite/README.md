@@ -16,14 +16,26 @@ Workspace, Provider Runtime, Process Supervisor, and Diagnostics. Those modules
 cannot transition tasks. `orchestration` is the only owner of task transitions;
 `persistence` only implements the append-only ledger contract.
 
-The current lifecycle contract projects `created`, `ready`, `blocked`, and
-`completed` by replaying the versioned task stream. The orchestration core owns
-the transition table and rejects invalid or incompatible history. The
-application and desktop layers expose a read-only projection query; the UI only
-renders that result. `completed` is reserved for a future orchestration-owned
-path with durable semantic-verification evidence; until that contract exists,
-the generic lifecycle transition cannot produce it and replay rejects an
-unverified completion event rather than projecting success.
+The lifecycle contract projects `created`, `ready`, `blocked`, and `completed`
+only by replaying the versioned task stream. Semantic-verification evidence has
+a stable identity, outcome, verifier provenance, and a versioned applicability
+basis tied to the task-creation event and an opaque workspace input revision.
+That input revision is an AutoCoder-owned reference boundary, not a fabricated
+Workspace implementation; a later Workspace subsystem can bind it to revisions
+or hashes.
+
+Verification is appended as a durable fact before completion and does not
+itself change lifecycle state. Only the orchestration-owned completion command
+can append `TaskCompleted`, and only after replay finds the selected verified
+evidence applicable to the current input basis. Generic lifecycle transitions
+cannot complete tasks. Replay never reruns verification or consults current
+time, filesystem, provider, or network state, and rejects missing, failed,
+stale, conflicting, or version-incompatible evidence/history.
+
+Version 1 create events and pending UI submissions written before
+`input_revision` was introduced are compatibly upcast from their stable create
+event identity. Both boundaries derive the same deterministic legacy input
+reference, so an unknown-outcome pre-upgrade create remains an exact retry.
 
 `desktop` is a separate Tauri composition and serves the intentionally minimal
 `ui/` shell; it shares no source or runtime state with the donor Tauri app.
