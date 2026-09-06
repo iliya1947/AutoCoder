@@ -1,11 +1,14 @@
 use autocoder_contracts::{
-    AttemptAuthority, AttemptProjection, CompleteTaskIntent, CreateTaskIntent, DefineStepIntent,
-    DurableStepProjection, EvidenceId, LedgerEvent, RecordAttemptOutcomeIntent,
-    RecordVerificationIntent, SemanticVerificationEvidence, StartAttemptIntent, StepId,
-    TaskEventPayload, TaskId, TaskProjection, TaskState, TransitionTaskIntent, VerificationBasis,
-    VerificationOutcome, CONTRACT_VERSION,
+    AttemptAuthority, AttemptOutcomeContradiction, AttemptProjection, CompleteTaskIntent,
+    CreateTaskIntent, DefineStepIntent, DurableStepProjection, EvidenceId, LedgerEvent,
+    ReconcileAttemptIntent, ReconciliationConclusion, RecordAttemptObservationIntent,
+    RecordAttemptOutcomeIntent, RecordVerificationIntent, SemanticVerificationEvidence,
+    StartAttemptIntent, StepId, TaskEventPayload, TaskId, TaskProjection, TaskState,
+    TransitionTaskIntent, VerificationBasis, VerificationOutcome, CONTRACT_VERSION,
+    RECONCILIATION_SEMANTICS_VERSION,
 };
 use autocoder_ledger::{ExecutionLedger, LedgerError};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -42,6 +45,18 @@ pub enum OrchestrationError {
     AttemptAuthorityMismatch,
     #[error("attempt already has a terminal outcome")]
     AttemptAlreadyTerminal,
+    #[error("attempt outcome is unknown; a durable retry-authorizing reconciliation is required")]
+    UnknownAttemptRequiresReconciliation,
+    #[error("observation identity is already present in task history")]
+    ObservationIdentityConflict,
+    #[error("observation or reconciliation scope does not match durable attempt history")]
+    ReconciliationScopeMismatch,
+    #[error("reconciliation references an absent or differently scoped observation")]
+    ReconciliationEvidenceMismatch,
+    #[error("reconciliation identity is already present in task history")]
+    AttemptAlreadyReconciled,
+    #[error("reconciliation does not reference any new durable observation")]
+    ReconciliationEvidenceNotAdvanced,
     #[error("task {0} is completed and cannot create new execution work")]
     TaskClosed(TaskId),
 }
@@ -62,6 +77,17 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 intent.expected_revision,
             ));
         }
+        let existing = self.ledger.events(&intent.task_id)?;
+        let reconciliation_semantics_version = existing
+            .first()
+            .and_then(|event| match &event.payload {
+                TaskEventPayload::TaskCreated {
+                    reconciliation_semantics_version,
+                    ..
+                } => Some(*reconciliation_semantics_version),
+                _ => None,
+            })
+            .unwrap_or(Some(RECONCILIATION_SEMANTICS_VERSION));
         let event = LedgerEvent {
             schema_version: CONTRACT_VERSION,
             task_id: intent.task_id.clone(),
@@ -72,6 +98,7 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 workspace_id: intent.workspace_id,
                 intent: intent.intent,
                 input_revision: intent.input_revision,
+                reconciliation_semantics_version,
             },
         };
         Ok(self.ledger.append(0, event)?)
@@ -167,6 +194,23 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             .iter()
             .find(|step| step.step_id == intent.step_id)
             .ok_or_else(|| OrchestrationError::StepNotFound(intent.step_id.clone()))?;
+        if let Some(current_id) = &step.current_attempt_id {
+            let current_attempt = step
+                .attempts
+                .iter()
+                .find(|attempt| &attempt.attempt_id == current_id)
+                .expect("replay keeps current attempt identity consistent");
+            let retry_authorized = matches!(
+                current_attempt
+                    .reconciliations
+                    .last()
+                    .map(|item| &item.conclusion),
+                Some(ReconciliationConclusion::RetryAuthorized)
+            );
+            if current_attempt.outcome.is_none() && !retry_authorized {
+                return Err(OrchestrationError::UnknownAttemptRequiresReconciliation);
+            }
+        }
         let generation = step.authority_generation.checked_add(1).ok_or_else(|| {
             OrchestrationError::IncompatibleHistory(
                 "execution authority generation overflow".into(),
@@ -222,6 +266,116 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 attempt_id: intent.attempt_id,
                 authority_generation: intent.authority_generation,
                 outcome: intent.outcome,
+            },
+        )
+    }
+
+    pub fn record_attempt_observation(
+        &self,
+        intent: RecordAttemptObservationIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let events = self.ledger.events(&intent.task_id)?;
+        // Let Ledger distinguish an exact retry from a stale writer before
+        // scope validation against the writer's older prefix.
+        if (events.len() as u64) > intent.expected_revision {
+            return self.append(
+                intent.task_id,
+                intent.event_id,
+                intent.idempotency_key,
+                intent.expected_revision,
+                TaskEventPayload::AttemptObservationRecorded {
+                    observation: intent.observation,
+                },
+            );
+        }
+        let current = project_at_expected(&intent.task_id, &events, intent.expected_revision)?;
+        if current
+            .projection
+            .steps
+            .iter()
+            .flat_map(|step| &step.attempts)
+            .flat_map(|attempt| &attempt.observations)
+            .any(|item| item.observation_id == intent.observation.observation_id)
+        {
+            return Err(OrchestrationError::ObservationIdentityConflict);
+        }
+        find_scoped_attempt(&current.projection, &intent.observation.scope)?;
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::AttemptObservationRecorded {
+                observation: intent.observation,
+            },
+        )
+    }
+
+    /// Orchestration owns this decision and derives it only from the durable
+    /// prefix named by `expected_revision`; no live source is consulted here.
+    pub fn reconcile_attempt(
+        &self,
+        intent: ReconcileAttemptIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let events = self.ledger.events(&intent.task_id)?;
+        if (events.len() as u64) > intent.expected_revision {
+            return self.append(
+                intent.task_id,
+                intent.event_id,
+                intent.idempotency_key,
+                intent.expected_revision,
+                TaskEventPayload::AttemptReconciled {
+                    reconciliation: intent.reconciliation,
+                },
+            );
+        }
+        let current = project_at_expected(&intent.task_id, &events, intent.expected_revision)?;
+        if current
+            .projection
+            .steps
+            .iter()
+            .flat_map(|step| &step.attempts)
+            .flat_map(|attempt| &attempt.reconciliations)
+            .any(|item| item.reconciliation_id == intent.reconciliation.reconciliation_id)
+        {
+            return Err(OrchestrationError::AttemptAlreadyReconciled);
+        }
+        let attempt = find_scoped_attempt(&current.projection, &intent.reconciliation.scope)?;
+        if attempt.outcome.is_some() {
+            return Err(OrchestrationError::AttemptAlreadyTerminal);
+        }
+        if intent.reconciliation.observation_ids.iter().any(|id| {
+            !attempt
+                .observations
+                .iter()
+                .any(|observation| &observation.observation_id == id)
+        }) {
+            return Err(OrchestrationError::ReconciliationEvidenceMismatch);
+        }
+        let prior_decision_revision = attempt
+            .effective_reconciliation_id
+            .as_ref()
+            .and_then(|id| current.reconciliation_revisions.get(id))
+            .copied()
+            .unwrap_or(0);
+        let advances_evidence = intent.reconciliation.observation_ids.iter().any(|id| {
+            current
+                .observation_revisions
+                .get(id)
+                .is_some_and(|revision| *revision > prior_decision_revision)
+        });
+        if !advances_evidence {
+            return Err(OrchestrationError::ReconciliationEvidenceNotAdvanced);
+        }
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::AttemptReconciled {
+                reconciliation: intent.reconciliation,
             },
         )
     }
@@ -333,6 +487,28 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
 struct ReplayState {
     projection: TaskProjection,
     evidence: Vec<SemanticVerificationEvidence>,
+    observation_revisions: HashMap<autocoder_contracts::ObservationId, u64>,
+    reconciliation_revisions: HashMap<autocoder_contracts::ReconciliationId, u64>,
+}
+
+fn find_scoped_attempt<'a>(
+    projection: &'a TaskProjection,
+    scope: &autocoder_contracts::AttemptScope,
+) -> Result<&'a AttemptProjection, OrchestrationError> {
+    if scope.task_id != projection.task_id {
+        return Err(OrchestrationError::ReconciliationScopeMismatch);
+    }
+    projection
+        .steps
+        .iter()
+        .find(|step| step.step_id == scope.step_id)
+        .and_then(|step| {
+            step.attempts.iter().find(|attempt| {
+                attempt.attempt_id == scope.attempt_id
+                    && attempt.generation == scope.authority_generation
+            })
+        })
+        .ok_or(OrchestrationError::ReconciliationScopeMismatch)
 }
 
 fn project_at_expected(
@@ -359,18 +535,32 @@ fn project_state(
         .first()
         .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.clone()))?;
     validate_envelope(task_id, first, 1)?;
-    let (workspace_id, intent, input_revision) = match &first.payload {
-        TaskEventPayload::TaskCreated {
-            workspace_id,
-            intent,
-            input_revision,
-        } => (workspace_id.clone(), intent.clone(), input_revision.clone()),
-        _ => {
-            return Err(OrchestrationError::IncompatibleHistory(
-                "first event is not task_created".into(),
-            ))
-        }
-    };
+    let (workspace_id, intent, input_revision, reconciliation_semantics_version) =
+        match &first.payload {
+            TaskEventPayload::TaskCreated {
+                workspace_id,
+                intent,
+                input_revision,
+                reconciliation_semantics_version,
+            } => (
+                workspace_id.clone(),
+                intent.clone(),
+                input_revision.clone(),
+                *reconciliation_semantics_version,
+            ),
+            _ => {
+                return Err(OrchestrationError::IncompatibleHistory(
+                    "first event is not task_created".into(),
+                ))
+            }
+        };
+    if reconciliation_semantics_version
+        .is_some_and(|version| version != RECONCILIATION_SEMANTICS_VERSION)
+    {
+        return Err(OrchestrationError::IncompatibleHistory(
+            "unsupported reconciliation semantics version on task creation".into(),
+        ));
+    }
     let input_basis = VerificationBasis {
         schema_version: CONTRACT_VERSION,
         task_id: task_id.clone(),
@@ -382,6 +572,9 @@ fn project_state(
     let mut evidence: Vec<SemanticVerificationEvidence> = Vec::new();
     let mut completion_evidence_id = None;
     let mut steps: Vec<DurableStepProjection> = Vec::new();
+    let mut observation_revisions = HashMap::new();
+    let mut reconciliation_revisions = HashMap::new();
+    let mut reconciliation_era_seen = reconciliation_semantics_version.is_some();
     for (index, event) in events.iter().enumerate().skip(1) {
         let revision = index as u64 + 1;
         validate_envelope(task_id, event, revision)?;
@@ -495,6 +688,28 @@ fn project_state(
                             "attempt references absent step {step_id}"
                         ))
                     })?;
+                if let Some(current_id) = &step.current_attempt_id {
+                    let current = step
+                        .attempts
+                        .iter()
+                        .find(|attempt| &attempt.attempt_id == current_id)
+                        .ok_or_else(|| {
+                            OrchestrationError::IncompatibleHistory(
+                                "current attempt identity is absent".into(),
+                            )
+                        })?;
+                    let retry_authorized = matches!(
+                        current.reconciliations.last().map(|item| &item.conclusion),
+                        Some(ReconciliationConclusion::RetryAuthorized)
+                    );
+                    // Only the stream prefix before the first reconciliation-
+                    // era fact can be grandfathered as legacy V1 history.
+                    if current.outcome.is_none() && reconciliation_era_seen && !retry_authorized {
+                        return Err(OrchestrationError::IncompatibleHistory(format!(
+                            "unknown reconciled attempt superseded without retry authorization at revision {revision}"
+                        )));
+                    }
+                }
                 if *generation
                     != step.authority_generation.checked_add(1).ok_or_else(|| {
                         OrchestrationError::IncompatibleHistory(
@@ -516,6 +731,10 @@ fn project_state(
                     generation: *generation,
                     outcome: None,
                     authority: AttemptAuthority::Current,
+                    observations: Vec::new(),
+                    reconciliations: Vec::new(),
+                    effective_reconciliation_id: None,
+                    contradictions: Vec::new(),
                 });
             }
             TaskEventPayload::AttemptOutcomeRecorded {
@@ -546,7 +765,126 @@ fn project_state(
                         "invalid attempt outcome authority at revision {revision}"
                     )));
                 }
+                for reconciliation in &attempt.reconciliations {
+                    if let ReconciliationConclusion::ConfirmedOutcome {
+                        outcome: reconciled_outcome,
+                    } = reconciliation.conclusion
+                    {
+                        if reconciled_outcome != *outcome {
+                            attempt.contradictions.push(AttemptOutcomeContradiction {
+                                reconciliation_id: reconciliation.reconciliation_id.clone(),
+                                outcome_event_id: event.event_id.clone(),
+                                reconciled_outcome,
+                                late_outcome: *outcome,
+                            });
+                        }
+                    }
+                }
                 attempt.outcome = Some(*outcome);
+            }
+            TaskEventPayload::AttemptObservationRecorded { observation } => {
+                reconciliation_era_seen = true;
+                if observation.validate().is_err() {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "unsupported attempt observation version at revision {revision}"
+                    )));
+                }
+                if observation.scope.task_id != *task_id
+                    || steps
+                        .iter()
+                        .flat_map(|step| &step.attempts)
+                        .flat_map(|attempt| &attempt.observations)
+                        .any(|existing| existing.observation_id == observation.observation_id)
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "invalid or duplicate observation identity at revision {revision}"
+                    )));
+                }
+                let attempt = steps
+                    .iter_mut()
+                    .find(|step| step.step_id == observation.scope.step_id)
+                    .and_then(|step| {
+                        step.attempts.iter_mut().find(|attempt| {
+                            attempt.attempt_id == observation.scope.attempt_id
+                                && attempt.generation == observation.scope.authority_generation
+                        })
+                    })
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(format!(
+                            "observation has invalid attempt scope at revision {revision}"
+                        ))
+                    })?;
+                attempt.observations.push(observation.clone());
+                observation_revisions.insert(observation.observation_id.clone(), revision);
+            }
+            TaskEventPayload::AttemptReconciled { reconciliation } => {
+                reconciliation_era_seen = true;
+                if reconciliation.validate().is_err() {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "unsupported attempt reconciliation version at revision {revision}"
+                    )));
+                }
+                if reconciliation.scope.task_id != *task_id {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "reconciliation has invalid task scope at revision {revision}"
+                    )));
+                }
+                if steps
+                    .iter()
+                    .flat_map(|step| &step.attempts)
+                    .flat_map(|attempt| &attempt.reconciliations)
+                    .any(|existing| existing.reconciliation_id == reconciliation.reconciliation_id)
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "duplicate reconciliation identity at revision {revision}"
+                    )));
+                }
+                let attempt = steps
+                    .iter_mut()
+                    .find(|step| step.step_id == reconciliation.scope.step_id)
+                    .and_then(|step| {
+                        step.attempts.iter_mut().find(|attempt| {
+                            attempt.attempt_id == reconciliation.scope.attempt_id
+                                && attempt.generation == reconciliation.scope.authority_generation
+                        })
+                    })
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(format!(
+                            "reconciliation has invalid attempt scope at revision {revision}"
+                        ))
+                    })?;
+                if attempt.outcome.is_some()
+                    || reconciliation.observation_ids.is_empty()
+                    || reconciliation.observation_ids.iter().any(|id| {
+                        !attempt
+                            .observations
+                            .iter()
+                            .any(|observation| &observation.observation_id == id)
+                    })
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "invalid reconciliation evidence or state at revision {revision}"
+                    )));
+                }
+                let prior_decision_revision = attempt
+                    .effective_reconciliation_id
+                    .as_ref()
+                    .and_then(|id| reconciliation_revisions.get(id))
+                    .copied()
+                    .unwrap_or(0);
+                if !reconciliation.observation_ids.iter().any(|id| {
+                    observation_revisions
+                        .get(id)
+                        .is_some_and(|recorded| *recorded > prior_decision_revision)
+                }) {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "reconciliation does not advance durable evidence at revision {revision}"
+                    )));
+                }
+                attempt.reconciliations.push(reconciliation.clone());
+                attempt.effective_reconciliation_id =
+                    Some(reconciliation.reconciliation_id.clone());
+                reconciliation_revisions.insert(reconciliation.reconciliation_id.clone(), revision);
             }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(
@@ -573,6 +911,8 @@ fn project_state(
             steps,
         },
         evidence,
+        observation_revisions,
+        reconciliation_revisions,
     })
 }
 

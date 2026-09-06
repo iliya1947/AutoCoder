@@ -34,15 +34,32 @@ stale, conflicting, or version-incompatible evidence/history.
 
 Durable steps and their semantic attempts also live entirely in the task
 stream. Each attempt advances a per-step execution-authority generation. A new
-attempt supersedes the prior token; a late terminal result remains immutable
-history but cannot become the current attempt. A started attempt with no
-terminal event projects an unknown outcome after reopen, so recovery neither
-guesses an outcome nor blindly repeats a future side effect. Technical attempt
+attempt may supersede an unknown prior token only after an immutable, versioned
+observation has been recorded and a separate orchestration-owned reconciliation
+decision explicitly authorizes retry. Observations carry stable identity, exact
+task/step/attempt/generation scope, and source provenance; they are facts and
+never transitions. Confirmed-outcome, retry-authorized, and unresolved
+conclusions are replayed only from durable history. Reconciliation decisions
+are immutable and ordered: a later decision must cite at least one observation
+recorded after the prior decision, and its identity becomes the explicit effective decision
+without removing prior decisions. A late terminal result
+remains immutable history but cannot regain authority; any disagreement with a
+confirmed reconciliation is projected explicitly while both facts remain
+stored. A started attempt with no terminal or reconciliation event projects an
+unknown outcome after reopen, so recovery neither guesses an outcome nor
+blindly repeats a future side effect. Technical attempt
 success is deliberately independent of semantic task completion. Confirmed
 interruption is a distinct terminal outcome rather than an alias for unknown.
 Task completion revokes the last current attempt authority and prevents new
 steps or attempts, while still allowing a late pre-completion attempt result to be
 recorded as history.
+
+Replay continues to accept the original version-1 attempt representation, in
+which a later attempt could already follow an unknown attempt without a
+reconciliation event. New `TaskCreated` facts carry a reconciliation-semantics
+marker, so this deterministic exception applies only to stream prefixes that
+demonstrably predate the new contract; current commands and marked streams both
+enforce durable retry authorization for unknown current attempts.
 
 Version 1 create events and pending UI submissions written before
 `input_revision` was introduced are compatibly upcast from their stable create

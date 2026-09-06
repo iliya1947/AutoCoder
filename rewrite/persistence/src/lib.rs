@@ -159,6 +159,7 @@ mod tests {
                 workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
                 intent: "intent".into(),
                 input_revision: InputRevision::parse("input-1").unwrap(),
+                reconciliation_semantics_version: Some(RECONCILIATION_SEMANTICS_VERSION),
             },
         }
     }
@@ -185,6 +186,7 @@ mod tests {
             workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
             intent: "intent".into(),
             input_revision: legacy_create_v1_input_revision(&migrated.event_id),
+            reconciliation_semantics_version: None,
         };
 
         assert_eq!(
@@ -220,6 +222,7 @@ mod tests {
             workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
             intent: "different intent".into(),
             input_revision: InputRevision::parse("input-1").unwrap(),
+            reconciliation_semantics_version: Some(RECONCILIATION_SEMANTICS_VERSION),
         };
         assert!(matches!(
             ledger.append(0, changed_payload),

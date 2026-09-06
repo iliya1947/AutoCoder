@@ -3,6 +3,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub const CONTRACT_VERSION: u16 = 1;
+pub const RECONCILIATION_SEMANTICS_VERSION: u16 = 1;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ContractError {
@@ -12,6 +13,12 @@ pub enum ContractError {
     UnsupportedVersion(u16),
     #[error("verification provenance field {0} must not be empty")]
     EmptyVerificationField(&'static str),
+    #[error("observation provenance field {0} must not be empty")]
+    EmptyObservationField(&'static str),
+    #[error("reconciliation must reference at least one durable observation")]
+    EmptyReconciliationEvidence,
+    #[error("reconciliation field {0} must not be empty")]
+    EmptyReconciliationField(&'static str),
 }
 
 macro_rules! identifier {
@@ -77,6 +84,8 @@ identifier!(EvidenceId);
 identifier!(InputRevision);
 identifier!(StepId);
 identifier!(AttemptId);
+identifier!(ObservationId);
+identifier!(ReconciliationId);
 
 const LEGACY_CREATE_V1_INPUT_REVISION_PREFIX: &str = "autocoder:legacy-create-v1:event:";
 
@@ -163,6 +172,113 @@ pub struct AttemptProjection {
     /// A started attempt has an unknown outcome until a terminal fact is durable.
     pub outcome: Option<AttemptOutcome>,
     pub authority: AttemptAuthority,
+    /// Durable observations are facts only; they never authorize a transition.
+    pub observations: Vec<AttemptObservation>,
+    /// Immutable orchestration decisions in durable stream order.
+    pub reconciliations: Vec<AttemptReconciliation>,
+    /// Stable identity of the latest/effective decision, if any.
+    pub effective_reconciliation_id: Option<ReconciliationId>,
+    /// Late raw facts that disagree with a confirmed reconciliation remain visible.
+    pub contradictions: Vec<AttemptOutcomeContradiction>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttemptScope {
+    pub task_id: TaskId,
+    pub step_id: StepId,
+    pub attempt_id: AttemptId,
+    pub authority_generation: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ObservationProvenance {
+    pub source: String,
+    pub source_version: String,
+    pub method: String,
+    /// Opaque source-owned detail sufficient to audit how the fact was obtained.
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttemptObservation {
+    pub schema_version: u16,
+    pub observation_id: ObservationId,
+    pub scope: AttemptScope,
+    pub kind: AttemptObservationKind,
+    pub provenance: ObservationProvenance,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AttemptObservationKind {
+    OutcomeReported { outcome: AttemptOutcome },
+    OutcomeStillUnknown { reason: String },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttemptReconciliation {
+    pub schema_version: u16,
+    pub reconciliation_id: ReconciliationId,
+    pub scope: AttemptScope,
+    pub observation_ids: Vec<ObservationId>,
+    pub conclusion: ReconciliationConclusion,
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReconciliationConclusion {
+    ConfirmedOutcome { outcome: AttemptOutcome },
+    RetryAuthorized,
+    Unresolved { reason: String },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttemptOutcomeContradiction {
+    pub reconciliation_id: ReconciliationId,
+    pub outcome_event_id: EventId,
+    pub reconciled_outcome: AttemptOutcome,
+    pub late_outcome: AttemptOutcome,
+}
+
+impl AttemptObservation {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.schema_version)?;
+        for (name, value) in [
+            ("source", self.provenance.source.as_str()),
+            ("source_version", self.provenance.source_version.as_str()),
+            ("method", self.provenance.method.as_str()),
+            ("detail", self.provenance.detail.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ContractError::EmptyObservationField(name));
+            }
+        }
+        if let AttemptObservationKind::OutcomeStillUnknown { reason } = &self.kind {
+            if reason.trim().is_empty() {
+                return Err(ContractError::EmptyObservationField("reason"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl AttemptReconciliation {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.schema_version)?;
+        if self.observation_ids.is_empty() {
+            return Err(ContractError::EmptyReconciliationEvidence);
+        }
+        if self.rationale.trim().is_empty() {
+            return Err(ContractError::EmptyReconciliationField("rationale"));
+        }
+        if let ReconciliationConclusion::Unresolved { reason } = &self.conclusion {
+            if reason.trim().is_empty() {
+                return Err(ContractError::EmptyReconciliationField("reason"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -218,6 +334,26 @@ pub struct RecordAttemptOutcomeIntent {
     pub expected_revision: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RecordAttemptObservationIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub observation: AttemptObservation,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ReconcileAttemptIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub reconciliation: AttemptReconciliation,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
 impl DefineStepIntent {
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_version(self.contract_version)
@@ -231,6 +367,18 @@ impl StartAttemptIntent {
 impl RecordAttemptOutcomeIntent {
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_version(self.contract_version)
+    }
+}
+impl RecordAttemptObservationIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.contract_version)?;
+        self.observation.validate()
+    }
+}
+impl ReconcileAttemptIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.contract_version)?;
+        self.reconciliation.validate()
     }
 }
 
@@ -250,6 +398,9 @@ pub enum TaskEventPayload {
         workspace_id: WorkspaceId,
         intent: String,
         input_revision: InputRevision,
+        /// Absent only on V1 streams created before reconciliation semantics.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reconciliation_semantics_version: Option<u16>,
     },
     TaskReady,
     TaskBlocked,
@@ -274,6 +425,12 @@ pub enum TaskEventPayload {
         attempt_id: AttemptId,
         authority_generation: u64,
         outcome: AttemptOutcome,
+    },
+    AttemptObservationRecorded {
+        observation: AttemptObservation,
+    },
+    AttemptReconciled {
+        reconciliation: AttemptReconciliation,
     },
 }
 
