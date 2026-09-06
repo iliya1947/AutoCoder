@@ -547,6 +547,7 @@ fn project_state(
     let mut steps: Vec<DurableStepProjection> = Vec::new();
     let mut observation_revisions = HashMap::new();
     let mut reconciliation_revisions = HashMap::new();
+    let mut reconciliation_era_seen = false;
     for (index, event) in events.iter().enumerate().skip(1) {
         let revision = index as u64 + 1;
         validate_envelope(task_id, event, revision)?;
@@ -674,14 +675,9 @@ fn project_state(
                         current.reconciliations.last().map(|item| &item.conclusion),
                         Some(ReconciliationConclusion::RetryAuthorized)
                     );
-                    // An unknown predecessor with neither observations nor
-                    // decisions is the exact legacy V1 representation. Once a
-                    // reconciliation-era fact exists, replay enforces the same
-                    // decision fence as current commands.
-                    if current.outcome.is_none()
-                        && (!current.observations.is_empty() || !current.reconciliations.is_empty())
-                        && !retry_authorized
-                    {
+                    // Only the stream prefix before the first reconciliation-
+                    // era fact can be grandfathered as legacy V1 history.
+                    if current.outcome.is_none() && reconciliation_era_seen && !retry_authorized {
                         return Err(OrchestrationError::IncompatibleHistory(format!(
                             "unknown reconciled attempt superseded without retry authorization at revision {revision}"
                         )));
@@ -760,6 +756,7 @@ fn project_state(
                 attempt.outcome = Some(*outcome);
             }
             TaskEventPayload::AttemptObservationRecorded { observation } => {
+                reconciliation_era_seen = true;
                 if observation.validate().is_err() {
                     return Err(OrchestrationError::IncompatibleHistory(format!(
                         "unsupported attempt observation version at revision {revision}"
@@ -794,6 +791,7 @@ fn project_state(
                 observation_revisions.insert(observation.observation_id.clone(), revision);
             }
             TaskEventPayload::AttemptReconciled { reconciliation } => {
+                reconciliation_era_seen = true;
                 if reconciliation.validate().is_err() {
                     return Err(OrchestrationError::IncompatibleHistory(format!(
                         "unsupported attempt reconciliation version at revision {revision}"
