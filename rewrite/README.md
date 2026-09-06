@@ -38,7 +38,11 @@ attempt supersedes the prior token; a late terminal result remains immutable
 history but cannot become the current attempt. A started attempt with no
 terminal event projects an unknown outcome after reopen, so recovery neither
 guesses an outcome nor blindly repeats a future side effect. Technical attempt
-success is deliberately independent of semantic task completion.
+success is deliberately independent of semantic task completion. Confirmed
+interruption is a distinct terminal outcome rather than an alias for unknown.
+Task completion revokes the last current attempt authority and prevents new
+steps or attempts, while still allowing a late pre-completion attempt result to be
+recorded as history.
 
 Version 1 create events and pending UI submissions written before
 `input_revision` was introduced are compatibly upcast from their stable create

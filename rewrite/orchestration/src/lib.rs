@@ -42,6 +42,8 @@ pub enum OrchestrationError {
     AttemptAuthorityMismatch,
     #[error("attempt already has a terminal outcome")]
     AttemptAlreadyTerminal,
+    #[error("task {0} is completed and cannot create new execution work")]
+    TaskClosed(TaskId),
 }
 
 pub struct OrchestrationCore<L> {
@@ -114,6 +116,9 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             &self.ledger.events(&intent.task_id)?,
             intent.expected_revision,
         )?;
+        if current.projection.state == TaskState::Completed {
+            return Err(OrchestrationError::TaskClosed(intent.task_id));
+        }
         if current
             .projection
             .steps
@@ -144,6 +149,9 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             &self.ledger.events(&intent.task_id)?,
             intent.expected_revision,
         )?;
+        if current.projection.state == TaskState::Completed {
+            return Err(OrchestrationError::TaskClosed(intent.task_id));
+        }
         if current
             .projection
             .steps
@@ -432,11 +440,21 @@ fn project_state(
                 }
                 state = TaskState::Completed;
                 completion_evidence_id = Some(evidence_id.clone());
+                for attempt in steps.iter_mut().flat_map(|step| &mut step.attempts) {
+                    if attempt.authority == AttemptAuthority::Current {
+                        attempt.authority = AttemptAuthority::Revoked;
+                    }
+                }
             }
             TaskEventPayload::StepDefined {
                 step_id,
                 description,
             } => {
+                if state == TaskState::Completed {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "step defined after task completion at revision {revision}"
+                    )));
+                }
                 if steps.iter().any(|step| &step.step_id == step_id) {
                     return Err(OrchestrationError::IncompatibleHistory(format!(
                         "duplicate step identity {step_id}"
@@ -455,6 +473,11 @@ fn project_state(
                 attempt_id,
                 generation,
             } => {
+                if state == TaskState::Completed {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "attempt started after task completion at revision {revision}"
+                    )));
+                }
                 if steps
                     .iter()
                     .flat_map(|step| &step.attempts)

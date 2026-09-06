@@ -170,6 +170,8 @@ pub struct AttemptProjection {
 pub enum AttemptAuthority {
     Current,
     Superseded,
+    /// The task reached its terminal outcome, revoking its last current token.
+    Revoked,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -177,6 +179,7 @@ pub enum AttemptAuthority {
 pub enum AttemptOutcome {
     Succeeded,
     Failed,
+    Interrupted,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]

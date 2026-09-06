@@ -56,9 +56,12 @@ runtime.
 - terminal outcome attempt хранится как immutable historical fact; поздний outcome superseded
   attempt принимается в историю, не меняя current attempt/authority, а started attempt без outcome
   после reopen остаётся явно unknown (`outcome: None`) без автоматического retry или выдуманного
-  failed/succeeded;
+  failed/succeeded; подтверждённый `Interrupted` хранится как отдельный terminal outcome;
 - команды define/start/outcome принадлежат Orchestration Core, используют общий expected-revision
   и exact-retry Ledger contract; projection step/attempt/authority целиком строится replay-ем.
+- `TaskCompleted` закрывает создание новых steps/attempts и отзывает последнее current execution
+  authority; late outcome реально начатого до completion attempt остаётся допустимым историческим
+  фактом и не меняет terminal task outcome.
 
 Новый workspace не импортирует `src/`, `backend/` или `src-tauri/`, не содержит File/Terminal tools,
 Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.

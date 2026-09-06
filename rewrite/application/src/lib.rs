@@ -683,4 +683,128 @@ mod tests {
         assert_eq!(projection.state, TaskState::Ready);
         assert_eq!(projection.completion_evidence_id, None);
     }
+
+    fn complete_with_started_attempt(shell: &ApplicationShell) {
+        ready(shell);
+        shell.define_step(define_step(2)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 3)).unwrap();
+        shell
+            .record_verification(verification(VerificationOutcome::Verified, 4))
+            .unwrap();
+        shell.complete_task(completion(5)).unwrap();
+    }
+
+    #[test]
+    fn completed_task_rejects_new_steps_and_attempts_but_accepts_late_history() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        complete_with_started_attempt(&shell);
+
+        let mut new_step = define_step(6);
+        new_step.step_id = StepId::parse("step-after-completion").unwrap();
+        new_step.event_id = EventId::parse("define-after-completion").unwrap();
+        new_step.idempotency_key =
+            IdempotencyKey::parse("define-after-completion-request").unwrap();
+        assert!(matches!(
+            shell.define_step(new_step),
+            Err(OrchestrationError::TaskClosed(_))
+        ));
+        assert!(matches!(
+            shell.start_attempt(start_attempt("attempt-after-completion", 6)),
+            Err(OrchestrationError::TaskClosed(_))
+        ));
+
+        shell
+            .record_attempt_outcome(attempt_outcome(
+                "attempt-1",
+                1,
+                AttemptOutcome::Succeeded,
+                6,
+            ))
+            .unwrap();
+        let projection = shell.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        assert_eq!(projection.state, TaskState::Completed);
+        assert_eq!(
+            projection.steps[0].attempts[0].outcome,
+            Some(AttemptOutcome::Succeeded)
+        );
+        assert_eq!(
+            projection.steps[0].attempts[0].authority,
+            AttemptAuthority::Revoked
+        );
+        assert!(!projection
+            .steps
+            .iter()
+            .flat_map(|step| &step.attempts)
+            .any(|attempt| attempt.authority == AttemptAuthority::Current));
+    }
+
+    #[test]
+    fn replay_rejects_step_or_attempt_started_after_completion() {
+        for payload in [
+            TaskEventPayload::StepDefined {
+                step_id: StepId::parse("forged-step").unwrap(),
+                description: "forged post-completion work".into(),
+            },
+            TaskEventPayload::AttemptStarted {
+                step_id: StepId::parse("step-1").unwrap(),
+                attempt_id: AttemptId::parse("forged-attempt").unwrap(),
+                generation: 2,
+            },
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("ledger.sqlite");
+            let shell = ApplicationShell::open(&path).unwrap();
+            complete_with_started_attempt(&shell);
+            drop(shell);
+            SqliteLedger::open(&path)
+                .unwrap()
+                .append(
+                    6,
+                    LedgerEvent {
+                        schema_version: CONTRACT_VERSION,
+                        task_id: TaskId::parse("task-1").unwrap(),
+                        event_id: EventId::parse("forged-event").unwrap(),
+                        stream_revision: 7,
+                        idempotency_key: IdempotencyKey::parse("forged-request").unwrap(),
+                        payload,
+                    },
+                )
+                .unwrap();
+            let error = ApplicationShell::open(&path)
+                .unwrap()
+                .task(&TaskId::parse("task-1").unwrap())
+                .unwrap_err();
+            assert!(error.to_string().contains("after task completion"));
+        }
+    }
+
+    #[test]
+    fn confirmed_interruption_and_unknown_outcome_remain_distinct_after_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_outcome(attempt_outcome(
+                "attempt-1",
+                1,
+                AttemptOutcome::Interrupted,
+                3,
+            ))
+            .unwrap();
+        shell.start_attempt(start_attempt("attempt-2", 4)).unwrap();
+        drop(shell);
+
+        let projection = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        let attempts = &projection.steps[0].attempts;
+        assert_eq!(attempts[0].outcome, Some(AttemptOutcome::Interrupted));
+        assert_eq!(attempts[0].authority, AttemptAuthority::Superseded);
+        assert_eq!(attempts[1].outcome, None);
+        assert_eq!(attempts[1].authority, AttemptAuthority::Current);
+    }
 }
