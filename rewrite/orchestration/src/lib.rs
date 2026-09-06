@@ -674,11 +674,12 @@ fn project_state(
                         current.reconciliations.last().map(|item| &item.conclusion),
                         Some(ReconciliationConclusion::RetryAuthorized)
                     );
-                    // An unreconciled unknown predecessor is the exact legacy
-                    // V1 representation. Once reconciliation exists, replay
-                    // enforces the same decision fence as current commands.
+                    // An unknown predecessor with neither observations nor
+                    // decisions is the exact legacy V1 representation. Once a
+                    // reconciliation-era fact exists, replay enforces the same
+                    // decision fence as current commands.
                     if current.outcome.is_none()
-                        && !current.reconciliations.is_empty()
+                        && (!current.observations.is_empty() || !current.reconciliations.is_empty())
                         && !retry_authorized
                     {
                         return Err(OrchestrationError::IncompatibleHistory(format!(

@@ -1043,6 +1043,49 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_does_not_grandfather_observed_blind_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_observation(observation("attempt-1", 1, 3))
+            .unwrap();
+        drop(shell);
+
+        SqliteLedger::open(&path)
+            .unwrap()
+            .append(
+                4,
+                LedgerEvent {
+                    schema_version: CONTRACT_VERSION,
+                    task_id: TaskId::parse("task-1").unwrap(),
+                    event_id: EventId::parse("invalid-observed-start-attempt-2").unwrap(),
+                    stream_revision: 5,
+                    idempotency_key: IdempotencyKey::parse(
+                        "invalid-observed-start-attempt-2-request",
+                    )
+                    .unwrap(),
+                    payload: TaskEventPayload::AttemptStarted {
+                        step_id: StepId::parse("step-1").unwrap(),
+                        attempt_id: AttemptId::parse("attempt-2").unwrap(),
+                        generation: 2,
+                    },
+                },
+            )
+            .unwrap();
+        let error = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("superseded without retry authorization"));
+    }
+
+    #[test]
     fn unresolved_can_advance_to_retry_only_after_new_durable_evidence() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ledger.sqlite");
