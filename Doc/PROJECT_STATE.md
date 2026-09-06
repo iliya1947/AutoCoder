@@ -2,12 +2,12 @@
 
 ## Дата состояния
 
-4 сентября 2026.
+6 сентября 2026.
 
 ## Текущий этап
 
-**Третий vertical slice clean rewrite реализован: durable semantic-verification contract и
-orchestration-owned completion path.**
+**Четвёртый vertical slice clean rewrite реализован: durable step/attempt и
+execution-authority fencing contract.**
 
 `Doc/PROJECT_MEMORY.md` остаётся неизменённым **FROZEN ARCHITECTURE CONTRACT v1**. Старый React,
 Python и Rust/Tauri runtime сохранён только как donor/reference и не является dependency нового
@@ -50,6 +50,15 @@ runtime.
   получает тот же детерминированный legacy basis перед retry;
 - зарезервированные независимые boundaries Workspace, Provider Runtime, Process Supervisor и
   Diagnostics без фиктивной реализации или присвоения ими orchestration ownership.
+- durable step со stable identity и отдельные stable identities semantic attempts; каждый новый
+  attempt монотонно повышает per-step execution-authority generation и supersede-ит предыдущее
+  authority;
+- terminal outcome attempt хранится как immutable historical fact; поздний outcome superseded
+  attempt принимается в историю, не меняя current attempt/authority, а started attempt без outcome
+  после reopen остаётся явно unknown (`outcome: None`) без автоматического retry или выдуманного
+  failed/succeeded;
+- команды define/start/outcome принадлежат Orchestration Core, используют общий expected-revision
+  и exact-retry Ledger contract; projection step/attempt/authority целиком строится replay-ем.
 
 Новый workspace не импортирует `src/`, `backend/` или `src-tauri/`, не содержит File/Terminal tools,
 Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
@@ -66,6 +75,10 @@ representations предыдущего slice, подтверждают согл�
 retry possibly committed create без второго события, а также completion такой задачи через durable
 evidence и replay после reopen.
 
+Тот же Rust suite подтверждает reopen unresolved attempt, монотонное supersede authority, сохранение
+late result только как history, exact retry без дубля, fencing stale writer, полное восстановление
+authority через Ledger replay и отсутствие `TaskCompleted` после одного technical success.
+
 Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
 durable create, ошибка последующего projection query и безопасный retry с той же logical identity
 без создания новой task identity.
@@ -76,8 +89,8 @@ durable create, ошибка последующего projection query и без
 
 ## Существенные ограничения текущего slice
 
-- Lifecycle пока намеренно не содержит attempts, execution authority и stop/resume. Текущий
-  `InputRevision` является opaque stable reference: полноценные Workspace revisions/hashes и их
+- Lifecycle пока намеренно не содержит stop/resume. Текущий `InputRevision` является opaque stable
+  reference: полноценные Workspace revisions/hashes и их
   смена появятся только с отдельным Workspace slice.
 - Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
   orchestration-version migration и crash reconciliation.
@@ -88,10 +101,11 @@ durable create, ошибка последующего projection query и без
 
 ## Следующий точный технический шаг
 
-Добавить минимальный durable attempt/execution-authority contract в Orchestration Core, не
-подключая пока provider/tool execution или physical process lifecycle. Stop/resume, capability
-registry, Workspace Transaction и provider adapters должны по-прежнему появляться отдельными
-последующими slices через clean boundaries, а не через legacy orchestration.
+Добавить минимальный durable reconciliation contract для unknown attempt outcome и versioned
+nondeterministic observations, всё ещё не подключая provider/tool execution или physical process
+lifecycle. Stop/resume, capability registry, Workspace Transaction и provider adapters должны
+по-прежнему появляться отдельными последующими slices через clean boundaries, а не через legacy
+orchestration.
 
 ## Правило обновления этого файла
 

@@ -1,7 +1,9 @@
 use autocoder_contracts::{
-    CompleteTaskIntent, CreateTaskIntent, EvidenceId, LedgerEvent, RecordVerificationIntent,
-    SemanticVerificationEvidence, TaskEventPayload, TaskId, TaskProjection, TaskState,
-    TransitionTaskIntent, VerificationBasis, VerificationOutcome, CONTRACT_VERSION,
+    AttemptAuthority, AttemptProjection, CompleteTaskIntent, CreateTaskIntent, DefineStepIntent,
+    DurableStepProjection, EvidenceId, LedgerEvent, RecordAttemptOutcomeIntent,
+    RecordVerificationIntent, SemanticVerificationEvidence, StartAttemptIntent, StepId,
+    TaskEventPayload, TaskId, TaskProjection, TaskState, TransitionTaskIntent, VerificationBasis,
+    VerificationOutcome, CONTRACT_VERSION,
 };
 use autocoder_ledger::{ExecutionLedger, LedgerError};
 use thiserror::Error;
@@ -30,6 +32,16 @@ pub enum OrchestrationError {
     EvidenceBasisMismatch,
     #[error("verification evidence identity {0} is already present in task history")]
     EvidenceIdentityConflict(EvidenceId),
+    #[error("step {0} does not exist")]
+    StepNotFound(StepId),
+    #[error("step identity {0} is already present in task history")]
+    StepIdentityConflict(StepId),
+    #[error("attempt identity is already present in task history")]
+    AttemptIdentityConflict,
+    #[error("attempt or its execution-authority token does not match durable history")]
+    AttemptAuthorityMismatch,
+    #[error("attempt already has a terminal outcome")]
+    AttemptAlreadyTerminal,
 }
 
 pub struct OrchestrationCore<L> {
@@ -92,6 +104,117 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             intent.idempotency_key,
             intent.expected_revision,
             payload,
+        )
+    }
+
+    pub fn define_step(&self, intent: DefineStepIntent) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let current = project_at_expected(
+            &intent.task_id,
+            &self.ledger.events(&intent.task_id)?,
+            intent.expected_revision,
+        )?;
+        if current
+            .projection
+            .steps
+            .iter()
+            .any(|step| step.step_id == intent.step_id)
+        {
+            return Err(OrchestrationError::StepIdentityConflict(intent.step_id));
+        }
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::StepDefined {
+                step_id: intent.step_id,
+                description: intent.description,
+            },
+        )
+    }
+
+    pub fn start_attempt(
+        &self,
+        intent: StartAttemptIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let current = project_at_expected(
+            &intent.task_id,
+            &self.ledger.events(&intent.task_id)?,
+            intent.expected_revision,
+        )?;
+        if current
+            .projection
+            .steps
+            .iter()
+            .flat_map(|step| &step.attempts)
+            .any(|attempt| attempt.attempt_id == intent.attempt_id)
+        {
+            return Err(OrchestrationError::AttemptIdentityConflict);
+        }
+        let step = current
+            .projection
+            .steps
+            .iter()
+            .find(|step| step.step_id == intent.step_id)
+            .ok_or_else(|| OrchestrationError::StepNotFound(intent.step_id.clone()))?;
+        let generation = step.authority_generation.checked_add(1).ok_or_else(|| {
+            OrchestrationError::IncompatibleHistory(
+                "execution authority generation overflow".into(),
+            )
+        })?;
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::AttemptStarted {
+                step_id: intent.step_id,
+                attempt_id: intent.attempt_id,
+                generation,
+            },
+        )
+    }
+
+    pub fn record_attempt_outcome(
+        &self,
+        intent: RecordAttemptOutcomeIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        intent.validate()?;
+        let current = project_at_expected(
+            &intent.task_id,
+            &self.ledger.events(&intent.task_id)?,
+            intent.expected_revision,
+        )?;
+        let step = current
+            .projection
+            .steps
+            .iter()
+            .find(|step| step.step_id == intent.step_id)
+            .ok_or_else(|| OrchestrationError::StepNotFound(intent.step_id.clone()))?;
+        let attempt = step
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == intent.attempt_id)
+            .ok_or(OrchestrationError::AttemptAuthorityMismatch)?;
+        if attempt.generation != intent.authority_generation {
+            return Err(OrchestrationError::AttemptAuthorityMismatch);
+        }
+        if attempt.outcome.is_some() {
+            return Err(OrchestrationError::AttemptAlreadyTerminal);
+        }
+        self.append(
+            intent.task_id,
+            intent.event_id,
+            intent.idempotency_key,
+            intent.expected_revision,
+            TaskEventPayload::AttemptOutcomeRecorded {
+                step_id: intent.step_id,
+                attempt_id: intent.attempt_id,
+                authority_generation: intent.authority_generation,
+                outcome: intent.outcome,
+            },
         )
     }
 
@@ -250,6 +373,7 @@ fn project_state(
     let mut state = TaskState::Created;
     let mut evidence: Vec<SemanticVerificationEvidence> = Vec::new();
     let mut completion_evidence_id = None;
+    let mut steps: Vec<DurableStepProjection> = Vec::new();
     for (index, event) in events.iter().enumerate().skip(1) {
         let revision = index as u64 + 1;
         validate_envelope(task_id, event, revision)?;
@@ -309,6 +433,98 @@ fn project_state(
                 state = TaskState::Completed;
                 completion_evidence_id = Some(evidence_id.clone());
             }
+            TaskEventPayload::StepDefined {
+                step_id,
+                description,
+            } => {
+                if steps.iter().any(|step| &step.step_id == step_id) {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "duplicate step identity {step_id}"
+                    )));
+                }
+                steps.push(DurableStepProjection {
+                    step_id: step_id.clone(),
+                    description: description.clone(),
+                    authority_generation: 0,
+                    current_attempt_id: None,
+                    attempts: Vec::new(),
+                });
+            }
+            TaskEventPayload::AttemptStarted {
+                step_id,
+                attempt_id,
+                generation,
+            } => {
+                if steps
+                    .iter()
+                    .flat_map(|step| &step.attempts)
+                    .any(|attempt| &attempt.attempt_id == attempt_id)
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(
+                        "duplicate attempt identity".into(),
+                    ));
+                }
+                let step = steps
+                    .iter_mut()
+                    .find(|step| &step.step_id == step_id)
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(format!(
+                            "attempt references absent step {step_id}"
+                        ))
+                    })?;
+                if *generation
+                    != step.authority_generation.checked_add(1).ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(
+                            "execution authority generation overflow".into(),
+                        )
+                    })?
+                {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "non-monotonic authority generation at revision {revision}"
+                    )));
+                }
+                for attempt in &mut step.attempts {
+                    attempt.authority = AttemptAuthority::Superseded;
+                }
+                step.authority_generation = *generation;
+                step.current_attempt_id = Some(attempt_id.clone());
+                step.attempts.push(AttemptProjection {
+                    attempt_id: attempt_id.clone(),
+                    generation: *generation,
+                    outcome: None,
+                    authority: AttemptAuthority::Current,
+                });
+            }
+            TaskEventPayload::AttemptOutcomeRecorded {
+                step_id,
+                attempt_id,
+                authority_generation,
+                outcome,
+            } => {
+                let step = steps
+                    .iter_mut()
+                    .find(|step| &step.step_id == step_id)
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(format!(
+                            "outcome references absent step {step_id}"
+                        ))
+                    })?;
+                let attempt = step
+                    .attempts
+                    .iter_mut()
+                    .find(|attempt| &attempt.attempt_id == attempt_id)
+                    .ok_or_else(|| {
+                        OrchestrationError::IncompatibleHistory(
+                            "outcome references absent attempt".into(),
+                        )
+                    })?;
+                if attempt.generation != *authority_generation || attempt.outcome.is_some() {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "invalid attempt outcome authority at revision {revision}"
+                    )));
+                }
+                attempt.outcome = Some(*outcome);
+            }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(
                     "task_created occurs more than once".into(),
@@ -331,6 +547,7 @@ fn project_state(
             state,
             stream_revision: events.len() as u64,
             completion_evidence_id,
+            steps,
         },
         evidence,
     })

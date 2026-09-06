@@ -1,5 +1,6 @@
 use autocoder_contracts::{
-    CompleteTaskIntent, CreateTaskIntent, LedgerEvent, RecordVerificationIntent, TaskId,
+    CompleteTaskIntent, CreateTaskIntent, DefineStepIntent, LedgerEvent,
+    RecordAttemptOutcomeIntent, RecordVerificationIntent, StartAttemptIntent, TaskId,
     TaskProjection, TransitionTaskIntent,
 };
 use autocoder_orchestration::{OrchestrationCore, OrchestrationError};
@@ -40,6 +41,21 @@ impl ApplicationShell {
         intent: CompleteTaskIntent,
     ) -> Result<LedgerEvent, OrchestrationError> {
         self.core.complete_task(intent)
+    }
+    pub fn define_step(&self, intent: DefineStepIntent) -> Result<LedgerEvent, OrchestrationError> {
+        self.core.define_step(intent)
+    }
+    pub fn start_attempt(
+        &self,
+        intent: StartAttemptIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        self.core.start_attempt(intent)
+    }
+    pub fn record_attempt_outcome(
+        &self,
+        intent: RecordAttemptOutcomeIntent,
+    ) -> Result<LedgerEvent, OrchestrationError> {
+        self.core.record_attempt_outcome(intent)
     }
 }
 
@@ -128,6 +144,49 @@ mod tests {
             basis: basis("task-1", "event-1", "workspace-snapshot-1"),
             event_id: EventId::parse("completion-event").unwrap(),
             idempotency_key: IdempotencyKey::parse("completion-request").unwrap(),
+            expected_revision: revision,
+        }
+    }
+
+    fn define_step(revision: u64) -> DefineStepIntent {
+        DefineStepIntent {
+            contract_version: CONTRACT_VERSION,
+            task_id: TaskId::parse("task-1").unwrap(),
+            step_id: StepId::parse("step-1").unwrap(),
+            description: "future side effect".into(),
+            event_id: EventId::parse("define-step").unwrap(),
+            idempotency_key: IdempotencyKey::parse("define-step-request").unwrap(),
+            expected_revision: revision,
+        }
+    }
+
+    fn start_attempt(id: &str, revision: u64) -> StartAttemptIntent {
+        StartAttemptIntent {
+            contract_version: CONTRACT_VERSION,
+            task_id: TaskId::parse("task-1").unwrap(),
+            step_id: StepId::parse("step-1").unwrap(),
+            attempt_id: AttemptId::parse(id).unwrap(),
+            event_id: EventId::parse(format!("start-{id}")).unwrap(),
+            idempotency_key: IdempotencyKey::parse(format!("start-{id}-request")).unwrap(),
+            expected_revision: revision,
+        }
+    }
+
+    fn attempt_outcome(
+        id: &str,
+        generation: u64,
+        outcome: AttemptOutcome,
+        revision: u64,
+    ) -> RecordAttemptOutcomeIntent {
+        RecordAttemptOutcomeIntent {
+            contract_version: CONTRACT_VERSION,
+            task_id: TaskId::parse("task-1").unwrap(),
+            step_id: StepId::parse("step-1").unwrap(),
+            attempt_id: AttemptId::parse(id).unwrap(),
+            authority_generation: generation,
+            outcome,
+            event_id: EventId::parse(format!("outcome-{id}")).unwrap(),
+            idempotency_key: IdempotencyKey::parse(format!("outcome-{id}-request")).unwrap(),
             expected_revision: revision,
         }
     }
@@ -512,5 +571,116 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unsupported verification evidence/basis version"));
+    }
+
+    #[test]
+    fn started_attempt_reopens_with_explicitly_unknown_outcome_and_preserved_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        drop(shell);
+
+        let projection = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        let step = &projection.steps[0];
+        assert_eq!(step.authority_generation, 1);
+        assert_eq!(
+            step.current_attempt_id,
+            Some(AttemptId::parse("attempt-1").unwrap())
+        );
+        assert_eq!(step.attempts[0].outcome, None);
+        assert_eq!(step.attempts[0].authority, AttemptAuthority::Current);
+    }
+
+    #[test]
+    fn new_attempt_supersedes_old_authority_and_late_result_is_only_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell.start_attempt(start_attempt("attempt-2", 3)).unwrap();
+        shell
+            .record_attempt_outcome(attempt_outcome(
+                "attempt-1",
+                1,
+                AttemptOutcome::Succeeded,
+                4,
+            ))
+            .unwrap();
+
+        drop(shell);
+        let projection = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        let step = &projection.steps[0];
+        assert_eq!(step.authority_generation, 2);
+        assert_eq!(
+            step.current_attempt_id,
+            Some(AttemptId::parse("attempt-2").unwrap())
+        );
+        assert_eq!(step.attempts[0].outcome, Some(AttemptOutcome::Succeeded));
+        assert_eq!(step.attempts[0].authority, AttemptAuthority::Superseded);
+        assert_eq!(step.attempts[1].outcome, None);
+        assert_eq!(projection.state, TaskState::Created);
+    }
+
+    #[test]
+    fn attempt_append_exact_retry_is_idempotent_and_stale_writer_is_fenced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let first = ApplicationShell::open(&path).unwrap();
+        let second = ApplicationShell::open(&path).unwrap();
+        first.create_task(intent("create-request")).unwrap();
+        first.define_step(define_step(1)).unwrap();
+        let start = start_attempt("attempt-1", 2);
+        assert_eq!(
+            first.start_attempt(start.clone()).unwrap(),
+            second.start_attempt(start).unwrap()
+        );
+        assert_eq!(
+            SqliteLedger::open(&path)
+                .unwrap()
+                .events(&TaskId::parse("task-1").unwrap())
+                .unwrap()
+                .len(),
+            3
+        );
+        let stale = start_attempt("attempt-2", 2);
+        assert!(matches!(
+            second.start_attempt(stale),
+            Err(OrchestrationError::Ledger(
+                autocoder_ledger::LedgerError::RevisionConflict {
+                    expected: 2,
+                    actual: 3
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn technical_attempt_success_does_not_complete_task() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        ready(&shell);
+        shell.define_step(define_step(2)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 3)).unwrap();
+        shell
+            .record_attempt_outcome(attempt_outcome(
+                "attempt-1",
+                1,
+                AttemptOutcome::Succeeded,
+                4,
+            ))
+            .unwrap();
+        let projection = shell.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        assert_eq!(projection.state, TaskState::Ready);
+        assert_eq!(projection.completion_evidence_id, None);
     }
 }
