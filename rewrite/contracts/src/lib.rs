@@ -75,6 +75,8 @@ identifier!(EventId);
 identifier!(IdempotencyKey);
 identifier!(EvidenceId);
 identifier!(InputRevision);
+identifier!(StepId);
+identifier!(AttemptId);
 
 const LEGACY_CREATE_V1_INPUT_REVISION_PREFIX: &str = "autocoder:legacy-create-v1:event:";
 
@@ -141,6 +143,95 @@ pub struct TaskProjection {
     pub state: TaskState,
     pub stream_revision: u64,
     pub completion_evidence_id: Option<EvidenceId>,
+    pub steps: Vec<DurableStepProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DurableStepProjection {
+    pub step_id: StepId,
+    pub description: String,
+    /// Monotonically advances for every new semantic attempt of this step.
+    pub authority_generation: u64,
+    pub current_attempt_id: Option<AttemptId>,
+    pub attempts: Vec<AttemptProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttemptProjection {
+    pub attempt_id: AttemptId,
+    pub generation: u64,
+    /// A started attempt has an unknown outcome until a terminal fact is durable.
+    pub outcome: Option<AttemptOutcome>,
+    pub authority: AttemptAuthority,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptAuthority {
+    Current,
+    Superseded,
+    /// The task reached its terminal outcome, revoking its last current token.
+    Revoked,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    Succeeded,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DefineStepIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub step_id: StepId,
+    pub description: String,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct StartAttemptIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub step_id: StepId,
+    pub attempt_id: AttemptId,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RecordAttemptOutcomeIntent {
+    pub contract_version: u16,
+    pub task_id: TaskId,
+    pub step_id: StepId,
+    pub attempt_id: AttemptId,
+    /// Authority token issued when the attempt was started.
+    pub authority_generation: u64,
+    pub outcome: AttemptOutcome,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub expected_revision: u64,
+}
+
+impl DefineStepIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.contract_version)
+    }
+}
+impl StartAttemptIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.contract_version)
+    }
+}
+impl RecordAttemptOutcomeIntent {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_version(self.contract_version)
+    }
 }
 
 impl CreateTaskIntent {
@@ -168,6 +259,21 @@ pub enum TaskEventPayload {
     TaskCompleted {
         evidence_id: EvidenceId,
         basis: VerificationBasis,
+    },
+    StepDefined {
+        step_id: StepId,
+        description: String,
+    },
+    AttemptStarted {
+        step_id: StepId,
+        attempt_id: AttemptId,
+        generation: u64,
+    },
+    AttemptOutcomeRecorded {
+        step_id: StepId,
+        attempt_id: AttemptId,
+        authority_generation: u64,
+        outcome: AttemptOutcome,
     },
 }
 
