@@ -56,9 +56,10 @@ recorded as history.
 
 Replay continues to accept the original version-1 attempt representation, in
 which a later attempt could already follow an unknown attempt without a
-reconciliation event. This deterministic compatibility rule preserves ledgers
-written before reconciliation was introduced; current `start_attempt` commands
-still enforce durable retry authorization for unknown current attempts.
+reconciliation event. New `TaskCreated` facts carry a reconciliation-semantics
+marker, so this deterministic exception applies only to stream prefixes that
+demonstrably predate the new contract; current commands and marked streams both
+enforce durable retry authorization for unknown current attempts.
 
 Version 1 create events and pending UI submissions written before
 `input_revision` was introduced are compatibly upcast from their stable create

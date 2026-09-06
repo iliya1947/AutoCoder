@@ -5,6 +5,7 @@ use autocoder_contracts::{
     RecordAttemptOutcomeIntent, RecordVerificationIntent, SemanticVerificationEvidence,
     StartAttemptIntent, StepId, TaskEventPayload, TaskId, TaskProjection, TaskState,
     TransitionTaskIntent, VerificationBasis, VerificationOutcome, CONTRACT_VERSION,
+    RECONCILIATION_SEMANTICS_VERSION,
 };
 use autocoder_ledger::{ExecutionLedger, LedgerError};
 use std::collections::HashMap;
@@ -76,6 +77,17 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 intent.expected_revision,
             ));
         }
+        let existing = self.ledger.events(&intent.task_id)?;
+        let reconciliation_semantics_version = existing
+            .first()
+            .and_then(|event| match &event.payload {
+                TaskEventPayload::TaskCreated {
+                    reconciliation_semantics_version,
+                    ..
+                } => Some(*reconciliation_semantics_version),
+                _ => None,
+            })
+            .unwrap_or(Some(RECONCILIATION_SEMANTICS_VERSION));
         let event = LedgerEvent {
             schema_version: CONTRACT_VERSION,
             task_id: intent.task_id.clone(),
@@ -86,6 +98,7 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 workspace_id: intent.workspace_id,
                 intent: intent.intent,
                 input_revision: intent.input_revision,
+                reconciliation_semantics_version,
             },
         };
         Ok(self.ledger.append(0, event)?)
@@ -522,18 +535,32 @@ fn project_state(
         .first()
         .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.clone()))?;
     validate_envelope(task_id, first, 1)?;
-    let (workspace_id, intent, input_revision) = match &first.payload {
-        TaskEventPayload::TaskCreated {
-            workspace_id,
-            intent,
-            input_revision,
-        } => (workspace_id.clone(), intent.clone(), input_revision.clone()),
-        _ => {
-            return Err(OrchestrationError::IncompatibleHistory(
-                "first event is not task_created".into(),
-            ))
-        }
-    };
+    let (workspace_id, intent, input_revision, reconciliation_semantics_version) =
+        match &first.payload {
+            TaskEventPayload::TaskCreated {
+                workspace_id,
+                intent,
+                input_revision,
+                reconciliation_semantics_version,
+            } => (
+                workspace_id.clone(),
+                intent.clone(),
+                input_revision.clone(),
+                *reconciliation_semantics_version,
+            ),
+            _ => {
+                return Err(OrchestrationError::IncompatibleHistory(
+                    "first event is not task_created".into(),
+                ))
+            }
+        };
+    if reconciliation_semantics_version
+        .is_some_and(|version| version != RECONCILIATION_SEMANTICS_VERSION)
+    {
+        return Err(OrchestrationError::IncompatibleHistory(
+            "unsupported reconciliation semantics version on task creation".into(),
+        ));
+    }
     let input_basis = VerificationBasis {
         schema_version: CONTRACT_VERSION,
         task_id: task_id.clone(),
@@ -547,7 +574,7 @@ fn project_state(
     let mut steps: Vec<DurableStepProjection> = Vec::new();
     let mut observation_revisions = HashMap::new();
     let mut reconciliation_revisions = HashMap::new();
-    let mut reconciliation_era_seen = false;
+    let mut reconciliation_era_seen = reconciliation_semantics_version.is_some();
     for (index, event) in events.iter().enumerate().skip(1) {
         let revision = index as u64 + 1;
         validate_envelope(task_id, event, revision)?;

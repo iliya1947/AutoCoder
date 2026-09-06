@@ -3,6 +3,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub const CONTRACT_VERSION: u16 = 1;
+pub const RECONCILIATION_SEMANTICS_VERSION: u16 = 1;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ContractError {
@@ -397,6 +398,9 @@ pub enum TaskEventPayload {
         workspace_id: WorkspaceId,
         intent: String,
         input_revision: InputRevision,
+        /// Absent only on V1 streams created before reconciliation semantics.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reconciliation_semantics_version: Option<u16>,
     },
     TaskReady,
     TaskBlocked,

@@ -953,6 +953,80 @@ mod tests {
     fn pre_reconciliation_v1_unknown_supersede_history_remains_replayable() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ledger.sqlite");
+        let ledger = SqliteLedger::open(&path).unwrap();
+        for (expected, event_id, key, payload) in [
+            (
+                0,
+                "legacy-create",
+                "legacy-create-request",
+                TaskEventPayload::TaskCreated {
+                    workspace_id: WorkspaceId::parse("workspace-1").unwrap(),
+                    intent: "Create the first task".into(),
+                    input_revision: InputRevision::parse("workspace-snapshot-1").unwrap(),
+                    reconciliation_semantics_version: None,
+                },
+            ),
+            (
+                1,
+                "legacy-define-step",
+                "legacy-define-step-request",
+                TaskEventPayload::StepDefined {
+                    step_id: StepId::parse("step-1").unwrap(),
+                    description: "future side effect".into(),
+                },
+            ),
+            (
+                2,
+                "legacy-start-attempt-1",
+                "legacy-start-attempt-1-request",
+                TaskEventPayload::AttemptStarted {
+                    step_id: StepId::parse("step-1").unwrap(),
+                    attempt_id: AttemptId::parse("attempt-1").unwrap(),
+                    generation: 1,
+                },
+            ),
+            (
+                3,
+                "legacy-start-attempt-2",
+                "legacy-start-attempt-2-request",
+                TaskEventPayload::AttemptStarted {
+                    step_id: StepId::parse("step-1").unwrap(),
+                    attempt_id: AttemptId::parse("attempt-2").unwrap(),
+                    generation: 2,
+                },
+            ),
+        ] {
+            ledger
+                .append(
+                    expected,
+                    LedgerEvent {
+                        schema_version: CONTRACT_VERSION,
+                        task_id: TaskId::parse("task-1").unwrap(),
+                        event_id: EventId::parse(event_id).unwrap(),
+                        stream_revision: expected + 1,
+                        idempotency_key: IdempotencyKey::parse(key).unwrap(),
+                        payload,
+                    },
+                )
+                .unwrap();
+        }
+
+        let projection = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        let step = &projection.steps[0];
+        assert_eq!(step.authority_generation, 2);
+        assert_eq!(step.attempts[0].outcome, None);
+        assert_eq!(step.attempts[0].authority, AttemptAuthority::Superseded);
+        assert_eq!(step.attempts[1].outcome, None);
+        assert_eq!(step.attempts[1].authority, AttemptAuthority::Current);
+    }
+
+    #[test]
+    fn current_stream_marker_rejects_reconciliation_free_blind_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
         let shell = ApplicationShell::open(&path).unwrap();
         shell.create_task(intent("create-request")).unwrap();
         shell.define_step(define_step(1)).unwrap();
@@ -966,10 +1040,12 @@ mod tests {
                 LedgerEvent {
                     schema_version: CONTRACT_VERSION,
                     task_id: TaskId::parse("task-1").unwrap(),
-                    event_id: EventId::parse("legacy-start-attempt-2").unwrap(),
+                    event_id: EventId::parse("invalid-current-start-attempt-2").unwrap(),
                     stream_revision: 4,
-                    idempotency_key: IdempotencyKey::parse("legacy-start-attempt-2-request")
-                        .unwrap(),
+                    idempotency_key: IdempotencyKey::parse(
+                        "invalid-current-start-attempt-2-request",
+                    )
+                    .unwrap(),
                     payload: TaskEventPayload::AttemptStarted {
                         step_id: StepId::parse("step-1").unwrap(),
                         attempt_id: AttemptId::parse("attempt-2").unwrap(),
@@ -978,17 +1054,13 @@ mod tests {
                 },
             )
             .unwrap();
-
-        let projection = ApplicationShell::open(&path)
+        let error = ApplicationShell::open(&path)
             .unwrap()
             .task(&TaskId::parse("task-1").unwrap())
-            .unwrap();
-        let step = &projection.steps[0];
-        assert_eq!(step.authority_generation, 2);
-        assert_eq!(step.attempts[0].outcome, None);
-        assert_eq!(step.attempts[0].authority, AttemptAuthority::Superseded);
-        assert_eq!(step.attempts[1].outcome, None);
-        assert_eq!(step.attempts[1].authority, AttemptAuthority::Current);
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("superseded without retry authorization"));
     }
 
     #[test]

@@ -75,7 +75,8 @@ runtime.
 - late raw outcome сохраняется без возврата authority или перезаписи reconciliation; противоречие с
   confirmed conclusion детерминированно проецируется с identities обоих причинных facts.
 - replay сохраняет compatibility с pre-reconciliation v1 history, где новый attempt уже мог следовать
-  за unknown attempt без reconciliation event; новые production-команды такой blind retry запрещают.
+  за unknown attempt без reconciliation event; новый `TaskCreated` содержит semantics marker, поэтому
+  compatibility exception не применяется к новым streams, и production-команды blind retry запрещают.
 
 Новый workspace не импортирует `src/`, `backend/` или `src-tauri/`, не содержит File/Terminal tools,
 Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
