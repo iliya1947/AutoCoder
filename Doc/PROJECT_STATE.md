@@ -67,8 +67,9 @@ runtime.
   является orchestration decision;
 - durable reconciliation decisions принадлежат Orchestration Core, ссылаются только на уже
   сохранённые scoped observations и выражают confirmed outcome, разрешённый retry либо unresolved;
-  каждое следующее immutable decision требует хотя бы одного нового observation, а projection хранит
-  все decisions по порядку и stable identity актуального; replay не обращается к live sources;
+  каждое следующее immutable decision требует observation, записанный после предыдущего decision, а
+  projection хранит все decisions по порядку и stable identity актуального; replay не обращается к
+  live sources;
 - unknown current attempt нельзя supersede без `RetryAuthorized`; observation само по себе и
   unresolved/confirmed decision retry не открывают. Разрешённый retry повышает authority generation;
 - late raw outcome сохраняется без возврата authority или перезаписи reconciliation; противоречие с

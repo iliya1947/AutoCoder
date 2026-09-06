@@ -7,6 +7,7 @@ use autocoder_contracts::{
     TransitionTaskIntent, VerificationBasis, VerificationOutcome, CONTRACT_VERSION,
 };
 use autocoder_ledger::{ExecutionLedger, LedgerError};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -340,11 +341,17 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
         }) {
             return Err(OrchestrationError::ReconciliationEvidenceMismatch);
         }
+        let prior_decision_revision = attempt
+            .effective_reconciliation_id
+            .as_ref()
+            .and_then(|id| current.reconciliation_revisions.get(id))
+            .copied()
+            .unwrap_or(0);
         let advances_evidence = intent.reconciliation.observation_ids.iter().any(|id| {
-            !attempt
-                .reconciliations
-                .iter()
-                .any(|prior| prior.observation_ids.iter().any(|prior_id| prior_id == id))
+            current
+                .observation_revisions
+                .get(id)
+                .is_some_and(|revision| *revision > prior_decision_revision)
         });
         if !advances_evidence {
             return Err(OrchestrationError::ReconciliationEvidenceNotAdvanced);
@@ -467,6 +474,8 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
 struct ReplayState {
     projection: TaskProjection,
     evidence: Vec<SemanticVerificationEvidence>,
+    observation_revisions: HashMap<autocoder_contracts::ObservationId, u64>,
+    reconciliation_revisions: HashMap<autocoder_contracts::ReconciliationId, u64>,
 }
 
 fn find_scoped_attempt<'a>(
@@ -536,6 +545,8 @@ fn project_state(
     let mut evidence: Vec<SemanticVerificationEvidence> = Vec::new();
     let mut completion_evidence_id = None;
     let mut steps: Vec<DurableStepProjection> = Vec::new();
+    let mut observation_revisions = HashMap::new();
+    let mut reconciliation_revisions = HashMap::new();
     for (index, event) in events.iter().enumerate().skip(1) {
         let revision = index as u64 + 1;
         validate_envelope(task_id, event, revision)?;
@@ -649,9 +660,32 @@ fn project_state(
                             "attempt references absent step {step_id}"
                         ))
                     })?;
-                // V1 streams written before reconciliation existed could
-                // supersede an unknown attempt. Replay grandfathers that exact
-                // historical representation; current commands remain fenced.
+                if let Some(current_id) = &step.current_attempt_id {
+                    let current = step
+                        .attempts
+                        .iter()
+                        .find(|attempt| &attempt.attempt_id == current_id)
+                        .ok_or_else(|| {
+                            OrchestrationError::IncompatibleHistory(
+                                "current attempt identity is absent".into(),
+                            )
+                        })?;
+                    let retry_authorized = matches!(
+                        current.reconciliations.last().map(|item| &item.conclusion),
+                        Some(ReconciliationConclusion::RetryAuthorized)
+                    );
+                    // An unreconciled unknown predecessor is the exact legacy
+                    // V1 representation. Once reconciliation exists, replay
+                    // enforces the same decision fence as current commands.
+                    if current.outcome.is_none()
+                        && !current.reconciliations.is_empty()
+                        && !retry_authorized
+                    {
+                        return Err(OrchestrationError::IncompatibleHistory(format!(
+                            "unknown reconciled attempt superseded without retry authorization at revision {revision}"
+                        )));
+                    }
+                }
                 if *generation
                     != step.authority_generation.checked_add(1).ok_or_else(|| {
                         OrchestrationError::IncompatibleHistory(
@@ -756,6 +790,7 @@ fn project_state(
                         ))
                     })?;
                 attempt.observations.push(observation.clone());
+                observation_revisions.insert(observation.observation_id.clone(), revision);
             }
             TaskEventPayload::AttemptReconciled { reconciliation } => {
                 if reconciliation.validate().is_err() {
@@ -805,11 +840,16 @@ fn project_state(
                         "invalid reconciliation evidence or state at revision {revision}"
                     )));
                 }
+                let prior_decision_revision = attempt
+                    .effective_reconciliation_id
+                    .as_ref()
+                    .and_then(|id| reconciliation_revisions.get(id))
+                    .copied()
+                    .unwrap_or(0);
                 if !reconciliation.observation_ids.iter().any(|id| {
-                    !attempt
-                        .reconciliations
-                        .iter()
-                        .any(|prior| prior.observation_ids.iter().any(|prior_id| prior_id == id))
+                    observation_revisions
+                        .get(id)
+                        .is_some_and(|recorded| *recorded > prior_decision_revision)
                 }) {
                     return Err(OrchestrationError::IncompatibleHistory(format!(
                         "reconciliation does not advance durable evidence at revision {revision}"
@@ -818,6 +858,7 @@ fn project_state(
                 attempt.reconciliations.push(reconciliation.clone());
                 attempt.effective_reconciliation_id =
                     Some(reconciliation.reconciliation_id.clone());
+                reconciliation_revisions.insert(reconciliation.reconciliation_id.clone(), revision);
             }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(
@@ -844,6 +885,8 @@ fn project_state(
             steps,
         },
         evidence,
+        observation_revisions,
+        reconciliation_revisions,
     })
 }
 

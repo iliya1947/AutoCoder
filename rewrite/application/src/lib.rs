@@ -992,6 +992,57 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_does_not_grandfather_post_reconciliation_blind_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_observation(observation("attempt-1", 1, 3))
+            .unwrap();
+        shell
+            .reconcile_attempt(reconciliation(
+                "attempt-1",
+                1,
+                ReconciliationConclusion::Unresolved {
+                    reason: "no terminal fact".into(),
+                },
+                4,
+            ))
+            .unwrap();
+        drop(shell);
+
+        SqliteLedger::open(&path)
+            .unwrap()
+            .append(
+                5,
+                LedgerEvent {
+                    schema_version: CONTRACT_VERSION,
+                    task_id: TaskId::parse("task-1").unwrap(),
+                    event_id: EventId::parse("invalid-start-attempt-2").unwrap(),
+                    stream_revision: 6,
+                    idempotency_key: IdempotencyKey::parse("invalid-start-attempt-2-request")
+                        .unwrap(),
+                    payload: TaskEventPayload::AttemptStarted {
+                        step_id: StepId::parse("step-1").unwrap(),
+                        attempt_id: AttemptId::parse("attempt-2").unwrap(),
+                        generation: 2,
+                    },
+                },
+            )
+            .unwrap();
+        let error = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("superseded without retry authorization"));
+    }
+
+    #[test]
     fn unresolved_can_advance_to_retry_only_after_new_durable_evidence() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ledger.sqlite");
@@ -1003,6 +1054,9 @@ mod tests {
             .record_attempt_observation(observation_named("first", "attempt-1", 1, 3))
             .unwrap();
         shell
+            .record_attempt_observation(observation_named("preexisting", "attempt-1", 1, 4))
+            .unwrap();
+        shell
             .reconcile_attempt(reconciliation_named(
                 "unresolved",
                 "first",
@@ -1011,7 +1065,7 @@ mod tests {
                 ReconciliationConclusion::Unresolved {
                     reason: "terminal receipt remains absent".into(),
                 },
-                4,
+                5,
             ))
             .unwrap();
 
@@ -1022,12 +1076,23 @@ mod tests {
                 "attempt-1",
                 1,
                 ReconciliationConclusion::RetryAuthorized,
-                5,
+                6,
+            )),
+            Err(OrchestrationError::ReconciliationEvidenceNotAdvanced)
+        ));
+        assert!(matches!(
+            shell.reconcile_attempt(reconciliation_named(
+                "preexisting-evidence",
+                "preexisting",
+                "attempt-1",
+                1,
+                ReconciliationConclusion::RetryAuthorized,
+                6,
             )),
             Err(OrchestrationError::ReconciliationEvidenceNotAdvanced)
         ));
         shell
-            .record_attempt_observation(observation_named("second", "attempt-1", 1, 5))
+            .record_attempt_observation(observation_named("second", "attempt-1", 1, 6))
             .unwrap();
         let retry = reconciliation_named(
             "retry",
@@ -1035,7 +1100,7 @@ mod tests {
             "attempt-1",
             1,
             ReconciliationConclusion::RetryAuthorized,
-            6,
+            7,
         );
         assert_eq!(
             shell.reconcile_attempt(retry.clone()).unwrap(),
@@ -1060,7 +1125,7 @@ mod tests {
             Some(ReconciliationId::parse("reconciliation-retry").unwrap())
         );
         reopened
-            .start_attempt(start_attempt("attempt-2", 7))
+            .start_attempt(start_attempt("attempt-2", 8))
             .unwrap();
         let retried = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
         assert_eq!(retried.steps[0].authority_generation, 2);

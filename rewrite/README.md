@@ -40,8 +40,8 @@ decision explicitly authorizes retry. Observations carry stable identity, exact
 task/step/attempt/generation scope, and source provenance; they are facts and
 never transitions. Confirmed-outcome, retry-authorized, and unresolved
 conclusions are replayed only from durable history. Reconciliation decisions
-are immutable and ordered: a later decision must cite at least one newly
-recorded observation, and its identity becomes the explicit effective decision
+are immutable and ordered: a later decision must cite at least one observation
+recorded after the prior decision, and its identity becomes the explicit effective decision
 without removing prior decisions. A late terminal result
 remains immutable history but cannot regain authority; any disagreement with a
 confirmed reconciliation is projected explicitly while both facts remain
