@@ -173,8 +173,10 @@ pub struct AttemptProjection {
     pub authority: AttemptAuthority,
     /// Durable observations are facts only; they never authorize a transition.
     pub observations: Vec<AttemptObservation>,
-    /// The orchestration-owned conclusion, if the unknown outcome was reconciled.
-    pub reconciliation: Option<AttemptReconciliation>,
+    /// Immutable orchestration decisions in durable stream order.
+    pub reconciliations: Vec<AttemptReconciliation>,
+    /// Stable identity of the latest/effective decision, if any.
+    pub effective_reconciliation_id: Option<ReconciliationId>,
     /// Late raw facts that disagree with a confirmed reconciliation remain visible.
     pub contradictions: Vec<AttemptOutcomeContradiction>,
 }

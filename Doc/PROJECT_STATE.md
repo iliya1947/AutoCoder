@@ -65,13 +65,16 @@ runtime.
 - существенное nondeterministic observation хранится отдельным immutable versioned Ledger fact со
   stable identity, точным task/step/attempt/authority-generation scope и provenance; observation не
   является orchestration decision;
-- отдельное durable reconciliation decision принадлежит Orchestration Core, ссылается только на уже
-  сохранённые scoped observations и выражает confirmed outcome, разрешённый retry либо unresolved;
-  replay не обращается к live sources;
+- durable reconciliation decisions принадлежат Orchestration Core, ссылаются только на уже
+  сохранённые scoped observations и выражают confirmed outcome, разрешённый retry либо unresolved;
+  каждое следующее immutable decision требует хотя бы одного нового observation, а projection хранит
+  все decisions по порядку и stable identity актуального; replay не обращается к live sources;
 - unknown current attempt нельзя supersede без `RetryAuthorized`; observation само по себе и
   unresolved/confirmed decision retry не открывают. Разрешённый retry повышает authority generation;
 - late raw outcome сохраняется без возврата authority или перезаписи reconciliation; противоречие с
   confirmed conclusion детерминированно проецируется с identities обоих причинных facts.
+- replay сохраняет compatibility с pre-reconciliation v1 history, где новый attempt уже мог следовать
+  за unknown attempt без reconciliation event; новые production-команды такой blind retry запрещают.
 
 Новый workspace не импортирует `src/`, `backend/` или `src-tauri/`, не содержит File/Terminal tools,
 Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
@@ -89,8 +92,9 @@ retry possibly committed create без второго события, а так�
 evidence и replay после reopen.
 
 Тот же Rust suite подтверждает reopen unknown attempt; запрет retry до отдельного durable decision;
-недостаточность одного observation; durable replay confirmed/retry/unresolved reconciliation после
-SQLite reopen; новую authority generation только после разрешённого retry; сохранение late и
+недостаточность одного observation; ordered multi-decision reconciliation с обязательным новым
+observation и durable replay после SQLite reopen; compatibility старой v1 unknown-supersede history;
+новую authority generation только после разрешённого retry; сохранение late и
 contradictory raw outcomes без возврата authority и потери ранних facts; отказ на несовместимых
 observation/reconciliation versions; exact retry, stale-writer fencing и отсутствие `TaskCompleted`
 после reconciliation или одного technical success.

@@ -39,7 +39,10 @@ observation has been recorded and a separate orchestration-owned reconciliation
 decision explicitly authorizes retry. Observations carry stable identity, exact
 task/step/attempt/generation scope, and source provenance; they are facts and
 never transitions. Confirmed-outcome, retry-authorized, and unresolved
-conclusions are replayed only from durable history. A late terminal result
+conclusions are replayed only from durable history. Reconciliation decisions
+are immutable and ordered: a later decision must cite at least one newly
+recorded observation, and its identity becomes the explicit effective decision
+without removing prior decisions. A late terminal result
 remains immutable history but cannot regain authority; any disagreement with a
 confirmed reconciliation is projected explicitly while both facts remain
 stored. A started attempt with no terminal or reconciliation event projects an
@@ -50,6 +53,12 @@ interruption is a distinct terminal outcome rather than an alias for unknown.
 Task completion revokes the last current attempt authority and prevents new
 steps or attempts, while still allowing a late pre-completion attempt result to be
 recorded as history.
+
+Replay continues to accept the original version-1 attempt representation, in
+which a later attempt could already follow an unknown attempt without a
+reconciliation event. This deterministic compatibility rule preserves ledgers
+written before reconciliation was introduced; current `start_attempt` commands
+still enforce durable retry authorization for unknown current attempts.
 
 Version 1 create events and pending UI submissions written before
 `input_revision` was introduced are compatibly upcast from their stable create

@@ -51,8 +51,10 @@ pub enum OrchestrationError {
     ReconciliationScopeMismatch,
     #[error("reconciliation references an absent or differently scoped observation")]
     ReconciliationEvidenceMismatch,
-    #[error("attempt already has a durable reconciliation decision")]
+    #[error("reconciliation identity is already present in task history")]
     AttemptAlreadyReconciled,
+    #[error("reconciliation does not reference any new durable observation")]
+    ReconciliationEvidenceNotAdvanced,
     #[error("task {0} is completed and cannot create new execution work")]
     TaskClosed(TaskId),
 }
@@ -186,14 +188,12 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 .expect("replay keeps current attempt identity consistent");
             let retry_authorized = matches!(
                 current_attempt
-                    .reconciliation
-                    .as_ref()
+                    .reconciliations
+                    .last()
                     .map(|item| &item.conclusion),
                 Some(ReconciliationConclusion::RetryAuthorized)
             );
-            if (current_attempt.outcome.is_none() || current_attempt.reconciliation.is_some())
-                && !retry_authorized
-            {
+            if current_attempt.outcome.is_none() && !retry_authorized {
                 return Err(OrchestrationError::UnknownAttemptRequiresReconciliation);
             }
         }
@@ -323,15 +323,12 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
             .steps
             .iter()
             .flat_map(|step| &step.attempts)
-            .filter_map(|attempt| attempt.reconciliation.as_ref())
+            .flat_map(|attempt| &attempt.reconciliations)
             .any(|item| item.reconciliation_id == intent.reconciliation.reconciliation_id)
         {
             return Err(OrchestrationError::AttemptAlreadyReconciled);
         }
         let attempt = find_scoped_attempt(&current.projection, &intent.reconciliation.scope)?;
-        if attempt.reconciliation.is_some() {
-            return Err(OrchestrationError::AttemptAlreadyReconciled);
-        }
         if attempt.outcome.is_some() {
             return Err(OrchestrationError::AttemptAlreadyTerminal);
         }
@@ -342,6 +339,15 @@ impl<L: ExecutionLedger> OrchestrationCore<L> {
                 .any(|observation| &observation.observation_id == id)
         }) {
             return Err(OrchestrationError::ReconciliationEvidenceMismatch);
+        }
+        let advances_evidence = intent.reconciliation.observation_ids.iter().any(|id| {
+            !attempt
+                .reconciliations
+                .iter()
+                .any(|prior| prior.observation_ids.iter().any(|prior_id| prior_id == id))
+        });
+        if !advances_evidence {
+            return Err(OrchestrationError::ReconciliationEvidenceNotAdvanced);
         }
         self.append(
             intent.task_id,
@@ -643,28 +649,9 @@ fn project_state(
                             "attempt references absent step {step_id}"
                         ))
                     })?;
-                if let Some(current_id) = &step.current_attempt_id {
-                    let current = step
-                        .attempts
-                        .iter()
-                        .find(|attempt| &attempt.attempt_id == current_id)
-                        .ok_or_else(|| {
-                            OrchestrationError::IncompatibleHistory(
-                                "current attempt identity is absent".into(),
-                            )
-                        })?;
-                    let retry_authorized = matches!(
-                        current.reconciliation.as_ref().map(|item| &item.conclusion),
-                        Some(ReconciliationConclusion::RetryAuthorized)
-                    );
-                    if (current.outcome.is_none() || current.reconciliation.is_some())
-                        && !retry_authorized
-                    {
-                        return Err(OrchestrationError::IncompatibleHistory(format!(
-                            "unknown attempt superseded without retry reconciliation at revision {revision}"
-                        )));
-                    }
-                }
+                // V1 streams written before reconciliation existed could
+                // supersede an unknown attempt. Replay grandfathers that exact
+                // historical representation; current commands remain fenced.
                 if *generation
                     != step.authority_generation.checked_add(1).ok_or_else(|| {
                         OrchestrationError::IncompatibleHistory(
@@ -687,7 +674,8 @@ fn project_state(
                     outcome: None,
                     authority: AttemptAuthority::Current,
                     observations: Vec::new(),
-                    reconciliation: None,
+                    reconciliations: Vec::new(),
+                    effective_reconciliation_id: None,
                     contradictions: Vec::new(),
                 });
             }
@@ -719,7 +707,7 @@ fn project_state(
                         "invalid attempt outcome authority at revision {revision}"
                     )));
                 }
-                if let Some(reconciliation) = &attempt.reconciliation {
+                for reconciliation in &attempt.reconciliations {
                     if let ReconciliationConclusion::ConfirmedOutcome {
                         outcome: reconciled_outcome,
                     } = reconciliation.conclusion
@@ -783,7 +771,7 @@ fn project_state(
                 if steps
                     .iter()
                     .flat_map(|step| &step.attempts)
-                    .filter_map(|attempt| attempt.reconciliation.as_ref())
+                    .flat_map(|attempt| &attempt.reconciliations)
                     .any(|existing| existing.reconciliation_id == reconciliation.reconciliation_id)
                 {
                     return Err(OrchestrationError::IncompatibleHistory(format!(
@@ -805,7 +793,6 @@ fn project_state(
                         ))
                     })?;
                 if attempt.outcome.is_some()
-                    || attempt.reconciliation.is_some()
                     || reconciliation.observation_ids.is_empty()
                     || reconciliation.observation_ids.iter().any(|id| {
                         !attempt
@@ -818,7 +805,19 @@ fn project_state(
                         "invalid reconciliation evidence or state at revision {revision}"
                     )));
                 }
-                attempt.reconciliation = Some(reconciliation.clone());
+                if !reconciliation.observation_ids.iter().any(|id| {
+                    !attempt
+                        .reconciliations
+                        .iter()
+                        .any(|prior| prior.observation_ids.iter().any(|prior_id| prior_id == id))
+                }) {
+                    return Err(OrchestrationError::IncompatibleHistory(format!(
+                        "reconciliation does not advance durable evidence at revision {revision}"
+                    )));
+                }
+                attempt.reconciliations.push(reconciliation.clone());
+                attempt.effective_reconciliation_id =
+                    Some(reconciliation.reconciliation_id.clone());
             }
             TaskEventPayload::TaskCreated { .. } => {
                 return Err(OrchestrationError::IncompatibleHistory(

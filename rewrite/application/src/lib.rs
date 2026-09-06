@@ -213,13 +213,22 @@ mod tests {
     }
 
     fn observation(id: &str, generation: u64, revision: u64) -> RecordAttemptObservationIntent {
+        observation_named(id, id, generation, revision)
+    }
+
+    fn observation_named(
+        name: &str,
+        attempt_id: &str,
+        generation: u64,
+        revision: u64,
+    ) -> RecordAttemptObservationIntent {
         RecordAttemptObservationIntent {
             contract_version: CONTRACT_VERSION,
             task_id: TaskId::parse("task-1").unwrap(),
             observation: AttemptObservation {
                 schema_version: CONTRACT_VERSION,
-                observation_id: ObservationId::parse(format!("observation-{id}")).unwrap(),
-                scope: scope(id, generation),
+                observation_id: ObservationId::parse(format!("observation-{name}")).unwrap(),
+                scope: scope(attempt_id, generation),
                 kind: AttemptObservationKind::OutcomeStillUnknown {
                     reason: "worker disconnected after dispatch".into(),
                 },
@@ -230,8 +239,8 @@ mod tests {
                     detail: "dispatch receipt exists; terminal receipt absent".into(),
                 },
             },
-            event_id: EventId::parse(format!("observe-{id}")).unwrap(),
-            idempotency_key: IdempotencyKey::parse(format!("observe-{id}-request")).unwrap(),
+            event_id: EventId::parse(format!("observe-{name}")).unwrap(),
+            idempotency_key: IdempotencyKey::parse(format!("observe-{name}-request")).unwrap(),
             expected_revision: revision,
         }
     }
@@ -242,19 +251,34 @@ mod tests {
         conclusion: ReconciliationConclusion,
         revision: u64,
     ) -> ReconcileAttemptIntent {
+        reconciliation_named(id, id, id, generation, conclusion, revision)
+    }
+
+    fn reconciliation_named(
+        name: &str,
+        observation_name: &str,
+        attempt_id: &str,
+        generation: u64,
+        conclusion: ReconciliationConclusion,
+        revision: u64,
+    ) -> ReconcileAttemptIntent {
         ReconcileAttemptIntent {
             contract_version: CONTRACT_VERSION,
             task_id: TaskId::parse("task-1").unwrap(),
             reconciliation: AttemptReconciliation {
                 schema_version: CONTRACT_VERSION,
-                reconciliation_id: ReconciliationId::parse(format!("reconciliation-{id}")).unwrap(),
-                scope: scope(id, generation),
-                observation_ids: vec![ObservationId::parse(format!("observation-{id}")).unwrap()],
+                reconciliation_id: ReconciliationId::parse(format!("reconciliation-{name}"))
+                    .unwrap(),
+                scope: scope(attempt_id, generation),
+                observation_ids: vec![ObservationId::parse(format!(
+                    "observation-{observation_name}"
+                ))
+                .unwrap()],
                 conclusion,
                 rationale: "orchestration policy evaluated the durable observation".into(),
             },
-            event_id: EventId::parse(format!("reconcile-{id}")).unwrap(),
-            idempotency_key: IdempotencyKey::parse(format!("reconcile-{id}-request")).unwrap(),
+            event_id: EventId::parse(format!("reconcile-{name}")).unwrap(),
+            idempotency_key: IdempotencyKey::parse(format!("reconcile-{name}-request")).unwrap(),
             expected_revision: revision,
         }
     }
@@ -926,6 +950,212 @@ mod tests {
     }
 
     #[test]
+    fn pre_reconciliation_v1_unknown_supersede_history_remains_replayable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        drop(shell);
+
+        SqliteLedger::open(&path)
+            .unwrap()
+            .append(
+                3,
+                LedgerEvent {
+                    schema_version: CONTRACT_VERSION,
+                    task_id: TaskId::parse("task-1").unwrap(),
+                    event_id: EventId::parse("legacy-start-attempt-2").unwrap(),
+                    stream_revision: 4,
+                    idempotency_key: IdempotencyKey::parse("legacy-start-attempt-2-request")
+                        .unwrap(),
+                    payload: TaskEventPayload::AttemptStarted {
+                        step_id: StepId::parse("step-1").unwrap(),
+                        attempt_id: AttemptId::parse("attempt-2").unwrap(),
+                        generation: 2,
+                    },
+                },
+            )
+            .unwrap();
+
+        let projection = ApplicationShell::open(&path)
+            .unwrap()
+            .task(&TaskId::parse("task-1").unwrap())
+            .unwrap();
+        let step = &projection.steps[0];
+        assert_eq!(step.authority_generation, 2);
+        assert_eq!(step.attempts[0].outcome, None);
+        assert_eq!(step.attempts[0].authority, AttemptAuthority::Superseded);
+        assert_eq!(step.attempts[1].outcome, None);
+        assert_eq!(step.attempts[1].authority, AttemptAuthority::Current);
+    }
+
+    #[test]
+    fn unresolved_can_advance_to_retry_only_after_new_durable_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ledger.sqlite");
+        let shell = ApplicationShell::open(&path).unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_observation(observation_named("first", "attempt-1", 1, 3))
+            .unwrap();
+        shell
+            .reconcile_attempt(reconciliation_named(
+                "unresolved",
+                "first",
+                "attempt-1",
+                1,
+                ReconciliationConclusion::Unresolved {
+                    reason: "terminal receipt remains absent".into(),
+                },
+                4,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            shell.reconcile_attempt(reconciliation_named(
+                "same-evidence",
+                "first",
+                "attempt-1",
+                1,
+                ReconciliationConclusion::RetryAuthorized,
+                5,
+            )),
+            Err(OrchestrationError::ReconciliationEvidenceNotAdvanced)
+        ));
+        shell
+            .record_attempt_observation(observation_named("second", "attempt-1", 1, 5))
+            .unwrap();
+        let retry = reconciliation_named(
+            "retry",
+            "second",
+            "attempt-1",
+            1,
+            ReconciliationConclusion::RetryAuthorized,
+            6,
+        );
+        assert_eq!(
+            shell.reconcile_attempt(retry.clone()).unwrap(),
+            shell.reconcile_attempt(retry).unwrap()
+        );
+        drop(shell);
+
+        let reopened = ApplicationShell::open(&path).unwrap();
+        let projection = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        let attempt = &projection.steps[0].attempts[0];
+        assert_eq!(attempt.reconciliations.len(), 2);
+        assert!(matches!(
+            attempt.reconciliations[0].conclusion,
+            ReconciliationConclusion::Unresolved { .. }
+        ));
+        assert!(matches!(
+            attempt.reconciliations[1].conclusion,
+            ReconciliationConclusion::RetryAuthorized
+        ));
+        assert_eq!(
+            attempt.effective_reconciliation_id,
+            Some(ReconciliationId::parse("reconciliation-retry").unwrap())
+        );
+        reopened
+            .start_attempt(start_attempt("attempt-2", 7))
+            .unwrap();
+        let retried = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        assert_eq!(retried.steps[0].authority_generation, 2);
+        assert_eq!(retried.state, TaskState::Created);
+    }
+
+    #[test]
+    fn confirmed_failure_can_later_receive_explicit_retry_authorization() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_observation(observation_named("failed", "attempt-1", 1, 3))
+            .unwrap();
+        shell
+            .reconcile_attempt(reconciliation_named(
+                "failed",
+                "failed",
+                "attempt-1",
+                1,
+                ReconciliationConclusion::ConfirmedOutcome {
+                    outcome: AttemptOutcome::Failed,
+                },
+                4,
+            ))
+            .unwrap();
+        assert!(matches!(
+            shell.start_attempt(start_attempt("attempt-2", 5)),
+            Err(OrchestrationError::UnknownAttemptRequiresReconciliation)
+        ));
+        shell
+            .record_attempt_observation(observation_named("retry", "attempt-1", 1, 5))
+            .unwrap();
+        shell
+            .reconcile_attempt(reconciliation_named(
+                "retry",
+                "retry",
+                "attempt-1",
+                1,
+                ReconciliationConclusion::RetryAuthorized,
+                6,
+            ))
+            .unwrap();
+        shell.start_attempt(start_attempt("attempt-2", 7)).unwrap();
+        assert_eq!(
+            shell.task(&TaskId::parse("task-1").unwrap()).unwrap().steps[0].attempts[0]
+                .reconciliations
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn late_raw_terminal_outcome_overrides_unknownness_but_preserves_unresolved_history() {
+        let shell = ApplicationShell::open(":memory:").unwrap();
+        shell.create_task(intent("create-request")).unwrap();
+        shell.define_step(define_step(1)).unwrap();
+        shell.start_attempt(start_attempt("attempt-1", 2)).unwrap();
+        shell
+            .record_attempt_observation(observation("attempt-1", 1, 3))
+            .unwrap();
+        shell
+            .reconcile_attempt(reconciliation(
+                "attempt-1",
+                1,
+                ReconciliationConclusion::Unresolved {
+                    reason: "no terminal fact yet".into(),
+                },
+                4,
+            ))
+            .unwrap();
+        shell
+            .record_attempt_outcome(attempt_outcome(
+                "attempt-1",
+                1,
+                AttemptOutcome::Interrupted,
+                5,
+            ))
+            .unwrap();
+        shell.start_attempt(start_attempt("attempt-2", 6)).unwrap();
+
+        let projection = shell.task(&TaskId::parse("task-1").unwrap()).unwrap();
+        let first = &projection.steps[0].attempts[0];
+        assert_eq!(first.outcome, Some(AttemptOutcome::Interrupted));
+        assert_eq!(first.reconciliations.len(), 1);
+        assert!(matches!(
+            first.reconciliations[0].conclusion,
+            ReconciliationConclusion::Unresolved { .. }
+        ));
+        assert_eq!(projection.steps[0].authority_generation, 2);
+        assert_eq!(projection.state, TaskState::Created);
+    }
+
+    #[test]
     fn retry_reconciliation_is_durable_idempotent_and_advances_authority() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ledger.sqlite");
@@ -955,8 +1185,8 @@ mod tests {
         let before = reopened.task(&TaskId::parse("task-1").unwrap()).unwrap();
         assert!(matches!(
             before.steps[0].attempts[0]
-                .reconciliation
-                .as_ref()
+                .reconciliations
+                .last()
                 .map(|item| &item.conclusion),
             Some(ReconciliationConclusion::RetryAuthorized)
         ));
@@ -1004,8 +1234,8 @@ mod tests {
         assert_eq!(reconciled.steps[0].attempts[0].outcome, None);
         assert!(matches!(
             reconciled.steps[0].attempts[0]
-                .reconciliation
-                .as_ref()
+                .reconciliations
+                .last()
                 .map(|item| &item.conclusion),
             Some(ReconciliationConclusion::ConfirmedOutcome {
                 outcome: AttemptOutcome::Succeeded
@@ -1020,12 +1250,13 @@ mod tests {
         assert_eq!(attempt.outcome, Some(AttemptOutcome::Failed));
         assert_eq!(attempt.contradictions.len(), 1);
         assert_eq!(attempt.observations.len(), 1);
-        assert!(attempt.reconciliation.is_some());
+        assert_eq!(attempt.reconciliations.len(), 1);
         assert_eq!(late.state, TaskState::Created);
-        assert!(matches!(
-            shell.start_attempt(start_attempt("attempt-2", 6)),
-            Err(OrchestrationError::UnknownAttemptRequiresReconciliation)
-        ));
+        shell.start_attempt(start_attempt("attempt-2", 6)).unwrap();
+        assert_eq!(
+            shell.task(&TaskId::parse("task-1").unwrap()).unwrap().steps[0].authority_generation,
+            2
+        );
     }
 
     #[test]
