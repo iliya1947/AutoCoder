@@ -34,10 +34,17 @@ stale, conflicting, or version-incompatible evidence/history.
 
 Durable steps and their semantic attempts also live entirely in the task
 stream. Each attempt advances a per-step execution-authority generation. A new
-attempt supersedes the prior token; a late terminal result remains immutable
-history but cannot become the current attempt. A started attempt with no
-terminal event projects an unknown outcome after reopen, so recovery neither
-guesses an outcome nor blindly repeats a future side effect. Technical attempt
+attempt may supersede an unknown prior token only after an immutable, versioned
+observation has been recorded and a separate orchestration-owned reconciliation
+decision explicitly authorizes retry. Observations carry stable identity, exact
+task/step/attempt/generation scope, and source provenance; they are facts and
+never transitions. Confirmed-outcome, retry-authorized, and unresolved
+conclusions are replayed only from durable history. A late terminal result
+remains immutable history but cannot regain authority; any disagreement with a
+confirmed reconciliation is projected explicitly while both facts remain
+stored. A started attempt with no terminal or reconciliation event projects an
+unknown outcome after reopen, so recovery neither guesses an outcome nor
+blindly repeats a future side effect. Technical attempt
 success is deliberately independent of semantic task completion. Confirmed
 interruption is a distinct terminal outcome rather than an alias for unknown.
 Task completion revokes the last current attempt authority and prevents new

@@ -6,8 +6,8 @@
 
 ## Текущий этап
 
-**Четвёртый vertical slice clean rewrite реализован: durable step/attempt и
-execution-authority fencing contract.**
+**Пятый vertical slice clean rewrite реализован: durable reconciliation unknown attempt outcome и
+versioned nondeterministic observations.**
 
 `Doc/PROJECT_MEMORY.md` остаётся неизменённым **FROZEN ARCHITECTURE CONTRACT v1**. Старый React,
 Python и Rust/Tauri runtime сохранён только как donor/reference и не является dependency нового
@@ -62,6 +62,16 @@ runtime.
 - `TaskCompleted` закрывает создание новых steps/attempts и отзывает последнее current execution
   authority; late outcome реально начатого до completion attempt остаётся допустимым историческим
   фактом и не меняет terminal task outcome.
+- существенное nondeterministic observation хранится отдельным immutable versioned Ledger fact со
+  stable identity, точным task/step/attempt/authority-generation scope и provenance; observation не
+  является orchestration decision;
+- отдельное durable reconciliation decision принадлежит Orchestration Core, ссылается только на уже
+  сохранённые scoped observations и выражает confirmed outcome, разрешённый retry либо unresolved;
+  replay не обращается к live sources;
+- unknown current attempt нельзя supersede без `RetryAuthorized`; observation само по себе и
+  unresolved/confirmed decision retry не открывают. Разрешённый retry повышает authority generation;
+- late raw outcome сохраняется без возврата authority или перезаписи reconciliation; противоречие с
+  confirmed conclusion детерминированно проецируется с identities обоих причинных facts.
 
 Новый workspace не импортирует `src/`, `backend/` или `src-tauri/`, не содержит File/Terminal tools,
 Monaco/Explorer, Ollama и legacy JSON orchestration snapshots.
@@ -78,9 +88,12 @@ representations предыдущего slice, подтверждают согл�
 retry possibly committed create без второго события, а также completion такой задачи через durable
 evidence и replay после reopen.
 
-Тот же Rust suite подтверждает reopen unresolved attempt, монотонное supersede authority, сохранение
-late result только как history, exact retry без дубля, fencing stale writer, полное восстановление
-authority через Ledger replay и отсутствие `TaskCompleted` после одного technical success.
+Тот же Rust suite подтверждает reopen unknown attempt; запрет retry до отдельного durable decision;
+недостаточность одного observation; durable replay confirmed/retry/unresolved reconciliation после
+SQLite reopen; новую authority generation только после разрешённого retry; сохранение late и
+contradictory raw outcomes без возврата authority и потери ранних facts; отказ на несовместимых
+observation/reconciliation versions; exact retry, stale-writer fencing и отсутствие `TaskCompleted`
+после reconciliation или одного technical success.
 
 Отдельный `node --test rewrite/ui/main.test.mjs` подтверждает UI regression-сценарий: successful
 durable create, ошибка последующего projection query и безопасный retry с той же logical identity
@@ -95,8 +108,8 @@ durable create, ошибка последующего projection query и без
 - Lifecycle пока намеренно не содержит stop/resume. Текущий `InputRevision` является opaque stable
   reference: полноценные Workspace revisions/hashes и их
   смена появятся только с отдельным Workspace slice.
-- Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps,
-  orchestration-version migration и crash reconciliation.
+- Ledger пока хранит versioned JSON event body в SQLite, но ещё не реализует timestamps и общую
+  orchestration-version migration; reconciliation реализовано только для unknown semantic attempt.
 - Workspace/Provider/Supervisor/Diagnostics пока являются только ownership boundaries.
 - Windows packaged запуск новой desktop composition и durable запись из реального WebView не
   проверялись; это platform-specific acceptance risk, а не доказанная неисправность.
@@ -104,11 +117,9 @@ durable create, ошибка последующего projection query и без
 
 ## Следующий точный технический шаг
 
-Добавить минимальный durable reconciliation contract для unknown attempt outcome и versioned
-nondeterministic observations, всё ещё не подключая provider/tool execution или physical process
-lifecycle. Stop/resume, capability registry, Workspace Transaction и provider adapters должны
-по-прежнему появляться отдельными последующими slices через clean boundaries, а не через legacy
-orchestration.
+Следующий slice выбрать внутри frozen architecture без подключения legacy orchestration. Provider/tool
+execution, physical process lifecycle, stop/resume, capability registry и Workspace Transaction всё
+ещё не реализованы и должны подключаться отдельными AutoCoder-owned contracts/boundaries.
 
 ## Правило обновления этого файла
 
